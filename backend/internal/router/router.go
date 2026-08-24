@@ -14,6 +14,9 @@ import (
 
 func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 	mux := http.NewServeMux()
+	if err := service.InitDataSourceStore(); err != nil {
+		fmt.Printf("data source store init failed: %v\n", err)
+	}
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -42,13 +45,20 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 			return
 		case http.MethodPost:
 			var ds model.DataSource
-			_ = json.NewDecoder(r.Body).Decode(&ds)
+			if err := json.NewDecoder(r.Body).Decode(&ds); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
 			if ds.ID == "" {
 				ds.ID = fmt.Sprintf("ds-%d", time.Now().UnixNano())
 			}
 			ds.Status = "待测试"
 			ds.LastTest = "未测试"
-			added := service.AddDataSource(ds)
+			added, err := service.AddDataSource(ds)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 			writeJSON(w, http.StatusCreated, added)
 			return
 		default:

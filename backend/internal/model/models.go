@@ -3,18 +3,20 @@ package model
 import "time"
 
 type DataSource struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	Host        string   `json:"host"`
-	Port        string   `json:"port"`
-	Username    string   `json:"username,omitempty"`
-	Password    string   `json:"password,omitempty"`
-	Database    string   `json:"database,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Status      string   `json:"status"`
-	LastTest    string   `json:"lastTest"`
-	Tags        []string `json:"tags,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Type        string            `json:"type"`
+	Host        string            `json:"host"`
+	Port        string            `json:"port"`
+	Username    string            `json:"username,omitempty"`
+	Password    string            `json:"password,omitempty"`
+	Database    string            `json:"database,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Remark      string            `json:"remark,omitempty"`
+	Options     map[string]string `json:"options,omitempty"`
+	Status      string            `json:"status"`
+	LastTest    string            `json:"lastTest"`
+	Tags        []string          `json:"tags,omitempty"`
 }
 
 type CollectionRule struct {
