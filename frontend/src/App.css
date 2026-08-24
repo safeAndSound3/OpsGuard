@@ -377,7 +377,9 @@
 }
 
 .form-grid {
+  display: grid;
   grid-template-columns: 1.2fr 1fr;
+  gap: 20px;
 }
 
 .form-panel {

@@ -66,7 +66,7 @@ type SystemConfigState = {
 
 const menuItems: MenuItem[] = [
   { label: '监控大屏', path: '/', icon: '◫' },
-  { label: '巡检', path: '/inspection', icon: '◌' },
+  { label: '巡检任务', path: '/inspection', icon: '◌' },
   { label: '数据源', path: '/datasources', icon: '◍' },
   { label: '系统配置', path: '/config', icon: '◎' },
   { label: '平台告警', path: '/alerts', icon: '⚠' },
@@ -128,8 +128,11 @@ function App() {
           </header>
           <Routes>
             <Route path="/" element={<MonitorDashboard />} />
-            <Route path="/inspection" element={<InspectionPage />} />
+            <Route path="/inspection" element={<InspectionTasksPage />} />
+            <Route path="/inspection/tasks" element={<InspectionTasksPage />} />
+            <Route path="/inspection/reports" element={<InspectionReportsPage />} />
             <Route path="/datasources" element={<DataSourcePage />} />
+            <Route path="/datasources/rules" element={<DataSourceRulesPage />} />
             <Route path="/config" element={<SystemConfigPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
           </Routes>
@@ -152,15 +155,29 @@ function Sidebar() {
 
       <nav className="nav-list">
         {menuItems.map((item) => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            end={item.path === '/'}
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          >
-            <span className="nav-icon">{item.icon}</span>
-            <span>{item.label}</span>
-          </NavLink>
+          <div key={item.path}>
+            <NavLink
+              to={item.path}
+              end={item.path === '/'}
+              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            >
+              <span className="nav-icon">{item.icon}</span>
+              <span>{item.label}</span>
+            </NavLink>
+            {/* Secondary menus */}
+            {item.label === '巡检任务' && (
+              <div className="sub-nav">
+                <NavLink to="/inspection/tasks" className={({isActive})=>`nav-sub-item ${isActive?'active':''}`}>巡检任务</NavLink>
+                <NavLink to="/inspection/reports" className={({isActive})=>`nav-sub-item ${isActive?'active':''}`}>巡检报告</NavLink>
+              </div>
+            )}
+            {item.label === '数据源' && (
+              <div className="sub-nav">
+                <NavLink to="/datasources" className={({isActive})=>`nav-sub-item ${isActive?'active':''}`}>已接入数据源</NavLink>
+                <NavLink to="/datasources/rules" className={({isActive})=>`nav-sub-item ${isActive?'active':''}`}>采集规则</NavLink>
+              </div>
+            )}
+          </div>
         ))}
       </nav>
 
@@ -225,15 +242,17 @@ function MonitorDashboard() {
   )
 }
 
-function InspectionPage() {
+function InspectionTasksPage() {
   return (
     <section className="panel page-panel">
       <div className="panel-header">
         <div>
-          <p className="panel-label">巡检管理</p>
-          <h2>平台巡检任务</h2>
+          <p className="panel-label">巡检任务</p>
+          <h2>巡检任务</h2>
         </div>
-        <button className="chip-btn">新建巡检</button>
+        <div>
+          <button className="chip-btn">新建巡检</button>
+        </div>
       </div>
 
       <div className="task-list">
@@ -260,17 +279,38 @@ function InspectionPage() {
   )
 }
 
+function InspectionReportsPage() {
+  return (
+    <section className="panel page-panel">
+      <div className="panel-header">
+        <div>
+          <p className="panel-label">巡检报告</p>
+          <h2>巡检报告</h2>
+        </div>
+      </div>
+      <div className="rule-list">
+        <div className="rule-card">暂无巡检报告（后续可导入/生成）</div>
+      </div>
+    </section>
+  )
+}
+
 function DataSourcePage() {
   const [sources, setSources] = useState<DataSource[]>(initialDataSources)
-  const [activeTab, setActiveTab] = useState<'list'|'collector'>('list')
+  const [activeTab, setActiveTab] = useState<'list'|'rules'>('list')
   const [showAddModal, setShowAddModal] = useState(false)
   const [testResult, setTestResult] = useState('')
+  const [rules, setRules] = useState<Rule[]>(initialRules)
 
-  // load real sources from backend on mount
+  // load real sources and rules from backend on mount
   React.useEffect(() => {
     fetch(`${API_BASE}/api/data-sources`).then((r) => r.json()).then((d) => {
       if (d && d.dataSources) setSources(d.dataSources)
     }).catch(() => {})
+
+    fetch(`${API_BASE}/api/collection-rules`).then((r)=>r.json()).then((d)=>{
+      if (d && d.rules) setRules(d.rules)
+    }).catch(()=>{})
   }, [])
 
   const handleTestConnection = async (payload: any) => {
@@ -313,7 +353,7 @@ function DataSourcePage() {
           </div>
           <div>
             <button className={`chip-btn ${activeTab==='list'?'':'muted'}`} onClick={() => setActiveTab('list')}>已接入数据源</button>
-            <button className={`chip-btn ${activeTab==='collector'?'':'muted'}`} onClick={() => setActiveTab('collector')}>自定义采集</button>
+            <button className={`chip-btn ${activeTab==='rules'?'':'muted'}`} onClick={() => setActiveTab('rules')}>采集规则</button>
             <button className="btn primary" style={{marginLeft:12}} onClick={() => setShowAddModal(true)}>添加数据源</button>
           </div>
         </div>
@@ -339,33 +379,37 @@ function DataSourcePage() {
           </div>
         )}
 
-        {activeTab === 'collector' && (
-          <CollectorPanel sources={sources} />
+        {activeTab === 'rules' && (
+          <div>
+            <div className="rule-list">
+              {rules.map((rule) => (
+                <div key={rule.id} className="rule-card">
+                  <div className="rule-head">
+                    <strong>{rule.name}</strong>
+                    <span className="pill status-soft">{rule.status}</span>
+                  </div>
+                  <div className="rule-body">
+                    <span>{rule.source}</span>
+                    <span>{rule.database}.{rule.table}.{rule.field}</span>
+                    <span>{rule.condition}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
       </section>
 
       <section className="panel">
         <div className="panel-header">
           <div>
-            <p className="panel-label">采集规则</p>
-            <h2>自定义采集预览</h2>
+            <p className="panel-label">说明</p>
+            <h2>页面说明</h2>
           </div>
         </div>
 
         <div className="rule-list">
-          {initialRules.map((rule) => (
-            <div key={rule.id} className="rule-card">
-              <div className="rule-head">
-                <strong>{rule.name}</strong>
-                <span className="pill status-soft">{rule.status}</span>
-              </div>
-              <div className="rule-body">
-                <span>{rule.source}</span>
-                <span>{rule.database}.{rule.table}.{rule.field}</span>
-                <span>{rule.condition}</span>
-              </div>
-            </div>
-          ))}
+          <div className="rule-card">采集规则管理已独立为二级菜单。已从此页面移除自定义采集入口（右上角按钮）。</div>
         </div>
       </section>
 
@@ -491,14 +535,14 @@ function SystemConfigPage() {
 
   const handleTestAlert = async () => {
     try {
-      const response = await fetch('http://localhost:8080/api/system-config/test', {
+      const response = await fetch(`${API_BASE}/api/system-config/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
       const data = await response.json()
       setSavedState(data.message || '告警通道测试成功')
     } catch (error) {
-      setSavedState('告警通道测试失败：后端未启动或未在 localhost:8080 提供服务')
+      setSavedState('告警通道测试失败：后端未响应')
     }
   }
 
@@ -535,18 +579,6 @@ function SystemConfigPage() {
               <input value={config.notificationMail} onChange={(e) => updateField('notificationMail', e.target.value)} />
             </label>
             <label>
-              <span>短信接收人</span>
-              <input value={config.smsReceiver} onChange={(e) => updateField('smsReceiver', e.target.value)} />
-            </label>
-            <label>
-              <span>SMTP 地址</span>
-              <input value={config.smtpHost} onChange={(e) => updateField('smtpHost', e.target.value)} />
-            </label>
-            <label>
-              <span>SMTP 端口</span>
-              <input value={config.smtpPort} onChange={(e) => updateField('smtpPort', e.target.value)} />
-            </label>
-            <label>
               <span>OpenTelemetry 地址</span>
               <input value={config.openTelemetry} onChange={(e) => updateField('openTelemetry', e.target.value)} />
             </label>
@@ -575,7 +607,7 @@ function SystemConfigPage() {
           <div className="info-box">
             <div className="info-title">选填项</div>
             <ul>
-              {['短信接收人', 'SMTP 地址', 'OpenTelemetry 地址', '告警 Webhook'].map((item) => (
+              {['OpenTelemetry 地址', '告警 Webhook'].map((item) => (
                 <li key={item}>{item}</li>
               ))}
             </ul>
