@@ -1,0 +1,11 @@
+# Frontend
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Backend
+backend/bin
+backend/*.exe
+
+# System
+.DS_Store
