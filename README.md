@@ -5,7 +5,9 @@
 ## 目录结构
 
 - `frontend/`: React 前端应用
-- `backend/`: Go API 与 mock 数据服务
+- `backend/`: Go API 与 mock 数据服务（当前未接入 MySQL 持久化）
+- `nginx/default.conf`: SPA 回退和 `/api` 反向代理配置
+- `docker-compose.yml`: MySQL 8.0 与 Nginx 容器定义
 
 ## 功能概览
 
@@ -38,7 +40,7 @@ cd backend
 go run ./cmd/server
 ```
 
-访问：http://localhost:8080/health
+访问：http://localhost:8030/health
 
 ## 生产构建
 
@@ -51,3 +53,12 @@ npm run build
 cd backend
 go build ./...
 ```
+
+## 容器部署
+
+```bash
+cd frontend && npm run build
+cd .. && docker compose up -d --force-recreate mysql nginx
+```
+
+页面访问 `http://localhost:8028`。MySQL 数据使用具名卷 `monitor-mysql-data` 持久化，重建容器不会清空数据。

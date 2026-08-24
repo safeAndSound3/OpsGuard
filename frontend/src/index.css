@@ -1,9 +1,9 @@
 :root {
-  font-family: Inter, 'Segoe UI', sans-serif;
+  font-family: Manrope, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #e2e8f0;
-  background: #0f172a;
+  color: #152238;
+  background: #f6f8fc;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -19,7 +19,7 @@ html, body, #root {
 
 body {
   min-height: 100vh;
-  background: #0b1220;
+  background: #f6f8fc;
 }
 
 button, input, select, textarea {
