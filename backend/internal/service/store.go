@@ -82,6 +82,7 @@ func InitDataSourceStore() error {
 	mu.Lock()
 	db = appDB
 	mu.Unlock()
+	go startDataSourceHealthChecker()
 	return nil
 }
 
@@ -131,7 +132,7 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	if ds.ID == "" {
 		ds.ID = fmt.Sprintf("ds-%d", time.Now().UnixNano())
 	}
-	ds.Status = "待测试"
+	ds.Status = "健康"
 	ds.LastTest = "未测试"
 	optionsJSON, err := json.Marshal(ds.Options)
 	if err != nil {
@@ -148,6 +149,99 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 		return model.DataSource{}, err
 	}
 	ds.Password = ""
+	return ds, nil
+}
+
+func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return model.DataSource{}, errors.New("data source store is not initialized")
+	}
+
+	ds.Name = strings.TrimSpace(ds.Name)
+	ds.Type = strings.TrimSpace(ds.Type)
+	ds.Host = strings.TrimSpace(ds.Host)
+	ds.Port = strings.TrimSpace(ds.Port)
+	if id == "" || ds.Name == "" || ds.Type == "" || ds.Host == "" || ds.Port == "" {
+		return model.DataSource{}, errors.New("id, name, type, host and port are required")
+	}
+	optionsJSON, err := json.Marshal(ds.Options)
+	if err != nil {
+		return model.DataSource{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var result sql.Result
+	if ds.Password == "" {
+		result, err = current.ExecContext(ctx, `UPDATE data_sources
+			SET name = ?, type = ?, host = ?, port = ?, username = ?, database_name = ?, remark = ?, options_json = ?
+			WHERE id = ?`,
+			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Database, ds.Remark, string(optionsJSON), id)
+	} else {
+		result, err = current.ExecContext(ctx, `UPDATE data_sources
+			SET name = ?, type = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, remark = ?, options_json = ?
+			WHERE id = ?`,
+			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), id)
+	}
+	if err != nil {
+		return model.DataSource{}, err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return model.DataSource{}, errors.New("data source not found")
+	}
+	updated, err := GetDataSourceByID(id)
+	if err != nil {
+		return model.DataSource{}, err
+	}
+	return updated, nil
+}
+
+func DeleteDataSource(id string) error {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return errors.New("data source store is not initialized")
+	}
+	if strings.TrimSpace(id) == "" {
+		return errors.New("id is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := current.ExecContext(ctx, `DELETE FROM data_sources WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return errors.New("data source not found")
+	}
+	return nil
+}
+
+func GetDataSourceByID(id string) (model.DataSource, error) {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return model.DataSource{}, errors.New("data source store is not initialized")
+	}
+
+	var ds model.DataSource
+	var optionsRaw string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := current.QueryRowContext(ctx, `SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(database_name, ''), COALESCE(remark, ''), COALESCE(options_json, '{}'), status, last_test FROM data_sources WHERE id = ?`, id).
+		Scan(&ds.ID, &ds.Name, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Database, &ds.Remark, &optionsRaw, &ds.Status, &ds.LastTest)
+	if err != nil {
+		return model.DataSource{}, err
+	}
+	_ = json.Unmarshal([]byte(optionsRaw), &ds.Options)
 	return ds, nil
 }
 
@@ -175,6 +269,42 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 		return false, "主机地址和端口不能为空"
 	}
 	return true, "连接参数已校验，驱动测试待接入"
+}
+
+func startDataSourceHealthChecker() {
+	checkAllDataSourceConnections()
+	ticker := time.NewTicker(30 * time.Minute)
+	for range ticker.C {
+		checkAllDataSourceConnections()
+	}
+}
+
+func checkAllDataSourceConnections() {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return
+	}
+
+	rows, err := current.Query(`SELECT id, type, host, port, COALESCE(username, ''), COALESCE(password, ''), COALESCE(database_name, '') FROM data_sources`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ds model.DataSource
+		if err := rows.Scan(&ds.ID, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Password, &ds.Database); err != nil {
+			continue
+		}
+		ok, _ := TestDataSourceConnection(ds)
+		status := "异常"
+		if ok {
+			status = "健康"
+		}
+		_, _ = current.Exec(`UPDATE data_sources SET status = ?, last_test = ? WHERE id = ?`, status, time.Now().Format("2006-01-02 15:04"), ds.ID)
+	}
 }
 
 func ListCollectionRules() []model.CollectionRule {

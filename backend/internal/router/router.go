@@ -52,8 +52,6 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 			if ds.ID == "" {
 				ds.ID = fmt.Sprintf("ds-%d", time.Now().UnixNano())
 			}
-			ds.Status = "待测试"
-			ds.LastTest = "未测试"
 			added, err := service.AddDataSource(ds)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -73,21 +71,55 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 			return
 		}
 		var ds model.DataSource
-		_ = json.NewDecoder(r.Body).Decode(&ds)
+		if err := json.NewDecoder(r.Body).Decode(&ds); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
 		ok, msg := service.TestDataSourceConnection(ds)
 		writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg, "latencyMs": 42})
 	})
 
 	// schema for a specific data source (mock)
 	mux.HandleFunc("/api/data-sources/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		p := strings.TrimPrefix(path, "/api/data-sources/")
+		if r.Method == http.MethodPut {
+			id := strings.Trim(p, "/")
+			if id == "" || strings.Contains(id, "/") {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
+			var ds model.DataSource
+			if err := json.NewDecoder(r.Body).Decode(&ds); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			updated, err := service.UpdateDataSource(id, ds)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, updated)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			id := strings.Trim(p, "/")
+			if id == "" || strings.Contains(id, "/") {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
+			if err := service.DeleteDataSource(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+			return
+		}
 		// expecting: /api/data-sources/{id}/schema
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		path := r.URL.Path
-		// trim prefix
-		p := strings.TrimPrefix(path, "/api/data-sources/")
 		if strings.HasSuffix(p, "/schema") {
 			id := strings.TrimSuffix(strings.TrimSuffix(p, "/schema"), "/")
 			schema := service.GetSchemaForDataSource(id)
