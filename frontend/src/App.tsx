@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
-import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 
-type Metric = { label: string; value: string; detail: string; change: string; tone: 'blue' | 'green' | 'amber' | 'violet' }
 type Task = { id: string; title: string; owner: string; status: string; progress: number; updated: string }
 type Source = { id: string; name: string; type: string; host: string; port: string; status: string; lastTest: string; username?: string; database?: string; remark?: string; options?: Record<string, string> }
 type MySQLInstanceStatus = { sourceId: string; sourceName: string; host: string; port: string; status: string; version?: string; uptimeSeconds: number; threadsConnected: number; maxConnections: number; slowQueries: number; questions: number; databaseSizeBytes: number; replicaStatus?: string; lastError?: string; lastCollectedAt: string }
@@ -17,12 +16,45 @@ const api = '/api'
 const importedDashboardKey = 'opsguard_imported_mysql_dashboards'
 const sourceTypes: SourceType[] = ['MySQL', 'Kafka', 'Redis', 'PostgreSQL', 'Elasticsearch']
 const defaultPorts: Record<SourceType, string> = { MySQL: '3306', Kafka: '9092', Redis: '6379', PostgreSQL: '5432', Elasticsearch: '9200' }
-const fallbackMetrics: Metric[] = [
-  { label: '全网请求数', value: '812.4K', detail: '次 / 分钟', change: '+12.8%', tone: 'blue' },
-  { label: '应用可用率', value: '99.97%', detail: '近 30 天 SLA', change: '+0.03%', tone: 'green' },
-  { label: '平均响应时间', value: '184ms', detail: 'P95 响应时间', change: '−9.4%', tone: 'violet' },
-  { label: '待处理告警', value: '7', detail: '较昨日减少 2 条', change: '需关注', tone: 'amber' },
-]
+const mysqlMetricInfo: Record<string, string> = {
+  Aborted_clients: '客户端异常断开数量，偏高通常说明应用连接释放或网络不稳定',
+  Aborted_connects: '失败连接数量，偏高通常说明账号、密码、连接数或网络存在问题',
+  Bytes_received: 'MySQL 接收的网络流量',
+  Bytes_sent: 'MySQL 发送的网络流量',
+  Com_delete: 'DELETE 语句累计执行次数',
+  Com_insert: 'INSERT 语句累计执行次数',
+  Com_select: 'SELECT 语句累计执行次数',
+  Com_update: 'UPDATE 语句累计执行次数',
+  Connections: '累计连接尝试次数',
+  Created_tmp_disk_tables: '磁盘临时表数量，偏高通常代表排序、分组或大结果集压力',
+  Created_tmp_tables: '内存临时表数量，用于判断查询中间结果压力',
+  Handler_read_rnd_next: '顺序扫描读取次数，偏高通常说明全表扫描较多',
+  Innodb_buffer_pool_pages_dirty: 'Buffer Pool 脏页数量，反映待刷盘压力',
+  Innodb_buffer_pool_pages_free: 'Buffer Pool 空闲页数量',
+  Innodb_buffer_pool_pages_total: 'Buffer Pool 总页数',
+  Innodb_buffer_pool_read_requests: 'Buffer Pool 逻辑读次数',
+  Innodb_buffer_pool_reads: 'Buffer Pool 物理读次数，偏高说明内存命中不足',
+  Innodb_log_waits: 'Redo Log 等待次数，偏高说明日志写入成为瓶颈',
+  Innodb_row_lock_current_waits: '当前正在等待的行锁数量',
+  Innodb_row_lock_time: '行锁等待累计耗时',
+  Innodb_row_lock_waits: '行锁等待累计次数',
+  Max_used_connections: '历史最大同时连接数',
+  Questions: '客户端发起的语句数量，可用于观察业务请求压力',
+  Queries: '服务端执行的语句数量，包含存储过程内部语句',
+  Select_full_join: '未使用索引的 Join 次数，偏高需要检查索引',
+  Select_scan: '全表扫描次数，偏高需要检查索引和 SQL 写法',
+  Slow_queries: '慢查询累计数量',
+  Table_locks_waited: '表锁等待次数，偏高会影响并发写入',
+  Threads_connected: '当前已打开连接数',
+  Threads_running: '当前正在运行的线程数',
+  Uptime: '实例启动后的运行秒数',
+  database_size_bytes: '当前实例所有库的数据和索引总大小',
+  innodb_buffer_pool_size: 'InnoDB Buffer Pool 配置大小',
+  max_connections: '允许的最大连接数',
+  process_locked: '当前处于锁等待的会话数量',
+  process_running: '当前处于 Query 状态的会话数量',
+  replica_status: '复制状态，主库或无权限时会显示非从库/无权限',
+}
 const fallbackTasks: Task[] = [
   { id: 'insp-101', title: '订单系统巡检', owner: '刘旭', status: '运行中', progress: 84, updated: '10 分钟前' },
   { id: 'insp-102', title: '支付链路巡检', owner: '周琳', status: '待执行', progress: 24, updated: '32 分钟前' },
@@ -89,44 +121,62 @@ function AccountMenu({ onLogout }: { onLogout: () => void | Promise<void> }) {
   }, [open])
   return <div className="account-menu" ref={menuRef}><button className="user-avatar" type="button" aria-label="用户菜单" aria-expanded={open} onClick={() => setOpen(!open)}><span>管</span></button>{open && <section className="surface account-popover"><button type="button" onClick={() => { setOpen(false); navigate('/config') }}>修改密码</button><button className="danger" type="button" onClick={() => { setOpen(false); void onLogout() }}>注销登录</button></section>}</div>
 }
-function Sidebar() { const items = [['overview', '监控总览', '/'], ['inspection', '巡检任务', '/inspection'], ['alert', '平台告警', '/alerts'], ['data', '数据节点', '/datasources'], ['settings', '系统配置', '/config']]; return <aside className="sidebar"><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>OpsGuard</b><small>巡检平台</small></div></div><nav>{items.map(([icon, label, path]) => <NavLink key={path} end={path === '/'} to={path} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name={icon} /><span>{label}</span></NavLink>)}</nav><div className="sidebar-footer"><span className="online-dot" /><span>23 / 26 节点在线</span><small>采集服务运行正常</small></div></aside> }
+function Sidebar() {
+  const currentLocation = useLocation()
+  const [dashboards, setDashboards] = useState<MySQLInstanceStatus[]>([])
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const response = await fetch(`${api}/mysql-monitor/instances`)
+        const data = await response.json()
+        setDashboards(Array.isArray(data.instances) ? data.instances : [])
+      } catch {
+        setDashboards([])
+      }
+    }
+    void load()
+    const timer = window.setInterval(() => void load(), 15000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const items = [['inspection', '巡检任务', '/inspection'], ['alert', '平台告警', '/alerts'], ['data', '数据节点', '/datasources'], ['settings', '系统配置', '/config']]
+  return <aside className="sidebar"><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>OpsGuard</b><small>巡检平台</small></div></div><nav><NavLink end to="/" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name="overview" /><span>监控总览</span></NavLink>{dashboards.length > 0 && <div className="subnav">{dashboards.map(item => <NavLink key={item.sourceId} to={`/?dashboard=${item.sourceId}`} className={({ isActive }) => `subnav-link ${isActive && currentLocation.search.includes(item.sourceId) ? 'active' : ''}`}><span className={item.status === '健康' ? 'mini-dot ok' : 'mini-dot warn'} /><em>{item.sourceName}</em></NavLink>)}</div>}{items.map(([icon, label, path]) => <NavLink key={path} end={path === '/'} to={path} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name={icon} /><span>{label}</span></NavLink>)}</nav><div className="sidebar-footer"><span className="online-dot" /><span>{dashboards.filter(item => item.status === '健康').length} / {dashboards.length} 节点在线</span><small>采集服务运行正常</small></div></aside>
+}
 function Dashboard() {
-  const [metrics, setMetrics] = useState(fallbackMetrics)
-  const [mysqlDashboards, setMysqlDashboards] = useState<MySQLDashboardData[]>([])
+  const [searchParams] = useSearchParams()
+  const [mysqlInstances, setMysqlInstances] = useState<MySQLInstanceStatus[]>([])
+  const [selectedDashboard, setSelectedDashboard] = useState<MySQLDashboardData | null>(null)
   const [loading, setLoading] = useState(false)
+  const selectedDashboardId = searchParams.get('dashboard')
   const refresh = async () => {
     setLoading(true)
     try {
-      const overviewResponse = await fetch(`${api}/overview`)
-      const overviewData = await overviewResponse.json()
-      if (Array.isArray(overviewData.metrics)) {
-        setMetrics(overviewData.metrics.map((m: any, i: number) => ({ ...fallbackMetrics[i % 4], label: m.label ?? m.name ?? fallbackMetrics[i % 4].label, value: m.value ?? fallbackMetrics[i % 4].value })))
-      }
-      const importedIds = getImportedDashboardIds()
-      if (importedIds.length === 0) {
-        setMysqlDashboards([])
-        return
-      }
       const instanceResponse = await fetch(`${api}/mysql-monitor/instances`)
       const instanceData = await instanceResponse.json()
       const instances: MySQLInstanceStatus[] = Array.isArray(instanceData.instances) ? instanceData.instances : []
-      const selected = instances.filter(item => importedIds.includes(item.sourceId))
-      const dashboards = await Promise.all(selected.map(async status => {
+      setMysqlInstances(instances)
+      if (!selectedDashboardId) {
+        setSelectedDashboard(null)
+        return
+      }
+      const selected = instances.find(item => item.sourceId === selectedDashboardId)
+      if (!selected) {
+        setSelectedDashboard(null)
+        return
+      }
         const [metricResponse, slowResponse] = await Promise.all([
-          fetch(`${api}/mysql-monitor/instances/${status.sourceId}/metrics?limit=1`),
-          fetch(`${api}/mysql-monitor/instances/${status.sourceId}/slow-queries?limit=8`),
+        fetch(`${api}/mysql-monitor/instances/${selected.sourceId}/metrics?limit=1`),
+        fetch(`${api}/mysql-monitor/instances/${selected.sourceId}/slow-queries?limit=8`),
         ])
         const metricData = await metricResponse.json()
         const slowData = await slowResponse.json()
-        return {
-          status,
+      setSelectedDashboard({
+        status: selected,
           snapshot: Array.isArray(metricData.snapshots) ? metricData.snapshots[0] : undefined,
           slowQueries: Array.isArray(slowData.slowQueries) ? slowData.slowQueries : [],
-        }
-      }))
-      setMysqlDashboards(dashboards)
+      })
     } catch {
-      setMysqlDashboards([])
+      setMysqlInstances([])
+      setSelectedDashboard(null)
     } finally {
       setLoading(false)
     }
@@ -135,10 +185,16 @@ function Dashboard() {
     void refresh()
     const timer = window.setInterval(() => void refresh(), 15000)
     return () => window.clearInterval(timer)
-  }, [])
-  return <div className="page dashboard"><section className="hero"><div><h2>平台运行平稳，<em>服务健康。</em></h2><p>{mysqlDashboards.length > 0 ? `已导入 ${mysqlDashboards.length} 个 MySQL 监控大屏，数据每 15 秒同步。` : '系统已连续稳定运行 32 天，关键业务链路处于预期区间。'}</p></div><button className="button secondary" onClick={refresh} disabled={loading}>{loading ? '同步中…' : '刷新数据'} <Icon name="arrow" /></button></section><section className="metric-grid">{metrics.map((m) => <article className={`metric-card ${m.tone}`} key={m.label}><div className="metric-top"><span>{m.label}</span><span className="metric-symbol">⌁</span></div><strong>{m.value}</strong><div className="metric-foot"><span>{m.detail}</span><b>{m.change}</b></div></article>)}</section>{mysqlDashboards.length === 0 ? <section className="surface dashboard-empty"><b>暂无已导入大屏</b><span>在数据节点中点击 MySQL 节点的导入大屏按钮后，这里会按固定模板展示该实例的全部采集数据。</span></section> : <section className="mysql-dashboard-stack">{mysqlDashboards.map(item => <MySQLDashboard key={item.status.sourceId} data={item} />)}</section>}</div>
+  }, [selectedDashboardId])
+  return <div className="page dashboard"><section className="hero"><div><h2>{selectedDashboardId ? 'MySQL 监控大屏' : '监控总览'}</h2><p>{selectedDashboardId ? '当前展示单个 MySQL 实例大屏，数据每 15 秒同步。' : `当前接入 ${mysqlInstances.length} 个 MySQL 监控节点。点击左侧二级菜单查看单实例大屏。`}</p></div><button className="button secondary" onClick={refresh} disabled={loading}>{loading ? '同步中...' : '刷新数据'} <Icon name="arrow" /></button></section>{selectedDashboardId ? (selectedDashboard ? <section className="mysql-dashboard-stack"><MySQLDashboard data={selectedDashboard} /></section> : <section className="surface dashboard-empty"><b>未找到该大屏</b><span>该 MySQL 节点可能尚未采集成功，或已经被删除。</span></section>) : <MonitorOverview instances={mysqlInstances} />}</div>
+}
+function MonitorOverview({ instances }: { instances: MySQLInstanceStatus[] }) {
+  const healthy = instances.filter(item => item.status === '健康').length
+  const latest = instances.map(item => new Date(item.lastCollectedAt).getTime()).filter(Number.isFinite).sort((a, b) => b - a)[0]
+  return <section className="overview-stack">{instances.length === 0 ? <div className="surface dashboard-empty"><b>暂无监控节点</b><span>配置 MySQL 数据节点并等待采集成功后，这里会展示关键运行信息。</span></div> : <><div className="overview-kpis"><DashboardKpi label="MySQL 节点" value={String(instances.length)} detail="已接入监控实例" /><DashboardKpi label="健康节点" value={String(healthy)} detail="当前状态健康" /><DashboardKpi label="异常节点" value={String(instances.length - healthy)} detail="需要关注" /><DashboardKpi label="最近采集" value={latest ? formatCollectedAt(new Date(latest).toISOString()) : '待采集'} detail="最新采集时间" /></div><div className="overview-node-list">{instances.map(item => <article className="surface overview-node" key={item.sourceId}><div><b>{item.sourceName}</b><span>{item.host}:{item.port} · MySQL {item.version || '-'}</span></div><span className={`tag ${item.status === '健康' ? 'success' : 'pending'}`}>{item.status}</span><time>{formatCollectedAt(item.lastCollectedAt)}</time></article>)}</div></>}</section>
 }
 function MySQLDashboard({ data }: { data: MySQLDashboardData }) {
+  const [showDetails, setShowDetails] = useState(false)
   const status = data.status
   const metrics = data.snapshot?.metrics || {}
   const connectionPercent = percent(status.threadsConnected, status.maxConnections)
@@ -146,8 +202,8 @@ function MySQLDashboard({ data }: { data: MySQLDashboardData }) {
   const bufferFree = metricNumber(metrics, 'Innodb_buffer_pool_pages_free')
   const bufferDirty = metricNumber(metrics, 'Innodb_buffer_pool_pages_dirty')
   const bufferUsedPercent = bufferTotal > 0 ? Math.round(((bufferTotal - bufferFree) / bufferTotal) * 100) : 0
-  const allMetrics = Object.entries(metrics).sort(([a], [b]) => a.localeCompare(b))
-  return <article className="mysql-template surface"><header className="mysql-template-head"><div><span className="template-kicker">MySQL 固定大屏模板</span><h2>{status.sourceName}</h2><p>{status.host}:{status.port} · MySQL {status.version || '-'}</p></div><div className="template-status"><span className={`tag ${status.status === '健康' ? 'success' : 'pending'}`}>{status.status}</span><small>最近采集：{formatCollectedAt(status.lastCollectedAt)}</small></div></header><section className="mysql-hero-grid"><div className="mysql-score"><div className="mysql-ring" style={{ '--ring': `${connectionPercent * 3.6}deg` } as CSSProperties & Record<string, string>}><span>{connectionPercent}%</span></div><b>连接使用率</b><small>{status.threadsConnected} / {status.maxConnections}</small></div><div className="mysql-kpi-grid"><DashboardKpi label="存活时间" value={formatDuration(status.uptimeSeconds)} detail="Uptime" /><DashboardKpi label="慢查询" value={String(status.slowQueries)} detail="Slow_queries" /><DashboardKpi label="库大小" value={formatBytes(status.databaseSizeBytes)} detail="information_schema" /><DashboardKpi label="复制状态" value={formatReplicaStatus(status.replicaStatus)} detail="Replica" /></div></section><section className="mysql-panels"><div className="surface mysql-panel"><SectionTitle title="连接与流量" /><MetricRows rows={[['累计连接', metrics.Connections], ['中止客户端', metrics.Aborted_clients], ['中止连接', metrics.Aborted_connects], ['接收流量', formatBytes(metricNumber(metrics, 'Bytes_received'))], ['发送流量', formatBytes(metricNumber(metrics, 'Bytes_sent'))], ['运行线程', metrics.Threads_running]]} /></div><div className="surface mysql-panel"><SectionTitle title="查询吞吐" /><MetricRows rows={[['Questions', metrics.Questions], ['Queries', metrics.Queries], ['SELECT', metrics.Com_select], ['INSERT', metrics.Com_insert], ['UPDATE', metrics.Com_update], ['DELETE', metrics.Com_delete]]} /></div><div className="surface mysql-panel"><SectionTitle title="InnoDB Buffer" /><div className="buffer-meter"><i style={{ width: `${bufferUsedPercent}%` }} /></div><MetricRows rows={[['使用率', `${bufferUsedPercent}%`], ['脏页', String(bufferDirty)], ['空闲页', String(bufferFree)], ['物理读', metrics.Innodb_buffer_pool_reads], ['逻辑读', metrics.Innodb_buffer_pool_read_requests], ['日志等待', metrics.Innodb_log_waits]]} /></div><div className="surface mysql-panel"><SectionTitle title="风险信号" /><MetricRows rows={[['全表扫描', metrics.Select_scan], ['无索引 Join', metrics.Select_full_join], ['磁盘临时表', metrics.Created_tmp_disk_tables], ['临时表', metrics.Created_tmp_tables], ['行锁等待', metrics.Innodb_row_lock_waits], ['表锁等待', metrics.Table_locks_waited]]} /></div></section><section className="surface slow-panel"><SectionTitle title="慢 SQL / 高耗时样本" action={`${data.slowQueries.length} 条`} />{data.slowQueries.length === 0 ? <div className="empty-state"><b>暂无慢 SQL 样本</b><span>当前实例 performance_schema 没有返回可展示的 digest 数据。</span></div> : <div className="slow-table">{data.slowQueries.map(item => <div className="slow-row" key={`${item.id}-${item.digest}`}><code>{item.queryText}</code><span>{item.schemaName || '-'}</span><b>{item.count} 次</b><b>{item.averageLatencyMs.toFixed(1)} ms</b><small>扫描 {item.rowsExamined} 行 · 返回 {item.rowsSent} 行</small></div>)}</div>}</section><section className="surface all-metrics"><SectionTitle title="全部采集指标" action={`${allMetrics.length} 项`} /><div>{allMetrics.map(([key, value]) => <span key={key}><b>{key}</b><em>{value}</em></span>)}</div></section></article>
+  const allMetrics = Object.entries(metrics).filter(([key]) => mysqlMetricInfo[key]).sort(([a], [b]) => a.localeCompare(b))
+  return <article className="mysql-template surface"><header className="mysql-template-head"><div><span className="template-kicker">MySQL 固定大屏模板</span><h2>{status.sourceName}</h2><p>{status.host}:{status.port} · MySQL {status.version || '-'}</p></div><div className="template-status"><span className={`tag ${status.status === '健康' ? 'success' : 'pending'}`}>{status.status}</span><small>最近采集：{formatCollectedAt(status.lastCollectedAt)}</small></div></header><section className="mysql-hero-grid"><div className="mysql-score"><div className="mysql-ring" style={{ '--ring': `${connectionPercent * 3.6}deg` } as CSSProperties & Record<string, string>}><span>{connectionPercent}%</span></div><b>连接使用率</b><small>{status.threadsConnected} / {status.maxConnections}</small></div><div className="mysql-kpi-grid"><DashboardKpi label="存活时间" value={formatDuration(status.uptimeSeconds)} detail="MySQL 实例持续运行时间" /><DashboardKpi label="慢查询" value={String(status.slowQueries)} detail="累计慢 SQL 数" /><DashboardKpi label="库大小" value={formatBytes(status.databaseSizeBytes)} detail="数据和索引总量" /><DashboardKpi label="复制状态" value={formatReplicaStatus(status.replicaStatus)} detail="主从复制健康度" /></div></section><div className="dashboard-detail-toggle"><button className="button secondary" type="button" onClick={() => setShowDetails(!showDetails)}>{showDetails ? '收起详细数据' : '展开详细数据'}</button></div>{showDetails && <><section className="mysql-panels"><div className="surface mysql-panel"><SectionTitle title="连接与流量" /><MetricRows rows={[['累计连接', metrics.Connections], ['中止客户端', metrics.Aborted_clients], ['中止连接', metrics.Aborted_connects], ['接收流量', formatBytes(metricNumber(metrics, 'Bytes_received'))], ['发送流量', formatBytes(metricNumber(metrics, 'Bytes_sent'))], ['运行线程', metrics.Threads_running]]} /></div><div className="surface mysql-panel"><SectionTitle title="查询吞吐" /><MetricRows rows={[['Questions', metrics.Questions], ['Queries', metrics.Queries], ['SELECT', metrics.Com_select], ['INSERT', metrics.Com_insert], ['UPDATE', metrics.Com_update], ['DELETE', metrics.Com_delete]]} /></div><div className="surface mysql-panel"><SectionTitle title="InnoDB Buffer" /><div className="buffer-meter"><i style={{ width: `${bufferUsedPercent}%` }} /></div><MetricRows rows={[['使用率', `${bufferUsedPercent}%`], ['脏页', String(bufferDirty)], ['空闲页', String(bufferFree)], ['物理读', metrics.Innodb_buffer_pool_reads], ['逻辑读', metrics.Innodb_buffer_pool_read_requests], ['日志等待', metrics.Innodb_log_waits]]} /></div><div className="surface mysql-panel"><SectionTitle title="风险信号" /><MetricRows rows={[['全表扫描', metrics.Select_scan], ['无索引 Join', metrics.Select_full_join], ['磁盘临时表', metrics.Created_tmp_disk_tables], ['临时表', metrics.Created_tmp_tables], ['行锁等待', metrics.Innodb_row_lock_waits], ['表锁等待', metrics.Table_locks_waited]]} /></div></section><section className="surface slow-panel"><SectionTitle title="慢 SQL / 高耗时样本" action={`${data.slowQueries.length} 条`} />{data.slowQueries.length === 0 ? <div className="empty-state"><b>暂无慢 SQL 样本</b><span>当前实例 performance_schema 没有返回可展示的 digest 数据。</span></div> : <div className="slow-table">{data.slowQueries.map(item => <div className="slow-row" key={`${item.id}-${item.digest}`}><code>{item.queryText}</code><span>{item.schemaName || '-'}</span><b>{item.count} 次</b><b>{item.averageLatencyMs.toFixed(1)} ms</b><small>扫描 {item.rowsExamined} 行 · 返回 {item.rowsSent} 行</small></div>)}</div>}</section><section className="surface all-metrics"><SectionTitle title="全部采集指标" action={`${allMetrics.length} 项`} /><div>{allMetrics.map(([key, value]) => <span key={key}><b>{key}</b><small>{mysqlMetricInfo[key]}</small><em>{value}</em></span>)}</div></section></>}</article>
 }
 function DashboardKpi({ label, value, detail }: { label: string; value: string; detail: string }) { return <div className="dashboard-kpi"><span>{label}</span><b>{value}</b><small>{detail}</small></div> }
 function MetricRows({ rows }: { rows: Array<[string, string | undefined]> }) { return <div className="metric-rows">{rows.map(([label, value]) => <p key={label}><span>{label}</span><b>{value || '-'}</b></p>)}</div> }
@@ -283,7 +339,7 @@ function DataSources() {
     }
     saveImportedDashboardId(source.id)
     setMessage(`${source.name} 已导入监控总览`)
-    navigate('/')
+    navigate(`/?dashboard=${source.id}`)
   }
 
   const statusBySourceId = new Map(mysqlStatuses.map(item => [item.sourceId, item]))
@@ -292,7 +348,7 @@ function DataSources() {
     return (live?.status || source.status) === '健康'
   }).length
 
-  return <div className="page"><PageHead title="数据节点" description={`实时同步节点采集状态，当前 ${healthyCount} / ${sources.length} 个节点健康。`} action="添加数据节点" onAction={openCreateModal} /><section className="node-toolbar"><span>{refreshing ? '正在同步节点状态' : '每 15 秒自动刷新'}</span><button className="button secondary" type="button" onClick={() => void loadSources()} disabled={refreshing}>{refreshing ? '刷新中...' : '刷新状态'}</button></section>{sources.length === 0 ? <section className="surface empty-state"><b>暂无数据节点</b><span>点击右上角添加数据节点，完成连接测试后即可保存。</span></section> : <section className="source-list">{sources.map(s => { const live = statusBySourceId.get(s.id); const status = live?.status || (s.type === 'MySQL' ? '待采集' : s.status); const isHealthy = status === '健康'; return <article className={`surface source-row ${isHealthy ? 'healthy' : 'warning'}`} key={s.id}><div className="node-main"><span className="source-logo">{s.type.slice(0, 1)}</span><div><h3>{s.name}</h3><p>{s.type} · {s.host}:{s.port}{s.database ? ` · ${s.database}` : ''}</p>{s.remark && <small className="source-remark">{s.remark}</small>}</div></div><div className="node-status"><span className={`tag ${isHealthy ? 'success' : 'pending'}`}>{status}</span><small>{live?.lastError || (live ? '采集正常' : '等待采集数据')}</small></div><div className="node-metrics"><span><b>{formatDuration(live?.uptimeSeconds || 0)}</b><small>存活时间</small></span><span><b>{live ? `${live.threadsConnected}/${live.maxConnections}` : '-'}</b><small>连接数</small></span><span><b>{live?.slowQueries ?? '-'}</b><small>慢查询</small></span><span><b>{live ? formatBytes(live.databaseSizeBytes) : '-'}</b><small>库大小</small></span></div><div className="node-meta"><span>最近采集：{formatCollectedAt(live?.lastCollectedAt || s.lastTest)}</span><span>{live?.version ? `MySQL ${live.version}` : '监控数据待生成'}</span></div><div className="source-actions">{s.type === 'MySQL' && <button type="button" onClick={() => importDashboard(s)}>导入大屏</button>}<button type="button" onClick={() => openEditModal(s)}>编辑</button><button className="danger" type="button" onClick={() => void deleteSource(s)}>删除</button></div></article> })}</section>}{modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={closeModal}><section className="surface source-modal" role="dialog" aria-modal="true" aria-labelledby="source-modal-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="source-modal-title">{editingSource ? '编辑数据节点' : '添加数据节点'}</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={closeModal}>×</button></header><form key={`${editingSource?.id || 'new'}-${sourceType}`} onSubmit={saveSource}><div className="type-picker" role="group" aria-label="数据类型">{sourceTypes.map(type => <button key={type} type="button" className={sourceType === type ? 'active' : ''} onClick={() => { setSourceType(type); if (!editingSource || editingSource.type !== type) setOptionRows([{ key: '', value: '' }, { key: '', value: '' }]) }}>{type}</button>)}</div><div className="modal-form"><Field label="数据节点名称" name="name" value={editingSource?.name || `${sourceType} 生产节点`} required /><label>主机地址 <span className="required-mark">*</span><input name="host" defaultValue={editingSource?.host || ''} placeholder="例如 127.0.0.1 或 broker.internal" required /></label><label>端口 <span className="required-mark">*</span><input name="port" defaultValue={editingSource?.port || defaultPorts[sourceType]} required /></label>{sourceType === 'Kafka' ? <label>Topic / Consumer Group<input name="topic" defaultValue={editingSource?.database || ''} placeholder="例如 ops-events / ops-monitor" /></label> : <label>数据库 / 命名空间<input name="database" defaultValue={editingSource?.database || ''} placeholder={sourceType === 'Redis' ? '例如 0' : '例如 opsguard_lab'} /></label>}<label>用户名{sourceType === 'MySQL' && <span className="required-mark"> *</span>}<input name="username" defaultValue={editingSource?.username || ''} required={sourceType === 'MySQL'} placeholder={sourceType === 'Redis' ? '可选' : '请输入用户名'} /></label><label>密码{sourceType === 'MySQL' && !editingSource && <span className="required-mark"> *</span>}<input name="password" type="password" required={sourceType === 'MySQL' && !editingSource} placeholder={editingSource ? '留空则不修改密码' : '请输入密码'} /></label>{sourceType === 'Elasticsearch' && <label>索引前缀<input name="indexPrefix" placeholder="例如 logs-*" /></label>}<label className="wide">备注<textarea name="remark" defaultValue={editingSource?.remark || ''} placeholder="记录用途、负责人、环境或注意事项" /></label><div className="wide option-editor"><div><b>连接参数</b><span>示例：ssl true、timeout 10s、brokers host1:9092,host2:9092</span></div>{optionRows.map((row, index) => <div className="option-row" key={index}><input aria-label="参数名" placeholder="key" value={row.key} onChange={(event) => setOptionRows(rows => rows.map((item, i) => i === index ? { ...item, key: event.target.value } : item))} /><input aria-label="参数值" placeholder="value" value={row.value} onChange={(event) => setOptionRows(rows => rows.map((item, i) => i === index ? { ...item, value: event.target.value } : item))} /></div>)}<button className="text-button" type="button" onClick={() => setOptionRows(rows => [...rows, { key: '', value: '' }])}>添加参数 <Icon name="plus" /></button></div></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.form; if (form) void testConnection(form) }} disabled={testing}>{testing ? '测试中...' : '测试连接'}</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
+  return <div className="page"><PageHead title="数据节点" description={`实时同步节点采集状态，当前 ${healthyCount} / ${sources.length} 个节点健康。`} action="添加数据节点" onAction={openCreateModal} /><section className="node-toolbar"><span>{refreshing ? '正在同步节点状态' : '每 15 秒自动刷新'}</span><button className="button secondary" type="button" onClick={() => void loadSources()} disabled={refreshing}>{refreshing ? '刷新中...' : '刷新状态'}</button></section>{sources.length === 0 ? <section className="surface empty-state"><b>暂无数据节点</b><span>点击右上角添加数据节点，完成连接测试后即可保存。</span></section> : <section className="source-list">{sources.map(s => { const live = statusBySourceId.get(s.id); const status = live?.status || (s.type === 'MySQL' ? '待采集' : s.status); const isHealthy = status === '健康'; return <article className={`surface source-row ${isHealthy ? 'healthy' : 'warning'}`} key={s.id}><div className="node-main"><span className="source-logo">{s.type.slice(0, 1)}</span><div><h3>{s.name}</h3><p>{s.type} · {s.host}:{s.port}{s.database ? ` · ${s.database}` : ''}</p>{s.remark && <small className="source-remark">{s.remark}</small>}</div></div><div className="node-status"><span className={`tag ${isHealthy ? 'success' : 'pending'}`}>{status}</span><small>{live?.lastError || (live ? '采集正常' : '等待采集数据')}</small></div><div className="node-meta"><span>最近采集：{formatCollectedAt(live?.lastCollectedAt || s.lastTest)}</span><span>{live?.version ? `MySQL ${live.version}` : '监控数据待生成'}</span></div><div className="source-actions">{s.type === 'MySQL' && <button type="button" onClick={() => importDashboard(s)}>导入大屏</button>}<button type="button" onClick={() => openEditModal(s)}>编辑</button><button className="danger" type="button" onClick={() => void deleteSource(s)}>删除</button></div></article> })}</section>}{modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={closeModal}><section className="surface source-modal" role="dialog" aria-modal="true" aria-labelledby="source-modal-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="source-modal-title">{editingSource ? '编辑数据节点' : '添加数据节点'}</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={closeModal}>×</button></header><form key={`${editingSource?.id || 'new'}-${sourceType}`} onSubmit={saveSource}><div className="type-picker" role="group" aria-label="数据类型">{sourceTypes.map(type => <button key={type} type="button" className={sourceType === type ? 'active' : ''} onClick={() => { setSourceType(type); if (!editingSource || editingSource.type !== type) setOptionRows([{ key: '', value: '' }, { key: '', value: '' }]) }}>{type}</button>)}</div><div className="modal-form"><Field label="数据节点名称" name="name" value={editingSource?.name || `${sourceType} 生产节点`} required /><label>主机地址 <span className="required-mark">*</span><input name="host" defaultValue={editingSource?.host || ''} placeholder="例如 127.0.0.1 或 broker.internal" required /></label><label>端口 <span className="required-mark">*</span><input name="port" defaultValue={editingSource?.port || defaultPorts[sourceType]} required /></label>{sourceType === 'Kafka' ? <label>Topic / Consumer Group<input name="topic" defaultValue={editingSource?.database || ''} placeholder="例如 ops-events / ops-monitor" /></label> : <label>数据库 / 命名空间<input name="database" defaultValue={editingSource?.database || ''} placeholder={sourceType === 'Redis' ? '例如 0' : '例如 opsguard_lab'} /></label>}<label>用户名{sourceType === 'MySQL' && <span className="required-mark"> *</span>}<input name="username" defaultValue={editingSource?.username || ''} required={sourceType === 'MySQL'} placeholder={sourceType === 'Redis' ? '可选' : '请输入用户名'} /></label><label>密码{sourceType === 'MySQL' && !editingSource && <span className="required-mark"> *</span>}<input name="password" type="password" required={sourceType === 'MySQL' && !editingSource} placeholder={editingSource ? '留空则不修改密码' : '请输入密码'} /></label>{sourceType === 'Elasticsearch' && <label>索引前缀<input name="indexPrefix" placeholder="例如 logs-*" /></label>}<label className="wide">备注<textarea name="remark" defaultValue={editingSource?.remark || ''} placeholder="记录用途、负责人、环境或注意事项" /></label><div className="wide option-editor"><div><b>连接参数</b><span>示例：ssl true、timeout 10s、brokers host1:9092,host2:9092</span></div>{optionRows.map((row, index) => <div className="option-row" key={index}><input aria-label="参数名" placeholder="key" value={row.key} onChange={(event) => setOptionRows(rows => rows.map((item, i) => i === index ? { ...item, key: event.target.value } : item))} /><input aria-label="参数值" placeholder="value" value={row.value} onChange={(event) => setOptionRows(rows => rows.map((item, i) => i === index ? { ...item, value: event.target.value } : item))} /></div>)}<button className="text-button" type="button" onClick={() => setOptionRows(rows => [...rows, { key: '', value: '' }])}>添加参数 <Icon name="plus" /></button></div></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.form; if (form) void testConnection(form) }} disabled={testing}>{testing ? '测试中...' : '测试连接'}</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
 }
 function formatDuration(seconds: number) {
   if (!seconds) return '-'

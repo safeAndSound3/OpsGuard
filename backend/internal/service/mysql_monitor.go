@@ -214,18 +214,16 @@ func buildMySQLMetrics(statusVars map[string]string, globalVars map[string]strin
 		"Innodb_buffer_pool_pages_dirty", "Innodb_buffer_pool_pages_free", "Innodb_buffer_pool_pages_total",
 		"Innodb_buffer_pool_read_requests", "Innodb_buffer_pool_reads", "Innodb_data_fsyncs",
 		"Innodb_log_waits", "Innodb_row_lock_current_waits", "Innodb_row_lock_time",
-		"Innodb_row_lock_waits", "Max_used_connections", "Open_tables", "Opened_tables",
+		"Innodb_row_lock_waits", "Max_used_connections",
 		"Questions", "Queries", "Select_full_join", "Select_scan", "Slow_queries",
-		"Table_locks_waited", "Threads_connected", "Threads_created", "Threads_running", "Uptime",
+		"Table_locks_waited", "Threads_connected", "Threads_running", "Uptime",
 	})
 	copyMetricKeys(metrics, globalVars, []string{
-		"hostname", "innodb_buffer_pool_size", "log_bin", "max_connections",
-		"read_only", "super_read_only", "version", "version_comment",
+		"innodb_buffer_pool_size", "max_connections", "version",
 	})
 	for key, value := range extra {
 		metrics[key] = value
 	}
-	metrics["collected_unix"] = strconv.FormatInt(time.Now().Unix(), 10)
 	return metrics
 }
 
