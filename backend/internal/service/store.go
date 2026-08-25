@@ -537,12 +537,43 @@ func normalizeCollectionRule(rule model.CollectionRule) model.CollectionRule {
 	return rule
 }
 
-func GetSchemaForDataSource(id string) map[string][]string {
-	return map[string][]string{
-		"users":    {"id", "name", "email", "created_at"},
-		"orders":   {"id", "user_id", "amount", "status", "created_at"},
-		"products": {"id", "sku", "title", "stock", "price"},
+func GetSchemaForDataSource(id string) map[string]map[string][]string {
+	ds, err := GetDataSourceByID(id)
+	if err != nil || !strings.EqualFold(ds.Type, "mysql") {
+		return map[string]map[string][]string{}
 	}
+	password, err := getDataSourcePassword(id)
+	if err != nil {
+		return map[string]map[string][]string{}
+	}
+	ds.Password = password
+	targetDB, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?timeout=5s&parseTime=true&loc=Local", ds.Username, ds.Password, ds.Host, ds.Port))
+	if err != nil {
+		return map[string]map[string][]string{}
+	}
+	defer targetDB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	rows, err := targetDB.QueryContext(ctx, `SELECT table_schema, table_name, column_name
+		FROM information_schema.columns
+		WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+		ORDER BY table_schema, table_name, ordinal_position`)
+	if err != nil {
+		return map[string]map[string][]string{}
+	}
+	defer rows.Close()
+	result := map[string]map[string][]string{}
+	for rows.Next() {
+		var databaseName, tableName, columnName string
+		if err := rows.Scan(&databaseName, &tableName, &columnName); err != nil {
+			continue
+		}
+		if result[databaseName] == nil {
+			result[databaseName] = map[string][]string{}
+		}
+		result[databaseName][tableName] = append(result[databaseName][tableName], columnName)
+	}
+	return result
 }
 
 func getEnv(key, fallback string) string {

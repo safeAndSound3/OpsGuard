@@ -12,6 +12,7 @@ type MySQLDashboardData = { status: MySQLInstanceStatus; displayName: string; sn
 type ImportedDashboard = { sourceId: string; name: string }
 type MetricRow = [string, string | undefined, string?]
 type Rule = { id: string; name: string; source: string; database: string; table: string; field: string; condition: string; threshold?: string; timeWindow: string; lastRun: string; status: string }
+type SourceSchema = Record<string, Record<string, string[]>>
 type SourceType = 'MySQL' | 'Kafka' | 'Redis' | 'PostgreSQL' | 'Elasticsearch'
 
 const api = '/api'
@@ -541,10 +542,17 @@ function formatCollectedAt(value: string) {
 }
 function Alerts() {
   const [rules, setRules] = useState<Rule[]>([])
+  const [sources, setSources] = useState<Source[]>([])
   const [editingRule, setEditingRule] = useState<Rule | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
+  const [schemaLoading, setSchemaLoading] = useState(false)
+  const [schema, setSchema] = useState<SourceSchema>({})
+  const [selectedSourceId, setSelectedSourceId] = useState('')
+  const [selectedDatabase, setSelectedDatabase] = useState('')
+  const [selectedTable, setSelectedTable] = useState('')
+  const [selectedField, setSelectedField] = useState('')
   const loadRules = async () => {
     try {
       const response = await fetch(`${api}/collection-rules`)
@@ -554,16 +562,72 @@ function Alerts() {
       setRules(fallbackRules)
     }
   }
-  useEffect(() => { void loadRules() }, [])
+  const loadSources = async () => {
+    try {
+      const response = await fetch(`${api}/data-sources`)
+      const data = await response.json()
+      setSources(Array.isArray(data.dataSources) ? data.dataSources : [])
+    } catch {
+      setSources([])
+    }
+  }
+  useEffect(() => { void loadRules(); void loadSources() }, [])
+  const loadSchema = async (sourceId: string, preferredDatabase = '', preferredTable = '', preferredField = '') => {
+    if (!sourceId) {
+      setSchema({})
+      setSelectedDatabase('')
+      setSelectedTable('')
+      setSelectedField('')
+      return
+    }
+    setSchemaLoading(true)
+    try {
+      const response = await fetch(`${api}/data-sources/${sourceId}/schema`)
+      const data = await response.json()
+      const nextSchema: SourceSchema = data.schema && typeof data.schema === 'object' ? data.schema : {}
+      const databases = Object.keys(nextSchema)
+      const database = preferredDatabase && nextSchema[preferredDatabase] ? preferredDatabase : databases[0] || ''
+      const tables = database ? Object.keys(nextSchema[database] || {}) : []
+      const table = preferredTable && tables.includes(preferredTable) ? preferredTable : tables[0] || ''
+      const fields = database && table ? nextSchema[database]?.[table] || [] : []
+      const field = preferredField && fields.includes(preferredField) ? preferredField : fields[0] || ''
+      setSchema(nextSchema)
+      setSelectedDatabase(database)
+      setSelectedTable(table)
+      setSelectedField(field)
+    } catch {
+      setSchema({})
+      setSelectedDatabase('')
+      setSelectedTable('')
+      setSelectedField('')
+      setMessage('获取数据源结构失败')
+    } finally {
+      setSchemaLoading(false)
+    }
+  }
   const openRuleModal = (rule?: Rule) => {
+    const source = rule ? sources.find(item => item.name === rule.source || item.id === rule.source) : sources[0]
     setEditingRule(rule || null)
+    setSelectedSourceId(source?.id || '')
+    setSelectedDatabase(rule?.database || '')
+    setSelectedTable(rule?.table || '')
+    setSelectedField(rule?.field || '')
     setModalOpen(true)
+    if (source?.id) void loadSchema(source.id, rule?.database || '', rule?.table || '', rule?.field || '')
   }
   const closeRuleModal = () => {
     setModalOpen(false)
     setEditingRule(null)
     setSaving(false)
+    setSchema({})
+    setSelectedSourceId('')
+    setSelectedDatabase('')
+    setSelectedTable('')
+    setSelectedField('')
   }
+  const databases = Object.keys(schema)
+  const tables = selectedDatabase ? Object.keys(schema[selectedDatabase] || {}) : []
+  const fields = selectedDatabase && selectedTable ? schema[selectedDatabase]?.[selectedTable] || [] : []
   const saveRule = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setSaving(true)
@@ -571,10 +635,10 @@ function Alerts() {
     const payload: Rule = {
       id: editingRule?.id || '',
       name: String(form.get('name') || ''),
-      source: String(form.get('source') || 'MySQL'),
-      database: String(form.get('database') || ''),
-      table: String(form.get('table') || ''),
-      field: String(form.get('field') || ''),
+      source: selectedSourceId,
+      database: selectedDatabase,
+      table: selectedTable,
+      field: selectedField,
       condition: String(form.get('condition') || '大于'),
       threshold: String(form.get('threshold') || ''),
       timeWindow: String(form.get('timeWindow') || '5分钟'),
@@ -605,7 +669,7 @@ function Alerts() {
       setMessage(error instanceof Error ? error.message : '删除失败')
     }
   }
-  return <div className="page"><PageHead title="告警规则" description="配置数据源指标阈值、时间窗口和启停状态。" action="新建规则" onAction={() => openRuleModal()} /><section className="surface rules">{rules.length === 0 ? <div className="empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，后续采集任务会按规则进行告警判断。</span></div> : rules.map(r => <div className="rule-row alert-rule-row" key={r.id}><i className="rule-icon">⌁</i><div><b>{r.name}</b><span>{r.source} · {r.database || '-'}.{r.table || '-'}.{r.field || '-'} · {r.condition}{r.threshold ? ` ${r.threshold}` : ''} · {r.timeWindow}</span></div><span className={`tag ${r.status === '启用' ? 'success' : 'pending'}`}>{r.status}</span><div className="rule-actions"><button className="text-button" type="button" onClick={() => openRuleModal(r)}>编辑 <Icon name="arrow" /></button><button className="text-button danger" type="button" onClick={() => void deleteRule(r)}>删除</button></div></div>)}</section>{modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={closeRuleModal}><section className="surface source-modal alert-rule-modal" role="dialog" aria-modal="true" aria-labelledby="rule-modal-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="rule-modal-title">{editingRule ? '编辑告警规则' : '新建告警规则'}</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={closeRuleModal}>×</button></header><form onSubmit={saveRule}><div className="modal-form"><label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={editingRule?.name || ''} required /></label><label>数据源类型<select name="source" defaultValue={editingRule?.source || 'MySQL'}>{sourceTypes.map(type => <option key={type} value={type}>{type}</option>)}</select></label><label>数据库<input name="database" defaultValue={editingRule?.database || ''} placeholder="例如 opsguard_lab" /></label><label>表名<input name="table" defaultValue={editingRule?.table || ''} placeholder="例如 mysql_metric_snapshots" /></label><label>字段 / 指标<input name="field" defaultValue={editingRule?.field || ''} placeholder="例如 Slow_queries" /></label><label>条件<select name="condition" defaultValue={editingRule?.condition || '大于'}><option>大于</option><option>大于等于</option><option>等于</option><option>小于</option><option>包含</option><option>不为空</option></select></label><label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label><label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label><label>状态<select name="status" defaultValue={editingRule?.status || '启用'}><option>启用</option><option>停用</option></select></label></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={closeRuleModal}>取消</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
+  return <div className="page"><PageHead title="告警规则" description="按具体数据源选择库、表、字段，并配置阈值和时间窗口。" action="新建规则" onAction={() => openRuleModal()} /><section className="surface rules">{rules.length === 0 ? <div className="empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，选择数据源后会自动加载库表字段。</span></div> : rules.map(r => { const sourceName = sources.find(source => source.id === r.source || source.name === r.source)?.name || r.source; return <div className="rule-row alert-rule-row" key={r.id}><i className="rule-icon">⌁</i><div><b>{r.name}</b><span>{sourceName} · {r.database || '-'}.{r.table || '-'}.{r.field || '-'} · {r.condition}{r.threshold ? ` ${r.threshold}` : ''} · {r.timeWindow}</span></div><span className={`tag ${r.status === '启用' ? 'success' : 'pending'}`}>{r.status}</span><div className="rule-actions"><button className="text-button" type="button" onClick={() => openRuleModal(r)}>编辑 <Icon name="arrow" /></button><button className="text-button danger" type="button" onClick={() => void deleteRule(r)}>删除</button></div></div> })}</section>{modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={closeRuleModal}><section className="surface source-modal alert-rule-modal" role="dialog" aria-modal="true" aria-labelledby="rule-modal-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="rule-modal-title">{editingRule ? '编辑告警规则' : '新建告警规则'}</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={closeRuleModal}>×</button></header><form onSubmit={saveRule}><div className="modal-form"><label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={editingRule?.name || ''} required /></label><label>数据源 <span className="required-mark">*</span><select value={selectedSourceId} onChange={(event) => { const sourceId = event.target.value; setSelectedSourceId(sourceId); void loadSchema(sourceId) }} required><option value="">请选择数据源</option>{sources.map(source => <option key={source.id} value={source.id}>{source.name}（{source.type}）</option>)}</select></label><label>数据库 <span className="required-mark">*</span><select value={selectedDatabase} onChange={(event) => { const database = event.target.value; const nextTables = Object.keys(schema[database] || {}); const nextTable = nextTables[0] || ''; const nextFields = nextTable ? schema[database]?.[nextTable] || [] : []; setSelectedDatabase(database); setSelectedTable(nextTable); setSelectedField(nextFields[0] || '') }} required disabled={!selectedSourceId || schemaLoading || databases.length === 0}><option value="">{schemaLoading ? '加载中...' : '请选择数据库'}</option>{databases.map(database => <option key={database} value={database}>{database}</option>)}</select></label><label>表名 <span className="required-mark">*</span><select value={selectedTable} onChange={(event) => { const table = event.target.value; setSelectedTable(table); setSelectedField((selectedDatabase && schema[selectedDatabase]?.[table]?.[0]) || '') }} required disabled={!selectedDatabase || tables.length === 0}><option value="">请选择表</option>{tables.map(table => <option key={table} value={table}>{table}</option>)}</select></label><label>字段 / 指标 <span className="required-mark">*</span><select value={selectedField} onChange={(event) => setSelectedField(event.target.value)} required disabled={!selectedTable || fields.length === 0}><option value="">请选择字段</option>{fields.map(field => <option key={field} value={field}>{field}</option>)}</select></label><label>条件<select name="condition" defaultValue={editingRule?.condition || '大于'}><option>大于</option><option>大于等于</option><option>等于</option><option>小于</option><option>包含</option><option>不为空</option></select></label><label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label><label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label><label>状态<select name="status" defaultValue={editingRule?.status || '启用'}><option>启用</option><option>停用</option></select></label></div>{selectedSourceId && !schemaLoading && databases.length === 0 && <div className="form-hint">当前数据源没有可用库表字段，或账号没有读取 information_schema 权限。</div>}<footer className="modal-actions"><button className="button secondary" type="button" onClick={closeRuleModal}>取消</button><button className="button" type="submit" disabled={saving || !selectedSourceId || !selectedDatabase || !selectedTable || !selectedField}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
 }
 function Settings() {
   const [saving, setSaving] = useState(false)

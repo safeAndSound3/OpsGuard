@@ -176,7 +176,11 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		if strings.HasSuffix(p, "/schema") {
 			id := strings.TrimSuffix(strings.TrimSuffix(p, "/schema"), "/")
 			schema := service.GetSchemaForDataSource(id)
-			writeJSON(w, http.StatusOK, map[string]any{"id": id, "schema": schema})
+			databases := make([]string, 0, len(schema))
+			for databaseName := range schema {
+				databases = append(databases, databaseName)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"id": id, "databases": databases, "schema": schema})
 			return
 		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
