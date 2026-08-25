@@ -69,3 +69,45 @@ type SystemConfig struct {
 	RequiredFields   []string `json:"requiredFields,omitempty"`
 	OptionalFields   []string `json:"optionalFields,omitempty"`
 }
+
+type MySQLInstanceStatus struct {
+	SourceID          string    `json:"sourceId"`
+	SourceName        string    `json:"sourceName"`
+	Host              string    `json:"host"`
+	Port              string    `json:"port"`
+	Status            string    `json:"status"`
+	Version           string    `json:"version,omitempty"`
+	UptimeSeconds     int64     `json:"uptimeSeconds"`
+	ThreadsConnected  int64     `json:"threadsConnected"`
+	MaxConnections    int64     `json:"maxConnections"`
+	SlowQueries       int64     `json:"slowQueries"`
+	Questions         int64     `json:"questions"`
+	DatabaseSizeBytes int64     `json:"databaseSizeBytes"`
+	ReplicaStatus     string    `json:"replicaStatus,omitempty"`
+	LastError         string    `json:"lastError,omitempty"`
+	LastCollectedAt   time.Time `json:"lastCollectedAt"`
+}
+
+type MySQLMetricSnapshot struct {
+	ID          int64             `json:"id"`
+	SourceID    string            `json:"sourceId"`
+	CollectedAt time.Time         `json:"collectedAt"`
+	Metrics     map[string]string `json:"metrics"`
+}
+
+type MySQLSlowQuerySample struct {
+	ID               int64     `json:"id"`
+	SourceID         string    `json:"sourceId"`
+	SchemaName       string    `json:"schemaName,omitempty"`
+	Digest           string    `json:"digest,omitempty"`
+	QueryText        string    `json:"queryText"`
+	Count            int64     `json:"count"`
+	TotalLatencyMs   float64   `json:"totalLatencyMs"`
+	AverageLatencyMs float64   `json:"averageLatencyMs"`
+	MaxLatencyMs     float64   `json:"maxLatencyMs"`
+	RowsExamined     int64     `json:"rowsExamined"`
+	RowsSent         int64     `json:"rowsSent"`
+	FirstSeen        time.Time `json:"firstSeen,omitempty"`
+	LastSeen         time.Time `json:"lastSeen,omitempty"`
+	CollectedAt      time.Time `json:"collectedAt"`
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,58 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "env": cfg.Env})
+	})
+
+	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if !service.AuthenticateUser(req.Username, req.Password) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "用户名或密码错误"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"token": "opsguard-admin", "user": map[string]string{"username": "admin", "name": "平台管理员"}})
+	})
+
+	mux.HandleFunc("/api/change-password", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var req struct {
+			OldPassword string `json:"oldPassword"`
+			NewPassword string `json:"newPassword"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if strings.TrimSpace(req.NewPassword) == "" || len(req.NewPassword) < 6 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "新密码至少 6 位"})
+			return
+		}
+		if err := service.ChangeUserPassword("admin", req.OldPassword, req.NewPassword); err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	})
+
+	mux.HandleFunc("/api/logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 	})
 
 	mux.HandleFunc("/api/overview", func(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +186,36 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		writeJSON(w, http.StatusOK, service.GetSystemConfig())
 	})
 
+	mux.HandleFunc("/api/mysql-monitor/instances", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"instances": service.ListMySQLInstanceStatuses()})
+	})
+
+	mux.HandleFunc("/api/mysql-monitor/instances/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		p := strings.TrimPrefix(r.URL.Path, "/api/mysql-monitor/instances/")
+		parts := strings.Split(strings.Trim(p, "/"), "/")
+		if len(parts) != 2 || parts[0] == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		limit := queryLimit(r, 100)
+		switch parts[1] {
+		case "metrics":
+			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "snapshots": service.ListMySQLMetricSnapshots(parts[0], limit)})
+		case "slow-queries":
+			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "slowQueries": service.ListMySQLSlowQueries(parts[0], limit)})
+		default:
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		}
+	})
+
 	mux.HandleFunc("/api/collection-rules", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -164,8 +247,19 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func queryLimit(r *http.Request, fallback int) int {
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || limit <= 0 {
+		return fallback
+	}
+	if limit > 500 {
+		return 500
+	}
+	return limit
 }

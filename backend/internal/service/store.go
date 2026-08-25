@@ -78,12 +78,62 @@ func InitDataSourceStore() error {
 	if _, err := appDB.ExecContext(ctx, schema); err != nil {
 		return err
 	}
+	accountSchema := `CREATE TABLE IF NOT EXISTS users (
+		username varchar(64) PRIMARY KEY,
+		password varchar(255) NOT NULL,
+		display_name varchar(120) NOT NULL,
+		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	)`
+	if _, err := appDB.ExecContext(ctx, accountSchema); err != nil {
+		return err
+	}
+	if _, err := appDB.ExecContext(ctx, `INSERT IGNORE INTO users (username, password, display_name) VALUES ('admin', 'admin@123', '平台管理员')`); err != nil {
+		return err
+	}
+	if err := initMySQLMonitorStore(appDB); err != nil {
+		return err
+	}
 
 	mu.Lock()
 	db = appDB
 	mu.Unlock()
 	go startDataSourceHealthChecker()
+	startMySQLMonitorCollector()
 	return nil
+}
+
+func AuthenticateUser(username string, password string) bool {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return username == "admin" && password == "admin@123"
+	}
+
+	var stored string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := current.QueryRowContext(ctx, `SELECT password FROM users WHERE username = ?`, username).Scan(&stored); err != nil {
+		return false
+	}
+	return password == stored
+}
+
+func ChangeUserPassword(username string, oldPassword string, newPassword string) error {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return errors.New("account store is not initialized")
+	}
+	if !AuthenticateUser(username, oldPassword) {
+		return errors.New("原密码错误")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := current.ExecContext(ctx, `UPDATE users SET password = ? WHERE username = ?`, newPassword, username)
+	return err
 }
 
 func ListDataSources() []model.DataSource {
@@ -129,11 +179,17 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	if ds.Name == "" || ds.Type == "" || ds.Host == "" || ds.Port == "" {
 		return model.DataSource{}, errors.New("name, type, host and port are required")
 	}
+	if strings.EqualFold(ds.Type, "mysql") && (strings.TrimSpace(ds.Username) == "" || strings.TrimSpace(ds.Password) == "") {
+		return model.DataSource{}, errors.New("mysql username and password are required")
+	}
+	if ok, msg := TestDataSourceConnection(ds); !ok {
+		return model.DataSource{}, errors.New(msg)
+	}
 	if ds.ID == "" {
 		ds.ID = fmt.Sprintf("ds-%d", time.Now().UnixNano())
 	}
 	ds.Status = "健康"
-	ds.LastTest = "未测试"
+	ds.LastTest = time.Now().Format("2006-01-02 15:04")
 	optionsJSON, err := json.Marshal(ds.Options)
 	if err != nil {
 		return model.DataSource{}, err
@@ -147,6 +203,9 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 		ds.ID, ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), ds.Status, ds.LastTest)
 	if err != nil {
 		return model.DataSource{}, err
+	}
+	if strings.EqualFold(ds.Type, "mysql") {
+		go collectMySQLInstance(current, ds)
 	}
 	ds.Password = ""
 	return ds, nil
@@ -174,14 +233,19 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var result sql.Result
+	if _, err := GetDataSourceByID(id); err != nil {
+		return model.DataSource{}, errors.New("data source not found")
+	}
+	if strings.EqualFold(ds.Type, "mysql") && strings.TrimSpace(ds.Username) == "" {
+		return model.DataSource{}, errors.New("mysql username is required")
+	}
 	if ds.Password == "" {
-		result, err = current.ExecContext(ctx, `UPDATE data_sources
+		_, err = current.ExecContext(ctx, `UPDATE data_sources
 			SET name = ?, type = ?, host = ?, port = ?, username = ?, database_name = ?, remark = ?, options_json = ?
 			WHERE id = ?`,
 			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Database, ds.Remark, string(optionsJSON), id)
 	} else {
-		result, err = current.ExecContext(ctx, `UPDATE data_sources
+		_, err = current.ExecContext(ctx, `UPDATE data_sources
 			SET name = ?, type = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, remark = ?, options_json = ?
 			WHERE id = ?`,
 			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), id)
@@ -189,13 +253,19 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 	if err != nil {
 		return model.DataSource{}, err
 	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		return model.DataSource{}, errors.New("data source not found")
-	}
 	updated, err := GetDataSourceByID(id)
 	if err != nil {
 		return model.DataSource{}, err
+	}
+	if strings.EqualFold(updated.Type, "mysql") {
+		updated.Password = ds.Password
+		if updated.Password == "" {
+			if secret, err := getDataSourcePassword(id); err == nil {
+				updated.Password = secret
+			}
+		}
+		go collectMySQLInstance(current, updated)
+		updated.Password = ""
 	}
 	return updated, nil
 }
@@ -224,6 +294,20 @@ func DeleteDataSource(id string) error {
 	return nil
 }
 
+func getDataSourcePassword(id string) (string, error) {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return "", errors.New("data source store is not initialized")
+	}
+	var password string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := current.QueryRowContext(ctx, `SELECT COALESCE(password, '') FROM data_sources WHERE id = ?`, id).Scan(&password)
+	return password, err
+}
+
 func GetDataSourceByID(id string) (model.DataSource, error) {
 	mu.RLock()
 	current := db
@@ -247,6 +331,9 @@ func GetDataSourceByID(id string) (model.DataSource, error) {
 
 func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 	if strings.EqualFold(ds.Type, "mysql") {
+		if strings.TrimSpace(ds.Username) == "" || strings.TrimSpace(ds.Password) == "" {
+			return false, "MySQL 用户名和密码不能为空"
+		}
 		targetDB := ds.Database
 		if targetDB == "" {
 			targetDB = "mysql"
