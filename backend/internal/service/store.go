@@ -93,6 +93,9 @@ func InitDataSourceStore() error {
 	if err := initMySQLMonitorStore(appDB); err != nil {
 		return err
 	}
+	if err := initCollectionRuleStore(appDB); err != nil {
+		return err
+	}
 
 	mu.Lock()
 	db = appDB
@@ -395,17 +398,142 @@ func checkAllDataSourceConnections() {
 }
 
 func ListCollectionRules() []model.CollectionRule {
-	mu.RLock()
-	defer mu.RUnlock()
-	res := make([]model.CollectionRule, len(rules))
-	copy(res, rules)
-	return res
+	current := currentStore()
+	if current == nil {
+		mu.RLock()
+		defer mu.RUnlock()
+		res := make([]model.CollectionRule, len(rules))
+		copy(res, rules)
+		return res
+	}
+	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, condition_text,
+		COALESCE(threshold, ''), time_window, last_run, status FROM collection_rules ORDER BY created_at DESC`)
+	if err != nil {
+		return []model.CollectionRule{}
+	}
+	defer rows.Close()
+	items := []model.CollectionRule{}
+	for rows.Next() {
+		var rule model.CollectionRule
+		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition, &rule.Threshold, &rule.TimeWindow, &rule.LastRun, &rule.Status); err != nil {
+			continue
+		}
+		items = append(items, rule)
+	}
+	return items
 }
 
-func AddCollectionRule(rule model.CollectionRule) model.CollectionRule {
-	mu.Lock()
-	defer mu.Unlock()
-	rules = append([]model.CollectionRule{rule}, rules...)
+func AddCollectionRule(rule model.CollectionRule) (model.CollectionRule, error) {
+	current := currentStore()
+	rule = normalizeCollectionRule(rule)
+	if current == nil {
+		mu.Lock()
+		defer mu.Unlock()
+		rules = append([]model.CollectionRule{rule}, rules...)
+		return rule, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := current.ExecContext(ctx, `INSERT INTO collection_rules
+		(id, name, source, database_name, table_name, field_name, condition_text, threshold, time_window, last_run, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rule.ID, rule.Name, rule.Source, rule.Database, rule.Table, rule.Field, rule.Condition, rule.Threshold, rule.TimeWindow, rule.LastRun, rule.Status)
+	return rule, err
+}
+
+func UpdateCollectionRule(id string, rule model.CollectionRule) (model.CollectionRule, error) {
+	current := currentStore()
+	if current == nil {
+		return model.CollectionRule{}, errors.New("collection rule store is not initialized")
+	}
+	rule.ID = id
+	rule = normalizeCollectionRule(rule)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := current.ExecContext(ctx, `UPDATE collection_rules
+		SET name = ?, source = ?, database_name = ?, table_name = ?, field_name = ?, condition_text = ?,
+			threshold = ?, time_window = ?, status = ?
+		WHERE id = ?`,
+		rule.Name, rule.Source, rule.Database, rule.Table, rule.Field, rule.Condition, rule.Threshold, rule.TimeWindow, rule.Status, id)
+	if err != nil {
+		return model.CollectionRule{}, err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return model.CollectionRule{}, errors.New("collection rule not found")
+	}
+	return rule, nil
+}
+
+func DeleteCollectionRule(id string) error {
+	current := currentStore()
+	if current == nil {
+		return errors.New("collection rule store is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := current.ExecContext(ctx, `DELETE FROM collection_rules WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return errors.New("collection rule not found")
+	}
+	return nil
+}
+
+func initCollectionRuleStore(appDB *sql.DB) error {
+	_, err := appDB.Exec(`CREATE TABLE IF NOT EXISTS collection_rules (
+		id varchar(64) PRIMARY KEY,
+		name varchar(120) NOT NULL,
+		source varchar(80) NOT NULL,
+		database_name varchar(120) NOT NULL DEFAULT '',
+		table_name varchar(120) NOT NULL DEFAULT '',
+		field_name varchar(120) NOT NULL DEFAULT '',
+		condition_text varchar(120) NOT NULL,
+		threshold varchar(80) NULL,
+		time_window varchar(80) NOT NULL DEFAULT '5分钟',
+		last_run varchar(64) NOT NULL DEFAULT '待执行',
+		status varchar(32) NOT NULL DEFAULT '启用',
+		created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	)`)
+	return err
+}
+
+func normalizeCollectionRule(rule model.CollectionRule) model.CollectionRule {
+	rule.ID = strings.TrimSpace(rule.ID)
+	if rule.ID == "" {
+		rule.ID = fmt.Sprintf("rule-%d", time.Now().UnixNano())
+	}
+	rule.Name = strings.TrimSpace(rule.Name)
+	rule.Source = strings.TrimSpace(rule.Source)
+	rule.Database = strings.TrimSpace(rule.Database)
+	rule.Table = strings.TrimSpace(rule.Table)
+	rule.Field = strings.TrimSpace(rule.Field)
+	rule.Condition = strings.TrimSpace(rule.Condition)
+	rule.Threshold = strings.TrimSpace(rule.Threshold)
+	rule.TimeWindow = strings.TrimSpace(rule.TimeWindow)
+	rule.Status = strings.TrimSpace(rule.Status)
+	if rule.Name == "" {
+		rule.Name = "未命名告警规则"
+	}
+	if rule.Source == "" {
+		rule.Source = "MySQL"
+	}
+	if rule.Condition == "" {
+		rule.Condition = "大于"
+	}
+	if rule.TimeWindow == "" {
+		rule.TimeWindow = "5分钟"
+	}
+	if rule.LastRun == "" {
+		rule.LastRun = "待执行"
+	}
+	if rule.Status == "" {
+		rule.Status = "启用"
+	}
 	return rule
 }
 

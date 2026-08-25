@@ -415,14 +415,25 @@ func ListMySQLInstanceStatuses() []model.MySQLInstanceStatus {
 	return statuses
 }
 
-func ListMySQLMetricSnapshots(sourceID string, limit int) []model.MySQLMetricSnapshot {
+func ListMySQLMetricSnapshots(sourceID string, limit int, start *time.Time, end *time.Time) []model.MySQLMetricSnapshot {
 	appDB := currentStore()
 	if appDB == nil {
 		return []model.MySQLMetricSnapshot{}
 	}
 	limit = normalizeLimit(limit, 100)
+	conditions := []string{"source_id = ?"}
+	args := []any{sourceID}
+	if start != nil {
+		conditions = append(conditions, "collected_at >= ?")
+		args = append(args, *start)
+	}
+	if end != nil {
+		conditions = append(conditions, "collected_at <= ?")
+		args = append(args, *end)
+	}
+	args = append(args, limit)
 	rows, err := appDB.Query(`SELECT id, source_id, collected_at, metrics_json FROM mysql_metric_snapshots
-		WHERE source_id = ? ORDER BY collected_at DESC, id DESC LIMIT ?`, sourceID, limit)
+		WHERE `+strings.Join(conditions, " AND ")+` ORDER BY collected_at DESC, id DESC LIMIT ?`, args...)
 	if err != nil {
 		return []model.MySQLMetricSnapshot{}
 	}
@@ -441,16 +452,27 @@ func ListMySQLMetricSnapshots(sourceID string, limit int) []model.MySQLMetricSna
 	return items
 }
 
-func ListMySQLSlowQueries(sourceID string, limit int) []model.MySQLSlowQuerySample {
+func ListMySQLSlowQueries(sourceID string, limit int, start *time.Time, end *time.Time) []model.MySQLSlowQuerySample {
 	appDB := currentStore()
 	if appDB == nil {
 		return []model.MySQLSlowQuerySample{}
 	}
 	limit = normalizeLimit(limit, 100)
+	conditions := []string{"source_id = ?"}
+	args := []any{sourceID}
+	if start != nil {
+		conditions = append(conditions, "collected_at >= ?")
+		args = append(args, *start)
+	}
+	if end != nil {
+		conditions = append(conditions, "collected_at <= ?")
+		args = append(args, *end)
+	}
+	args = append(args, limit)
 	rows, err := appDB.Query(`SELECT id, source_id, COALESCE(schema_name, ''), COALESCE(digest, ''), query_text,
 		count_star, total_latency_ms, avg_latency_ms, max_latency_ms, rows_examined, rows_sent,
 		COALESCE(first_seen, collected_at), COALESCE(last_seen, collected_at), collected_at
-		FROM mysql_slow_query_samples WHERE source_id = ? ORDER BY collected_at DESC, total_latency_ms DESC LIMIT ?`, sourceID, limit)
+		FROM mysql_slow_query_samples WHERE `+strings.Join(conditions, " AND ")+` ORDER BY collected_at DESC, total_latency_ms DESC LIMIT ?`, args...)
 	if err != nil {
 		return []model.MySQLSlowQuerySample{}
 	}

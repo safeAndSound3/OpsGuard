@@ -206,11 +206,12 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 			return
 		}
 		limit := queryLimit(r, 100)
+		start, end := queryTimeRange(r)
 		switch parts[1] {
 		case "metrics":
-			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "snapshots": service.ListMySQLMetricSnapshots(parts[0], limit)})
+			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "snapshots": service.ListMySQLMetricSnapshots(parts[0], limit, start, end)})
 		case "slow-queries":
-			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "slowQueries": service.ListMySQLSlowQueries(parts[0], limit)})
+			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "slowQueries": service.ListMySQLSlowQueries(parts[0], limit, start, end)})
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
@@ -223,13 +224,50 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 			return
 		case http.MethodPost:
 			var rule model.CollectionRule
-			_ = json.NewDecoder(r.Body).Decode(&rule)
-			added := service.AddCollectionRule(rule)
+			if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			added, err := service.AddCollectionRule(rule)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 			writeJSON(w, http.StatusCreated, added)
 			return
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
+		}
+	})
+
+	mux.HandleFunc("/api/collection-rules/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/collection-rules/"), "/")
+		if id == "" || strings.Contains(id, "/") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			var rule model.CollectionRule
+			if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			updated, err := service.UpdateCollectionRule(id, rule)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, updated)
+		case http.MethodDelete:
+			if err := service.DeleteCollectionRule(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
 	})
 
@@ -262,4 +300,22 @@ func queryLimit(r *http.Request, fallback int) int {
 		return 500
 	}
 	return limit
+}
+
+func queryTimeRange(r *http.Request) (*time.Time, *time.Time) {
+	return parseQueryTime(r.URL.Query().Get("start")), parseQueryTime(r.URL.Query().Get("end"))
+}
+
+func parseQueryTime(value string) *time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	layouts := []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04"}
+	for _, layout := range layouts {
+		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return &parsed
+		}
+	}
+	return nil
 }

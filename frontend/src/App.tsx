@@ -11,7 +11,7 @@ type MySQLSlowQuerySample = { id: number; sourceId: string; schemaName?: string;
 type MySQLDashboardData = { status: MySQLInstanceStatus; displayName: string; snapshot?: MySQLMetricSnapshot; slowQueries: MySQLSlowQuerySample[] }
 type ImportedDashboard = { sourceId: string; name: string }
 type MetricRow = [string, string | undefined, string?]
-type Rule = { id: string; name: string; source: string; database: string; table: string; field: string; condition: string; status: string }
+type Rule = { id: string; name: string; source: string; database: string; table: string; field: string; condition: string; threshold?: string; timeWindow: string; lastRun: string; status: string }
 type SourceType = 'MySQL' | 'Kafka' | 'Redis' | 'PostgreSQL' | 'Elasticsearch'
 
 const api = '/api'
@@ -65,9 +65,7 @@ const fallbackTasks: Task[] = [
 ]
 const fallbackSources: Source[] = []
 const fallbackRules: Rule[] = [
-  { id: 'rule-001', name: '订单支付慢查询', source: 'MySQL', database: 'order_center', table: 'payment_orders', field: 'paid_at', condition: '今天有数据', status: '启用' },
-  { id: 'rule-002', name: '库存预警值为 0', source: 'Redis', database: 'inventory', table: 'stock_info', field: 'available_qty', condition: '数值为 0', status: '启用' },
-  { id: 'rule-003', name: '订单状态为空', source: 'MySQL', database: 'order_center', table: 'orders', field: 'status', condition: '为空', status: '待确认' },
+  { id: 'rule-001', name: '订单支付慢查询', source: 'MySQL', database: 'order_center', table: 'payment_orders', field: 'paid_at', condition: '大于', threshold: '1000ms', timeWindow: '5分钟', lastRun: '待执行', status: '启用' },
 ]
 const icons: Record<string, string> = { overview: '▦', inspection: '◌', data: '◫', alert: '◇', settings: '⚙', plus: '+', arrow: '→', bell: '●' }
 function Icon({ name }: { name: string }) { return <span className={`icon icon-${name}`} aria-hidden="true">{icons[name]}</span> }
@@ -159,6 +157,8 @@ function Dashboard() {
   const [dataSources, setDataSources] = useState<Source[]>([])
   const [selectedDashboard, setSelectedDashboard] = useState<MySQLDashboardData | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<MySQLDashboardData | null>(null)
+  const [historyStart, setHistoryStart] = useState('')
+  const [historyEnd, setHistoryEnd] = useState('')
   const [loading, setLoading] = useState(false)
   const selectedDashboardId = searchParams.get('dashboard')
   const refresh = async () => {
@@ -187,9 +187,19 @@ function Dashboard() {
         setSelectedDashboard(null)
         return
       }
-        const [metricResponse, slowResponse] = await Promise.all([
-        fetch(`${api}/mysql-monitor/instances/${selected.sourceId}/metrics?limit=1`),
-        fetch(`${api}/mysql-monitor/instances/${selected.sourceId}/slow-queries?limit=8`),
+      const historyQuery = new URLSearchParams({ limit: historyStart || historyEnd ? '200' : '1' })
+      const slowQuery = new URLSearchParams({ limit: historyStart || historyEnd ? '50' : '8' })
+      if (historyStart) {
+        historyQuery.set('start', historyStart)
+        slowQuery.set('start', historyStart)
+      }
+      if (historyEnd) {
+        historyQuery.set('end', historyEnd)
+        slowQuery.set('end', historyEnd)
+      }
+      const [metricResponse, slowResponse] = await Promise.all([
+        fetch(`${api}/mysql-monitor/instances/${selected.sourceId}/metrics?${historyQuery.toString()}`),
+        fetch(`${api}/mysql-monitor/instances/${selected.sourceId}/slow-queries?${slowQuery.toString()}`),
         ])
         const metricData = await metricResponse.json()
         const slowData = await slowResponse.json()
@@ -211,13 +221,13 @@ function Dashboard() {
     void refresh()
     const timer = window.setInterval(() => void refresh(), 15000)
     return () => window.clearInterval(timer)
-  }, [selectedDashboardId])
+  }, [selectedDashboardId, historyStart, historyEnd])
   const deleteDashboard = (sourceId: string) => {
     deleteImportedDashboard(sourceId)
     setDeleteTarget(null)
     navigate('/')
   }
-  return <div className="page dashboard"><section className="hero"><div><h2>{selectedDashboardId ? 'MySQL 监控大屏' : '监控总览'}</h2><p>{selectedDashboardId ? '当前展示单个 MySQL 实例大屏，数据每 15 秒同步。' : '当前按数据源展示关键运行信息，详细大屏请从左侧二级菜单进入。'}</p></div><button className="button secondary" onClick={refresh} disabled={loading}>{loading ? '同步中...' : '刷新数据'} <Icon name="arrow" /></button></section>{selectedDashboardId ? (selectedDashboard ? <section className="mysql-dashboard-stack"><MySQLDashboard data={selectedDashboard} onDelete={() => setDeleteTarget(selectedDashboard)} /></section> : <section className="surface dashboard-empty"><b>未找到该大屏</b><span>该大屏可能尚未导入、对应节点尚未采集成功，或已经被删除。</span></section>) : <MonitorOverview sources={dataSources} instances={mysqlInstances} />}{deleteTarget && <div className="modal-backdrop" role="presentation" onMouseDown={() => setDeleteTarget(null)}><section className="surface confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-dashboard-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="delete-dashboard-title">确认删除大屏</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={() => setDeleteTarget(null)}>×</button></header><p>确认删除“{deleteTarget.displayName}”吗？删除后不会影响 MySQL 数据节点和采集数据。</p><footer className="modal-actions"><button className="button secondary" type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="button danger-button" type="button" onClick={() => deleteDashboard(deleteTarget.status.sourceId)}>确认</button></footer></section></div>}</div>
+  return <div className="page dashboard"><section className="hero"><div><h2>{selectedDashboardId ? 'MySQL 监控大屏' : '监控总览'}</h2><p>{selectedDashboardId ? '当前展示单个 MySQL 实例大屏，可按时间段查询历史采集数据。' : '当前按数据源展示关键运行信息，详细大屏请从左侧二级菜单进入。'}</p></div><div className="hero-actions">{selectedDashboardId && <div className="history-filter"><label>开始<input type="datetime-local" value={historyStart} onChange={(event) => setHistoryStart(event.target.value)} /></label><label>结束<input type="datetime-local" value={historyEnd} onChange={(event) => setHistoryEnd(event.target.value)} /></label><button className="button secondary" type="button" onClick={() => { setHistoryStart(''); setHistoryEnd('') }}>清空</button></div>}<button className="button secondary" onClick={refresh} disabled={loading}>{loading ? '同步中...' : '刷新数据'} <Icon name="arrow" /></button></div></section>{selectedDashboardId ? (selectedDashboard ? <section className="mysql-dashboard-stack"><MySQLDashboard data={selectedDashboard} onDelete={() => setDeleteTarget(selectedDashboard)} /></section> : <section className="surface dashboard-empty"><b>未找到该大屏</b><span>该大屏可能尚未导入、对应节点尚未采集成功，或该时间段内没有采集数据。</span></section>) : <MonitorOverview sources={dataSources} instances={mysqlInstances} />}{deleteTarget && <div className="modal-backdrop" role="presentation" onMouseDown={() => setDeleteTarget(null)}><section className="surface confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-dashboard-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="delete-dashboard-title">确认删除大屏</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={() => setDeleteTarget(null)}>×</button></header><p>确认删除“{deleteTarget.displayName}”吗？删除后不会影响 MySQL 数据节点和采集数据。</p><footer className="modal-actions"><button className="button secondary" type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="button danger-button" type="button" onClick={() => deleteDashboard(deleteTarget.status.sourceId)}>确认</button></footer></section></div>}</div>
 }
 function MonitorOverview({ sources, instances }: { sources: Source[]; instances: MySQLInstanceStatus[] }) {
   const statusBySourceId = new Map(instances.map(item => [item.sourceId, item]))
@@ -475,7 +485,74 @@ function formatCollectedAt(value: string) {
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { hour12: false })
 }
-function Alerts() { return <div className="page"><PageHead title="告警规则" description="以业务优先级管理告警规则和处置状态。" action="新建规则" /><section className="surface rules">{fallbackRules.map(r => <div className="rule-row" key={r.id}><i className="rule-icon">⌁</i><div><b>{r.name}</b><span>{r.source} · {r.database}.{r.table}.{r.field} · {r.condition}</span></div><span className={`tag ${r.status === '启用' ? 'success' : 'pending'}`}>{r.status}</span><button className="text-button">编辑 <Icon name="arrow" /></button></div>)}</section></div> }
+function Alerts() {
+  const [rules, setRules] = useState<Rule[]>([])
+  const [editingRule, setEditingRule] = useState<Rule | null>(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+  const loadRules = async () => {
+    try {
+      const response = await fetch(`${api}/collection-rules`)
+      const data = await response.json()
+      setRules(Array.isArray(data.rules) ? data.rules : [])
+    } catch {
+      setRules(fallbackRules)
+    }
+  }
+  useEffect(() => { void loadRules() }, [])
+  const openRuleModal = (rule?: Rule) => {
+    setEditingRule(rule || null)
+    setModalOpen(true)
+  }
+  const closeRuleModal = () => {
+    setModalOpen(false)
+    setEditingRule(null)
+    setSaving(false)
+  }
+  const saveRule = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setSaving(true)
+    const form = new FormData(event.currentTarget)
+    const payload: Rule = {
+      id: editingRule?.id || '',
+      name: String(form.get('name') || ''),
+      source: String(form.get('source') || 'MySQL'),
+      database: String(form.get('database') || ''),
+      table: String(form.get('table') || ''),
+      field: String(form.get('field') || ''),
+      condition: String(form.get('condition') || '大于'),
+      threshold: String(form.get('threshold') || ''),
+      timeWindow: String(form.get('timeWindow') || '5分钟'),
+      lastRun: editingRule?.lastRun || '待执行',
+      status: String(form.get('status') || '启用'),
+    }
+    try {
+      const response = await fetch(editingRule ? `${api}/collection-rules/${editingRule.id}` : `${api}/collection-rules`, { method: editingRule ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const saved = await response.json()
+      if (!response.ok) throw new Error(saved.error || '保存失败')
+      setMessage(`${saved.name} 已保存`)
+      closeRuleModal()
+      void loadRules()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '保存失败')
+      setSaving(false)
+    }
+  }
+  const deleteRule = async (rule: Rule) => {
+    if (!window.confirm(`确认删除 ${rule.name}？`)) return
+    try {
+      const response = await fetch(`${api}/collection-rules/${rule.id}`, { method: 'DELETE' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || '删除失败')
+      setRules(current => current.filter(item => item.id !== rule.id))
+      setMessage(`${rule.name} 已删除`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '删除失败')
+    }
+  }
+  return <div className="page"><PageHead title="告警规则" description="配置数据源指标阈值、时间窗口和启停状态。" action="新建规则" onAction={() => openRuleModal()} /><section className="surface rules">{rules.length === 0 ? <div className="empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，后续采集任务会按规则进行告警判断。</span></div> : rules.map(r => <div className="rule-row alert-rule-row" key={r.id}><i className="rule-icon">⌁</i><div><b>{r.name}</b><span>{r.source} · {r.database || '-'}.{r.table || '-'}.{r.field || '-'} · {r.condition}{r.threshold ? ` ${r.threshold}` : ''} · {r.timeWindow}</span></div><span className={`tag ${r.status === '启用' ? 'success' : 'pending'}`}>{r.status}</span><div className="rule-actions"><button className="text-button" type="button" onClick={() => openRuleModal(r)}>编辑 <Icon name="arrow" /></button><button className="text-button danger" type="button" onClick={() => void deleteRule(r)}>删除</button></div></div>)}</section>{modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={closeRuleModal}><section className="surface source-modal alert-rule-modal" role="dialog" aria-modal="true" aria-labelledby="rule-modal-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="rule-modal-title">{editingRule ? '编辑告警规则' : '新建告警规则'}</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={closeRuleModal}>×</button></header><form onSubmit={saveRule}><div className="modal-form"><label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={editingRule?.name || ''} required /></label><label>数据源类型<select name="source" defaultValue={editingRule?.source || 'MySQL'}>{sourceTypes.map(type => <option key={type} value={type}>{type}</option>)}</select></label><label>数据库<input name="database" defaultValue={editingRule?.database || ''} placeholder="例如 opsguard_lab" /></label><label>表名<input name="table" defaultValue={editingRule?.table || ''} placeholder="例如 mysql_metric_snapshots" /></label><label>字段 / 指标<input name="field" defaultValue={editingRule?.field || ''} placeholder="例如 Slow_queries" /></label><label>条件<select name="condition" defaultValue={editingRule?.condition || '大于'}><option>大于</option><option>大于等于</option><option>等于</option><option>小于</option><option>包含</option><option>不为空</option></select></label><label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label><label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label><label>状态<select name="status" defaultValue={editingRule?.status || '启用'}><option>启用</option><option>停用</option></select></label></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={closeRuleModal}>取消</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
+}
 function Settings() {
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')

@@ -6,10 +6,12 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-Hh0321}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-monitordb}
+      TZ: Asia/Shanghai
     ports:
       - "3306:3306"
     volumes:
       - /usr/local/project/mysql:/var/lib/mysql
+      - /etc/localtime:/etc/localtime:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p$${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
