@@ -158,8 +158,9 @@ func collectMySQLInstance(appDB *sql.DB, ds model.DataSource) error {
 		return varsErr
 	}
 
+	monitorDatabases := monitorDatabaseList(ds.Database)
 	extra := map[string]string{}
-	extra["database_size_bytes"] = strconv.FormatInt(readDatabaseSize(ctx, targetDB), 10)
+	extra["database_size_bytes"] = strconv.FormatInt(readDatabaseSize(ctx, targetDB, monitorDatabases), 10)
 	extra["process_running"] = strconv.FormatInt(readProcessCount(ctx, targetDB, "Query"), 10)
 	extra["process_locked"] = strconv.FormatInt(readProcessCount(ctx, targetDB, "Locked"), 10)
 	extra["replica_status"] = readReplicaStatus(ctx, targetDB)
@@ -171,7 +172,7 @@ func collectMySQLInstance(appDB *sql.DB, ds model.DataSource) error {
 	if err := saveMySQLInstanceStatus(appDB, ds, metrics, "健康", ""); err != nil {
 		return err
 	}
-	if err := collectMySQLSlowQueries(ctx, appDB, targetDB, ds.ID); err != nil {
+	if err := collectMySQLSlowQueries(ctx, appDB, targetDB, ds.ID, monitorDatabases); err != nil {
 		log.Printf("mysql monitor: slow query digest unavailable for %s: %v", ds.ID, err)
 	}
 	return nil
@@ -185,6 +186,16 @@ func openMySQLTarget(ds model.DataSource) (*sql.DB, error) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?timeout=5s&readTimeout=8s&writeTimeout=8s&parseTime=true&loc=Local",
 		ds.Username, ds.Password, ds.Host, ds.Port, targetDB)
 	return sql.Open("mysql", dsn)
+}
+
+func monitorDatabaseList(value string) []string {
+	databases := []string{}
+	for _, item := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			databases = append(databases, trimmed)
+		}
+	}
+	return databases
 }
 
 func readNameValueRows(ctx context.Context, targetDB *sql.DB, query string) (map[string]string, error) {
@@ -235,9 +246,19 @@ func copyMetricKeys(target map[string]string, source map[string]string, keys []s
 	}
 }
 
-func readDatabaseSize(ctx context.Context, targetDB *sql.DB) int64 {
+func readDatabaseSize(ctx context.Context, targetDB *sql.DB, databases []string) int64 {
 	var size sql.NullInt64
-	err := targetDB.QueryRowContext(ctx, `SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables`).Scan(&size)
+	query := `SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables`
+	args := []any{}
+	if len(databases) > 0 {
+		placeholders := make([]string, 0, len(databases))
+		for _, database := range databases {
+			placeholders = append(placeholders, "?")
+			args = append(args, database)
+		}
+		query += ` WHERE table_schema IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	err := targetDB.QueryRowContext(ctx, query, args...).Scan(&size)
 	if err != nil || !size.Valid {
 		return 0
 	}
@@ -332,8 +353,8 @@ func saveMySQLInstanceFailure(appDB *sql.DB, ds model.DataSource, err error) {
 	_ = saveMySQLInstanceStatus(appDB, ds, metrics, "异常", err.Error())
 }
 
-func collectMySQLSlowQueries(ctx context.Context, appDB *sql.DB, targetDB *sql.DB, sourceID string) error {
-	rows, err := targetDB.QueryContext(ctx, `SELECT
+func collectMySQLSlowQueries(ctx context.Context, appDB *sql.DB, targetDB *sql.DB, sourceID string, databases []string) error {
+	query := `SELECT
 			COALESCE(SCHEMA_NAME, ''),
 			COALESCE(DIGEST, ''),
 			LEFT(COALESCE(DIGEST_TEXT, ''), 4096),
@@ -346,9 +367,20 @@ func collectMySQLSlowQueries(ctx context.Context, appDB *sql.DB, targetDB *sql.D
 			COALESCE(FIRST_SEEN, NOW()),
 			COALESCE(LAST_SEEN, NOW())
 		FROM performance_schema.events_statements_summary_by_digest
-		WHERE DIGEST_TEXT IS NOT NULL
+		WHERE DIGEST_TEXT IS NOT NULL`
+	args := []any{}
+	if len(databases) > 0 {
+		placeholders := make([]string, 0, len(databases))
+		for _, database := range databases {
+			placeholders = append(placeholders, "?")
+			args = append(args, database)
+		}
+		query += ` AND SCHEMA_NAME IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	query += `
 		ORDER BY SUM_TIMER_WAIT DESC
-		LIMIT 20`)
+		LIMIT 20`
+	rows, err := targetDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
