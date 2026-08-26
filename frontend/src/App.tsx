@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CSSProperties, ChangeEvent, FormEvent, ReactNode } from 'react'
+import type { CSSProperties, FormEvent } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 
@@ -77,16 +77,29 @@ function SelectField({
   value,
   onChange,
   disabled,
-  children,
+  options,
+  placeholder,
 }: {
   label: string
   required?: boolean
   value: string
-  onChange: (event: ChangeEvent<HTMLSelectElement>) => void
+  onChange: (value: string) => void
   disabled?: boolean
-  children: ReactNode
+  options: { value: string; label: string }[]
+  placeholder: string
 }) {
-  return <label className="field-block"><span className="field-label">{label}{required && <span className="required-mark"> *</span>}</span><span className={`select-shell ${disabled ? 'disabled' : ''}`}><select value={value} onChange={onChange} required={required} disabled={disabled}>{children}</select><i aria-hidden="true">⌄</i></span></label>
+  const [open, setOpen] = useState(false)
+  const selectRef = useRef<HTMLDivElement>(null)
+  const selected = options.find(option => option.value === value)
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent) => {
+      if (!selectRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [open])
+  return <div className="field-block custom-select-field" ref={selectRef}><span className="field-label">{label}{required && <span className="required-mark"> *</span>}</span><span className={`custom-select ${open ? 'open' : ''} ${disabled ? 'disabled' : ''}`}><button type="button" className={!selected ? 'placeholder' : ''} disabled={disabled} onClick={() => setOpen(current => !current)}>{selected?.label || placeholder}<i aria-hidden="true">⌄</i></button>{open && <span className="custom-select-menu">{options.length === 0 ? <span className="custom-select-empty">暂无可选项</span> : options.map(option => <button type="button" key={option.value} className={option.value === value ? 'active' : ''} onClick={() => { onChange(option.value); setOpen(false) }}>{option.label}</button>)}</span>}</span></div>
 }
 
 function StatusSwitch({ checked, onChange, disabled }: { checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
@@ -569,12 +582,14 @@ function Alerts() {
   const [modalOpen, setModalOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
+  const [deleteRuleTarget, setDeleteRuleTarget] = useState<Rule | null>(null)
   const [schemaLoading, setSchemaLoading] = useState(false)
   const [schema, setSchema] = useState<SourceSchema>({})
   const [selectedSourceId, setSelectedSourceId] = useState('')
   const [selectedDatabase, setSelectedDatabase] = useState('')
   const [selectedTable, setSelectedTable] = useState('')
   const [selectedField, setSelectedField] = useState('')
+  const [ruleCondition, setRuleCondition] = useState('大于')
   const [ruleStatus, setRuleStatus] = useState<'启用' | '停用'>('启用')
   const [statusSavingId, setStatusSavingId] = useState('')
   useEffect(() => {
@@ -641,6 +656,7 @@ function Alerts() {
     setSelectedDatabase(rule?.database || '')
     setSelectedTable(rule?.table || '')
     setSelectedField(rule?.field || '')
+    setRuleCondition(rule?.condition || '大于')
     setRuleStatus(rule?.status === '停用' ? '停用' : '启用')
     setModalOpen(true)
     if (source?.id) void loadSchema(source.id, rule?.database || '', rule?.table || '', rule?.field || '')
@@ -654,11 +670,17 @@ function Alerts() {
     setSelectedDatabase('')
     setSelectedTable('')
     setSelectedField('')
+    setRuleCondition('大于')
     setRuleStatus('启用')
   }
   const databases = Object.keys(schema)
   const tables = selectedDatabase ? Object.keys(schema[selectedDatabase] || {}) : []
   const fields = selectedDatabase && selectedTable ? schema[selectedDatabase]?.[selectedTable] || [] : []
+  const sourceOptions = sources.map(source => ({ value: source.id, label: `${source.name}（${source.type}）` }))
+  const databaseOptions = databases.map(database => ({ value: database, label: database }))
+  const tableOptions = tables.map(table => ({ value: table, label: table }))
+  const fieldOptions = fields.map(field => ({ value: field, label: field }))
+  const conditionOptions = ['大于', '大于等于', '等于', '小于', '包含', '不为空'].map(condition => ({ value: condition, label: condition }))
   const saveRule = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setSaving(true)
@@ -670,7 +692,7 @@ function Alerts() {
       database: selectedDatabase,
       table: selectedTable,
       field: selectedField,
-      condition: String(form.get('condition') || '大于'),
+      condition: ruleCondition,
       threshold: String(form.get('threshold') || ''),
       timeWindow: String(form.get('timeWindow') || '5分钟'),
       lastRun: editingRule?.lastRun || '待执行',
@@ -689,12 +711,12 @@ function Alerts() {
     }
   }
   const deleteRule = async (rule: Rule) => {
-    if (!window.confirm(`确认删除 ${rule.name}？`)) return
     try {
       const response = await fetch(`${api}/collection-rules/${rule.id}`, { method: 'DELETE' })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error || '删除失败')
       setRules(current => current.filter(item => item.id !== rule.id))
+      setDeleteRuleTarget(null)
       setMessage(`${rule.name} 已删除`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '删除失败')
@@ -741,7 +763,7 @@ function Alerts() {
               </div>
               <div className="rule-actions">
                 <button className="text-button" type="button" onClick={() => openRuleModal(r)}>编辑 <Icon name="arrow" /></button>
-                <button className="text-button danger" type="button" onClick={() => void deleteRule(r)}>删除</button>
+                <button className="text-button danger" type="button" onClick={() => setDeleteRuleTarget(r)}>删除</button>
               </div>
             </div>
           )
@@ -757,23 +779,11 @@ function Alerts() {
             <form onSubmit={saveRule}>
               <div className="modal-form">
                 <label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={editingRule?.name || ''} required /></label>
-                <SelectField label="数据源" required value={selectedSourceId} onChange={(event) => { const sourceId = event.target.value; setSelectedSourceId(sourceId); void loadSchema(sourceId) }}>
-                  <option value="">请选择数据源</option>
-                  {sources.map(source => <option key={source.id} value={source.id}>{source.name}（{source.type}）</option>)}
-                </SelectField>
-                <SelectField label="数据库" required value={selectedDatabase} disabled={!selectedSourceId || schemaLoading || databases.length === 0} onChange={(event) => { const database = event.target.value; const nextTables = Object.keys(schema[database] || {}); const nextTable = nextTables[0] || ''; const nextFields = nextTable ? schema[database]?.[nextTable] || [] : []; setSelectedDatabase(database); setSelectedTable(nextTable); setSelectedField(nextFields[0] || '') }}>
-                  <option value="">{schemaLoading ? '加载中...' : '请选择数据库'}</option>
-                  {databases.map(database => <option key={database} value={database}>{database}</option>)}
-                </SelectField>
-                <SelectField label="表名" required value={selectedTable} disabled={!selectedDatabase || tables.length === 0} onChange={(event) => { const table = event.target.value; setSelectedTable(table); setSelectedField((selectedDatabase && schema[selectedDatabase]?.[table]?.[0]) || '') }}>
-                  <option value="">请选择表</option>
-                  {tables.map(table => <option key={table} value={table}>{table}</option>)}
-                </SelectField>
-                <SelectField label="字段 / 指标" required value={selectedField} disabled={!selectedTable || fields.length === 0} onChange={(event) => setSelectedField(event.target.value)}>
-                  <option value="">请选择字段</option>
-                  {fields.map(field => <option key={field} value={field}>{field}</option>)}
-                </SelectField>
-                <label className="field-block"><span className="field-label">条件</span><span className="select-shell"><select name="condition" defaultValue={editingRule?.condition || '大于'}><option>大于</option><option>大于等于</option><option>等于</option><option>小于</option><option>包含</option><option>不为空</option></select><i aria-hidden="true">⌄</i></span></label>
+                <SelectField label="数据源" required value={selectedSourceId} options={sourceOptions} placeholder="请选择数据源" onChange={(sourceId) => { setSelectedSourceId(sourceId); void loadSchema(sourceId) }} />
+                <SelectField label="数据库" required value={selectedDatabase} options={databaseOptions} placeholder={schemaLoading ? '加载中...' : '请选择数据库'} disabled={!selectedSourceId || schemaLoading || databases.length === 0} onChange={(database) => { const nextTables = Object.keys(schema[database] || {}); const nextTable = nextTables[0] || ''; const nextFields = nextTable ? schema[database]?.[nextTable] || [] : []; setSelectedDatabase(database); setSelectedTable(nextTable); setSelectedField(nextFields[0] || '') }} />
+                <SelectField label="表名" required value={selectedTable} options={tableOptions} placeholder="请选择表" disabled={!selectedDatabase || tables.length === 0} onChange={(table) => { setSelectedTable(table); setSelectedField((selectedDatabase && schema[selectedDatabase]?.[table]?.[0]) || '') }} />
+                <SelectField label="字段 / 指标" required value={selectedField} options={fieldOptions} placeholder="请选择字段" disabled={!selectedTable || fields.length === 0} onChange={(field) => setSelectedField(field)} />
+                <SelectField label="条件" value={ruleCondition} options={conditionOptions} placeholder="请选择条件" onChange={(condition) => setRuleCondition(condition)} />
                 <label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label>
                 <label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label>
                 {editingRule && <div className="field-block status-field"><span className="field-label">状态</span><StatusSwitch checked={ruleStatus === '启用'} onChange={(checked) => setRuleStatus(checked ? '启用' : '停用')} /></div>}
@@ -784,6 +794,21 @@ function Alerts() {
                 <button className="button" type="submit" disabled={saving || !selectedSourceId || !selectedDatabase || !selectedTable || !selectedField}>{saving ? '保存中...' : '保存'}</button>
               </footer>
             </form>
+          </section>
+        </div>
+      )}
+      {deleteRuleTarget && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setDeleteRuleTarget(null)}>
+          <section className="surface confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-rule-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="modal-head">
+              <div><h2 id="delete-rule-title">确认删除告警规则</h2></div>
+              <button className="close-button" type="button" aria-label="关闭" onClick={() => setDeleteRuleTarget(null)}>×</button>
+            </header>
+            <p>确认删除“{deleteRuleTarget.name}”吗？删除后该规则不会继续参与告警判断。</p>
+            <footer className="modal-actions">
+              <button className="button secondary" type="button" onClick={() => setDeleteRuleTarget(null)}>取消</button>
+              <button className="button danger-button" type="button" onClick={() => void deleteRule(deleteRuleTarget)}>确认</button>
+            </footer>
           </section>
         </div>
       )}
