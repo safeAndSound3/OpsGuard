@@ -178,7 +178,7 @@ func collectMySQLInstance(appDB *sql.DB, ds model.DataSource) error {
 }
 
 func openMySQLTarget(ds model.DataSource) (*sql.DB, error) {
-	targetDB := ds.Database
+	targetDB := primaryDatabase(ds.Database)
 	if targetDB == "" {
 		targetDB = "mysql"
 	}
