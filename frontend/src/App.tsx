@@ -86,7 +86,7 @@ function SelectField({
   disabled?: boolean
   children: ReactNode
 }) {
-  return <label className="field-block">{label}{required && <span className="required-mark"> *</span>}<span className={`select-shell ${disabled ? 'disabled' : ''}`}><select value={value} onChange={onChange} required={required} disabled={disabled}>{children}</select><i aria-hidden="true">⌄</i></span></label>
+  return <label className="field-block"><span className="field-label">{label}{required && <span className="required-mark"> *</span>}</span><span className={`select-shell ${disabled ? 'disabled' : ''}`}><select value={value} onChange={onChange} required={required} disabled={disabled}>{children}</select><i aria-hidden="true">⌄</i></span></label>
 }
 
 function StatusSwitch({ checked, onChange, disabled }: { checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
@@ -766,10 +766,10 @@ function Alerts() {
                   <option value="">请选择字段</option>
                   {fields.map(field => <option key={field} value={field}>{field}</option>)}
                 </SelectField>
-                <label className="field-block">条件<span className="select-shell"><select name="condition" defaultValue={editingRule?.condition || '大于'}><option>大于</option><option>大于等于</option><option>等于</option><option>小于</option><option>包含</option><option>不为空</option></select><i aria-hidden="true">⌄</i></span></label>
+                <label className="field-block"><span className="field-label">条件</span><span className="select-shell"><select name="condition" defaultValue={editingRule?.condition || '大于'}><option>大于</option><option>大于等于</option><option>等于</option><option>小于</option><option>包含</option><option>不为空</option></select><i aria-hidden="true">⌄</i></span></label>
                 <label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label>
                 <label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label>
-                <div className="field-block status-field"><span>状态</span><StatusSwitch checked={ruleStatus === '启用'} onChange={(checked) => setRuleStatus(checked ? '启用' : '停用')} /></div>
+                {editingRule && <div className="field-block status-field"><span className="field-label">状态</span><StatusSwitch checked={ruleStatus === '启用'} onChange={(checked) => setRuleStatus(checked ? '启用' : '停用')} /></div>}
               </div>
               {selectedSourceId && !schemaLoading && databases.length === 0 && <div className="form-hint">当前数据源没有可用库表字段，或账号没有读取 information_schema 权限。</div>}
               <footer className="modal-actions">
