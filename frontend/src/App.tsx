@@ -89,17 +89,44 @@ function SelectField({
   placeholder: string
 }) {
   const [open, setOpen] = useState(false)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({})
   const selectRef = useRef<HTMLDivElement>(null)
   const selected = options.find(option => option.value === value)
+  const updateMenuPosition = () => {
+    const trigger = selectRef.current?.querySelector('.custom-select > button')
+    if (!(trigger instanceof HTMLElement)) return
+    const rect = trigger.getBoundingClientRect()
+    const viewportPadding = 16
+    const gap = 7
+    const availableBelow = window.innerHeight - rect.bottom - viewportPadding
+    const availableAbove = rect.top - viewportPadding
+    const openAbove = availableBelow < 220 && availableAbove > availableBelow
+    const maxHeight = Math.max(140, Math.min(360, openAbove ? availableAbove - gap : availableBelow - gap))
+    setMenuStyle({
+      left: rect.left,
+      top: openAbove ? rect.top - gap : rect.bottom + gap,
+      width: rect.width,
+      maxHeight,
+      transform: openAbove ? 'translateY(-100%)' : undefined,
+    })
+  }
   useEffect(() => {
     if (!open) return
+    updateMenuPosition()
     const close = (event: PointerEvent) => {
       if (!selectRef.current?.contains(event.target as Node)) setOpen(false)
     }
+    const reposition = () => updateMenuPosition()
     window.addEventListener('pointerdown', close)
-    return () => window.removeEventListener('pointerdown', close)
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      window.removeEventListener('pointerdown', close)
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
   }, [open])
-  return <div className="field-block custom-select-field" ref={selectRef}><span className="field-label">{label}{required && <span className="required-mark"> *</span>}</span><span className={`custom-select ${open ? 'open' : ''} ${disabled ? 'disabled' : ''}`}><button type="button" className={!selected ? 'placeholder' : ''} disabled={disabled} onClick={() => setOpen(current => !current)}>{selected?.label || placeholder}<i aria-hidden="true">⌄</i></button>{open && <span className="custom-select-menu">{options.length === 0 ? <span className="custom-select-empty">暂无可选项</span> : options.map(option => <button type="button" key={option.value} className={option.value === value ? 'active' : ''} onClick={() => { onChange(option.value); setOpen(false) }}>{option.label}</button>)}</span>}</span></div>
+  return <div className="field-block custom-select-field" ref={selectRef}><span className="field-label">{label}{required && <span className="required-mark"> *</span>}</span><span className={`custom-select ${open ? 'open' : ''} ${disabled ? 'disabled' : ''}`}><button type="button" className={!selected ? 'placeholder' : ''} disabled={disabled} onClick={() => setOpen(current => !current)}>{selected?.label || placeholder}<i aria-hidden="true">⌄</i></button>{open && <span className="custom-select-menu" style={menuStyle}>{options.length === 0 ? <span className="custom-select-empty">暂无可选项</span> : options.map(option => <button type="button" key={option.value} className={option.value === value ? 'active' : ''} onClick={() => { onChange(option.value); setOpen(false) }}>{option.label}</button>)}</span>}</span></div>
 }
 
 function StatusSwitch({ checked, onChange, disabled }: { checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
