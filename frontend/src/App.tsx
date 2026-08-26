@@ -5,6 +5,7 @@ import './App.css'
 
 type Task = { id: string; title: string; owner: string; status: string; progress: number; updated: string }
 type Source = { id: string; name: string; type: string; host: string; port: string; status: string; lastTest: string; username?: string; database?: string; remark?: string; options?: Record<string, string> }
+type SourceDraft = Partial<Source> & { password?: string }
 type MySQLInstanceStatus = { sourceId: string; sourceName: string; host: string; port: string; status: string; version?: string; uptimeSeconds: number; threadsConnected: number; maxConnections: number; slowQueries: number; questions: number; databaseSizeBytes: number; replicaStatus?: string; lastError?: string; lastCollectedAt: string }
 type MySQLMetricSnapshot = { id: number; sourceId: string; collectedAt: string; metrics: Record<string, string> }
 type MySQLSlowQuerySample = { id: number; sourceId: string; schemaName?: string; digest?: string; queryText: string; count: number; totalLatencyMs: number; averageLatencyMs: number; maxLatencyMs: number; rowsExamined: number; rowsSent: number; firstSeen?: string; lastSeen?: string; collectedAt: string }
@@ -404,6 +405,7 @@ function DataSources() {
   const [availableDatabases, setAvailableDatabases] = useState<string[]>([])
   const [selectedMonitorDatabases, setSelectedMonitorDatabases] = useState<string[]>([])
   const [databaseRemarks, setDatabaseRemarks] = useState<Record<string, string>>({})
+  const [sourceDraft, setSourceDraft] = useState<SourceDraft | null>(null)
 
   const loadSources = async () => {
     setRefreshing(true)
@@ -438,6 +440,7 @@ function DataSources() {
     setAvailableDatabases([])
     setSelectedMonitorDatabases([])
     setDatabaseRemarks({})
+    setSourceDraft(null)
     setModalOpen(true)
   }
   const openEditModal = (source: Source) => {
@@ -451,6 +454,7 @@ function DataSources() {
     setAvailableDatabases(selected)
     setSelectedMonitorDatabases(selected)
     setDatabaseRemarks(parseDatabaseRemarks(source.options))
+    setSourceDraft(source)
     setModalOpen(true)
   }
   const closeModal = () => {
@@ -463,6 +467,7 @@ function DataSources() {
     setAvailableDatabases([])
     setSelectedMonitorDatabases([])
     setDatabaseRemarks({})
+    setSourceDraft(null)
   }
   const buildPayload = (form: HTMLFormElement) => {
     const formData = new FormData(form)
@@ -472,15 +477,16 @@ function DataSources() {
       return acc
     }, {})
     options.monitor_database_remarks = JSON.stringify(databaseRemarks)
+    const draft = sourceDraft
     return {
-      name: String(formData.get('name') || `${sourceType} 数据源`),
-      type: sourceType,
-      host: String(formData.get('host') || ''),
-      port: String(formData.get('port') || defaultPorts[sourceType]),
+      name: String(formData.get('name') || draft?.name || `${sourceType} 数据源`),
+      type: sourceType || draft?.type || 'MySQL',
+      host: String(formData.get('host') || draft?.host || ''),
+      port: String(formData.get('port') || draft?.port || defaultPorts[sourceType]),
       database: sourceType === 'MySQL' ? selectedMonitorDatabases.join(',') : String(formData.get('topic') || ''),
-      username: String(formData.get('username') || ''),
+      username: String(formData.get('username') || draft?.username || ''),
       password: String(formData.get('password') || ''),
-      remark: String(formData.get('remark') || ''),
+      remark: String(formData.get('remark') || draft?.remark || ''),
       options,
     }
   }
@@ -504,6 +510,7 @@ function DataSources() {
       const result = await response.json()
       if (result.success) {
         const databases = Array.isArray(result.databases) ? result.databases : []
+        setSourceDraft(payload)
         setTestPassed(true)
         setAvailableDatabases(databases)
         setSelectedMonitorDatabases(current => current.length > 0 ? current.filter(item => databases.includes(item)) : [])
