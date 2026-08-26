@@ -736,7 +736,9 @@ function Alerts() {
                 <b>{r.name}</b>
                 <span>{sourceName} · {r.database || '-'}.{r.table || '-'}.{r.field || '-'} · {r.condition}{r.threshold ? ` ${r.threshold}` : ''} · {r.timeWindow}</span>
               </div>
-              <StatusSwitch checked={r.status === '启用'} disabled={statusSavingId === r.id} onChange={(checked) => void toggleRuleStatus(r, checked)} />
+              <div className="rule-status-cell">
+                <StatusSwitch checked={r.status === '启用'} disabled={statusSavingId === r.id} onChange={(checked) => void toggleRuleStatus(r, checked)} />
+              </div>
               <div className="rule-actions">
                 <button className="text-button" type="button" onClick={() => openRuleModal(r)}>编辑 <Icon name="arrow" /></button>
                 <button className="text-button danger" type="button" onClick={() => void deleteRule(r)}>删除</button>
