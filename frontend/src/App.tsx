@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent } from 'react'
+import type { CSSProperties, ChangeEvent, FormEvent, ReactNode } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 
@@ -70,6 +70,28 @@ const fallbackRules: Rule[] = [
 ]
 const icons: Record<string, string> = { overview: '▦', inspection: '◌', data: '◫', alert: '◇', settings: '⚙', plus: '+', arrow: '→', bell: '●' }
 function Icon({ name }: { name: string }) { return <span className={`icon icon-${name}`} aria-hidden="true">{icons[name]}</span> }
+
+function SelectField({
+  label,
+  required,
+  value,
+  onChange,
+  disabled,
+  children,
+}: {
+  label: string
+  required?: boolean
+  value: string
+  onChange: (event: ChangeEvent<HTMLSelectElement>) => void
+  disabled?: boolean
+  children: ReactNode
+}) {
+  return <label className="field-block">{label}{required && <span className="required-mark"> *</span>}<span className={`select-shell ${disabled ? 'disabled' : ''}`}><select value={value} onChange={onChange} required={required} disabled={disabled}>{children}</select><i aria-hidden="true">⌄</i></span></label>
+}
+
+function StatusSwitch({ checked, onChange, disabled }: { checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
+  return <button type="button" className={`status-switch ${checked ? 'checked' : ''}`} aria-pressed={checked} disabled={disabled} onClick={() => onChange(!checked)}><span className="status-switch-track"><span className="status-switch-thumb" /></span><span>{checked ? '启用' : '停用'}</span></button>
+}
 
 function App() {
   const [authed, setAuthed] = useState(() => localStorage.getItem('opsguard_token') === 'opsguard-admin')
@@ -553,6 +575,8 @@ function Alerts() {
   const [selectedDatabase, setSelectedDatabase] = useState('')
   const [selectedTable, setSelectedTable] = useState('')
   const [selectedField, setSelectedField] = useState('')
+  const [ruleStatus, setRuleStatus] = useState<'启用' | '停用'>('启用')
+  const [statusSavingId, setStatusSavingId] = useState('')
   const loadRules = async () => {
     try {
       const response = await fetch(`${api}/collection-rules`)
@@ -612,6 +636,7 @@ function Alerts() {
     setSelectedDatabase(rule?.database || '')
     setSelectedTable(rule?.table || '')
     setSelectedField(rule?.field || '')
+    setRuleStatus(rule?.status === '停用' ? '停用' : '启用')
     setModalOpen(true)
     if (source?.id) void loadSchema(source.id, rule?.database || '', rule?.table || '', rule?.field || '')
   }
@@ -624,6 +649,7 @@ function Alerts() {
     setSelectedDatabase('')
     setSelectedTable('')
     setSelectedField('')
+    setRuleStatus('启用')
   }
   const databases = Object.keys(schema)
   const tables = selectedDatabase ? Object.keys(schema[selectedDatabase] || {}) : []
@@ -643,7 +669,7 @@ function Alerts() {
       threshold: String(form.get('threshold') || ''),
       timeWindow: String(form.get('timeWindow') || '5分钟'),
       lastRun: editingRule?.lastRun || '待执行',
-      status: String(form.get('status') || '启用'),
+      status: ruleStatus,
     }
     try {
       const response = await fetch(editingRule ? `${api}/collection-rules/${editingRule.id}` : `${api}/collection-rules`, { method: editingRule ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
@@ -669,7 +695,94 @@ function Alerts() {
       setMessage(error instanceof Error ? error.message : '删除失败')
     }
   }
-  return <div className="page"><PageHead title="告警规则" description="按具体数据源选择库、表、字段，并配置阈值和时间窗口。" action="新建规则" onAction={() => openRuleModal()} /><section className="surface rules">{rules.length === 0 ? <div className="empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，选择数据源后会自动加载库表字段。</span></div> : rules.map(r => { const sourceName = sources.find(source => source.id === r.source || source.name === r.source)?.name || r.source; return <div className="rule-row alert-rule-row" key={r.id}><i className="rule-icon">⌁</i><div><b>{r.name}</b><span>{sourceName} · {r.database || '-'}.{r.table || '-'}.{r.field || '-'} · {r.condition}{r.threshold ? ` ${r.threshold}` : ''} · {r.timeWindow}</span></div><span className={`tag ${r.status === '启用' ? 'success' : 'pending'}`}>{r.status}</span><div className="rule-actions"><button className="text-button" type="button" onClick={() => openRuleModal(r)}>编辑 <Icon name="arrow" /></button><button className="text-button danger" type="button" onClick={() => void deleteRule(r)}>删除</button></div></div> })}</section>{modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={closeRuleModal}><section className="surface source-modal alert-rule-modal" role="dialog" aria-modal="true" aria-labelledby="rule-modal-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="rule-modal-title">{editingRule ? '编辑告警规则' : '新建告警规则'}</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={closeRuleModal}>×</button></header><form onSubmit={saveRule}><div className="modal-form"><label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={editingRule?.name || ''} required /></label><label>数据源 <span className="required-mark">*</span><select value={selectedSourceId} onChange={(event) => { const sourceId = event.target.value; setSelectedSourceId(sourceId); void loadSchema(sourceId) }} required><option value="">请选择数据源</option>{sources.map(source => <option key={source.id} value={source.id}>{source.name}（{source.type}）</option>)}</select></label><label>数据库 <span className="required-mark">*</span><select value={selectedDatabase} onChange={(event) => { const database = event.target.value; const nextTables = Object.keys(schema[database] || {}); const nextTable = nextTables[0] || ''; const nextFields = nextTable ? schema[database]?.[nextTable] || [] : []; setSelectedDatabase(database); setSelectedTable(nextTable); setSelectedField(nextFields[0] || '') }} required disabled={!selectedSourceId || schemaLoading || databases.length === 0}><option value="">{schemaLoading ? '加载中...' : '请选择数据库'}</option>{databases.map(database => <option key={database} value={database}>{database}</option>)}</select></label><label>表名 <span className="required-mark">*</span><select value={selectedTable} onChange={(event) => { const table = event.target.value; setSelectedTable(table); setSelectedField((selectedDatabase && schema[selectedDatabase]?.[table]?.[0]) || '') }} required disabled={!selectedDatabase || tables.length === 0}><option value="">请选择表</option>{tables.map(table => <option key={table} value={table}>{table}</option>)}</select></label><label>字段 / 指标 <span className="required-mark">*</span><select value={selectedField} onChange={(event) => setSelectedField(event.target.value)} required disabled={!selectedTable || fields.length === 0}><option value="">请选择字段</option>{fields.map(field => <option key={field} value={field}>{field}</option>)}</select></label><label>条件<select name="condition" defaultValue={editingRule?.condition || '大于'}><option>大于</option><option>大于等于</option><option>等于</option><option>小于</option><option>包含</option><option>不为空</option></select></label><label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label><label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label><label>状态<select name="status" defaultValue={editingRule?.status || '启用'}><option>启用</option><option>停用</option></select></label></div>{selectedSourceId && !schemaLoading && databases.length === 0 && <div className="form-hint">当前数据源没有可用库表字段，或账号没有读取 information_schema 权限。</div>}<footer className="modal-actions"><button className="button secondary" type="button" onClick={closeRuleModal}>取消</button><button className="button" type="submit" disabled={saving || !selectedSourceId || !selectedDatabase || !selectedTable || !selectedField}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
+  const toggleRuleStatus = async (rule: Rule, checked: boolean) => {
+    const nextStatus = checked ? '启用' : '停用'
+    setStatusSavingId(rule.id)
+    setRules(current => current.map(item => item.id === rule.id ? { ...item, status: nextStatus } : item))
+    try {
+      const response = await fetch(`${api}/collection-rules/${rule.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...rule, status: nextStatus }),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || '状态更新失败')
+      setRules(current => current.map(item => item.id === rule.id ? result : item))
+      setMessage(`${rule.name} 已${nextStatus}`)
+    } catch (error) {
+      setRules(current => current.map(item => item.id === rule.id ? rule : item))
+      setMessage(error instanceof Error ? error.message : '状态更新失败')
+    } finally {
+      setStatusSavingId('')
+    }
+  }
+  return (
+    <div className="page">
+      <PageHead title="告警规则" description="按具体数据源选择库、表、字段，并配置阈值和时间窗口。" action="新建规则" onAction={() => openRuleModal()} />
+      <section className="surface rules">
+        {rules.length === 0 ? (
+          <div className="empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，选择数据源后会自动加载库表字段。</span></div>
+        ) : rules.map(r => {
+          const sourceName = sources.find(source => source.id === r.source || source.name === r.source)?.name || r.source
+          return (
+            <div className="rule-row alert-rule-row" key={r.id}>
+              <i className="rule-icon">⌁</i>
+              <div>
+                <b>{r.name}</b>
+                <span>{sourceName} · {r.database || '-'}.{r.table || '-'}.{r.field || '-'} · {r.condition}{r.threshold ? ` ${r.threshold}` : ''} · {r.timeWindow}</span>
+              </div>
+              <StatusSwitch checked={r.status === '启用'} disabled={statusSavingId === r.id} onChange={(checked) => void toggleRuleStatus(r, checked)} />
+              <div className="rule-actions">
+                <button className="text-button" type="button" onClick={() => openRuleModal(r)}>编辑 <Icon name="arrow" /></button>
+                <button className="text-button danger" type="button" onClick={() => void deleteRule(r)}>删除</button>
+              </div>
+            </div>
+          )
+        })}
+      </section>
+      {modalOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeRuleModal}>
+          <section className="surface source-modal alert-rule-modal" role="dialog" aria-modal="true" aria-labelledby="rule-modal-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="modal-head">
+              <div><h2 id="rule-modal-title">{editingRule ? '编辑告警规则' : '新建告警规则'}</h2></div>
+              <button className="close-button" type="button" aria-label="关闭" onClick={closeRuleModal}>×</button>
+            </header>
+            <form onSubmit={saveRule}>
+              <div className="modal-form">
+                <label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={editingRule?.name || ''} required /></label>
+                <SelectField label="数据源" required value={selectedSourceId} onChange={(event) => { const sourceId = event.target.value; setSelectedSourceId(sourceId); void loadSchema(sourceId) }}>
+                  <option value="">请选择数据源</option>
+                  {sources.map(source => <option key={source.id} value={source.id}>{source.name}（{source.type}）</option>)}
+                </SelectField>
+                <SelectField label="数据库" required value={selectedDatabase} disabled={!selectedSourceId || schemaLoading || databases.length === 0} onChange={(event) => { const database = event.target.value; const nextTables = Object.keys(schema[database] || {}); const nextTable = nextTables[0] || ''; const nextFields = nextTable ? schema[database]?.[nextTable] || [] : []; setSelectedDatabase(database); setSelectedTable(nextTable); setSelectedField(nextFields[0] || '') }}>
+                  <option value="">{schemaLoading ? '加载中...' : '请选择数据库'}</option>
+                  {databases.map(database => <option key={database} value={database}>{database}</option>)}
+                </SelectField>
+                <SelectField label="表名" required value={selectedTable} disabled={!selectedDatabase || tables.length === 0} onChange={(event) => { const table = event.target.value; setSelectedTable(table); setSelectedField((selectedDatabase && schema[selectedDatabase]?.[table]?.[0]) || '') }}>
+                  <option value="">请选择表</option>
+                  {tables.map(table => <option key={table} value={table}>{table}</option>)}
+                </SelectField>
+                <SelectField label="字段 / 指标" required value={selectedField} disabled={!selectedTable || fields.length === 0} onChange={(event) => setSelectedField(event.target.value)}>
+                  <option value="">请选择字段</option>
+                  {fields.map(field => <option key={field} value={field}>{field}</option>)}
+                </SelectField>
+                <label className="field-block">条件<span className="select-shell"><select name="condition" defaultValue={editingRule?.condition || '大于'}><option>大于</option><option>大于等于</option><option>等于</option><option>小于</option><option>包含</option><option>不为空</option></select><i aria-hidden="true">⌄</i></span></label>
+                <label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label>
+                <label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label>
+                <div className="field-block status-field"><span>状态</span><StatusSwitch checked={ruleStatus === '启用'} onChange={(checked) => setRuleStatus(checked ? '启用' : '停用')} /></div>
+              </div>
+              {selectedSourceId && !schemaLoading && databases.length === 0 && <div className="form-hint">当前数据源没有可用库表字段，或账号没有读取 information_schema 权限。</div>}
+              <footer className="modal-actions">
+                <button className="button secondary" type="button" onClick={closeRuleModal}>取消</button>
+                <button className="button" type="submit" disabled={saving || !selectedSourceId || !selectedDatabase || !selectedTable || !selectedField}>{saving ? '保存中...' : '保存'}</button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
+      {message && <div className="toast">{message}</div>}
+    </div>
+  )
 }
 function Settings() {
   const [saving, setSaving] = useState(false)
