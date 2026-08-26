@@ -78,6 +78,7 @@ func InitDataSourceStore() error {
 	if _, err := appDB.ExecContext(ctx, schema); err != nil {
 		return err
 	}
+	_, _ = appDB.ExecContext(ctx, `ALTER TABLE data_sources MODIFY database_name text NULL`)
 	accountSchema := `CREATE TABLE IF NOT EXISTS users (
 		username varchar(64) PRIMARY KEY,
 		password varchar(255) NOT NULL,
@@ -337,7 +338,7 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 		if strings.TrimSpace(ds.Username) == "" || strings.TrimSpace(ds.Password) == "" {
 			return false, "MySQL 用户名和密码不能为空"
 		}
-		targetDB := ds.Database
+		targetDB := primaryDatabase(ds.Database)
 		if targetDB == "" {
 			targetDB = "mysql"
 		}
@@ -359,6 +360,46 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 		return false, "主机地址和端口不能为空"
 	}
 	return true, "连接参数已校验，驱动测试待接入"
+}
+
+func primaryDatabase(value string) string {
+	for _, item := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func ListDataSourceDatabases(ds model.DataSource) ([]string, error) {
+	if !strings.EqualFold(ds.Type, "mysql") {
+		return []string{}, nil
+	}
+	if strings.TrimSpace(ds.Username) == "" || strings.TrimSpace(ds.Password) == "" {
+		return nil, errors.New("MySQL 用户名和密码不能为空")
+	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/mysql?timeout=5s", ds.Username, ds.Password, ds.Host, ds.Port)
+	testDB, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer testDB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := testDB.QueryContext(ctx, `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	databases := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		databases = append(databases, name)
+	}
+	return databases, rows.Err()
 }
 
 func startDataSourceHealthChecker() {

@@ -129,7 +129,13 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 			return
 		}
 		ok, msg := service.TestDataSourceConnection(ds)
-		writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg, "latencyMs": 42})
+		databases := []string{}
+		if ok {
+			if names, err := service.ListDataSourceDatabases(ds); err == nil {
+				databases = names
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg, "latencyMs": 42, "databases": databases})
 	})
 
 	// schema for a specific data source (mock)
