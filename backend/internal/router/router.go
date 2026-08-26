@@ -128,6 +128,9 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
+		if ds.Password == "" && ds.ID != "" {
+			_ = service.FillDataSourcePassword(&ds)
+		}
 		ok, msg := service.TestDataSourceConnection(ds)
 		databases := []string{}
 		if ok {

@@ -334,6 +334,11 @@ func GetDataSourceByID(id string) (model.DataSource, error) {
 }
 
 func TestDataSourceConnection(ds model.DataSource) (bool, string) {
+	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" {
+		if err := FillDataSourcePassword(&ds); err != nil {
+			return false, err.Error()
+		}
+	}
 	if strings.EqualFold(ds.Type, "mysql") {
 		if strings.TrimSpace(ds.Username) == "" || strings.TrimSpace(ds.Password) == "" {
 			return false, "MySQL 用户名和密码不能为空"
@@ -360,6 +365,18 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 		return false, "主机地址和端口不能为空"
 	}
 	return true, "连接参数已校验，驱动测试待接入"
+}
+
+func FillDataSourcePassword(ds *model.DataSource) error {
+	if ds == nil || strings.TrimSpace(ds.ID) == "" {
+		return errors.New("data source id is required")
+	}
+	password, err := getDataSourcePassword(ds.ID)
+	if err != nil {
+		return errors.New("data source password not found")
+	}
+	ds.Password = password
+	return nil
 }
 
 func primaryDatabase(value string) string {
