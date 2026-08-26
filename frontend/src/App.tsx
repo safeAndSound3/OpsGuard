@@ -454,7 +454,7 @@ function DataSources() {
     const rows = Object.entries(source.options || {}).map(([key, value]) => ({ key, value }))
     setOptionRows(rows.length > 0 ? rows : [{ key: '', value: '' }, { key: '', value: '' }])
     const selected = splitDatabaseList(source.database)
-    setSourceStep(1)
+    setSourceStep(source.type === 'MySQL' ? 2 : 1)
     setTestPassed(source.type === 'MySQL' && selected.length > 0)
     setAvailableDatabases(selected)
     setSelectedMonitorDatabases(selected)
