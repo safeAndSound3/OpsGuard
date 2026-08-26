@@ -485,7 +485,7 @@ function DataSources() {
       port: String(formData.get('port') || draft?.port || defaultPorts[sourceType]),
       database: sourceType === 'MySQL' ? selectedMonitorDatabases.join(',') : String(formData.get('topic') || ''),
       username: String(formData.get('username') || draft?.username || ''),
-      password: String(formData.get('password') || ''),
+      password: String(formData.get('password') || draft?.password || ''),
       remark: String(formData.get('remark') || draft?.remark || ''),
       options,
     }
