@@ -577,6 +577,11 @@ function Alerts() {
   const [selectedField, setSelectedField] = useState('')
   const [ruleStatus, setRuleStatus] = useState<'启用' | '停用'>('启用')
   const [statusSavingId, setStatusSavingId] = useState('')
+  useEffect(() => {
+    if (!message) return
+    const timer = window.setTimeout(() => setMessage(''), 2400)
+    return () => window.clearTimeout(timer)
+  }, [message])
   const loadRules = async () => {
     try {
       const response = await fetch(`${api}/collection-rules`)
@@ -675,7 +680,7 @@ function Alerts() {
       const response = await fetch(editingRule ? `${api}/collection-rules/${editingRule.id}` : `${api}/collection-rules`, { method: editingRule ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       const saved = await response.json()
       if (!response.ok) throw new Error(saved.error || '保存失败')
-      setMessage(`${saved.name} 已保存`)
+      setMessage(`${saved.name} ${editingRule ? '已保存' : '已添加'}`)
       closeRuleModal()
       void loadRules()
     } catch (error) {
