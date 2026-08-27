@@ -1,0 +1,12 @@
+groups:
+  - name: mysql.rules
+    rules:
+      - alert: MySQLDown
+        expr: mysql_up{job="mysql"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: mysql
+        annotations:
+          summary: "MySQL 实例不可用"
+          description: "Prometheus 已连续 1 分钟无法通过 mysqld_exporter 采集到 {{ $labels.instance }}，请检查 MySQL 或 mysqld_exporter。"
