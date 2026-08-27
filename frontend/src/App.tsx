@@ -414,14 +414,11 @@ function Alerts() {
                   <i className="rule-icon">P</i>
                   <div>
                     <header>
-                      <div className="rule-head">
-                        <b>{rule.name}</b>
-                        <small className="rule-inline-note">{rule.summary || rule.description || '未配置中文说明'}</small>
-                      </div>
+                      <b>{rule.name}<small className="rule-inline-note">{rule.summary || rule.description || '未配置中文说明'}</small></b>
                       <span className={`alert-result ${stateClass(rule.state, rule.health)}`}>{stateLabel(rule.state || rule.health)}</span>
                     </header>
-                    <code>{rule.query}</code>
                     <small className="rule-frequency">{rule.duration ? `${Math.round(rule.duration)}s` : '-'}</small>
+                    <code>{rule.query}</code>
                   </div>
                 </article>
               ))}
@@ -439,14 +436,11 @@ function Alerts() {
                   <i className="rule-icon">C</i>
                   <div>
                     <header>
-                      <div className="rule-head">
-                        <b>{rule.name}</b>
-                        <small className="rule-inline-note">{rule.lastRun || '待执行'}</small>
-                      </div>
+                      <b>{rule.name}<small className="rule-inline-note">{rule.lastRun || '待执行'}</small></b>
                       <span className={`alert-result ${customStateClass(rule.lastRun)}`}>{rule.status}</span>
                     </header>
-                    <code>{rule.source === 'custom-probe' ? `${rule.database} · ${rule.table}` : `${rule.database}.${rule.table}${rule.field ? ` · ${rule.field}` : ''}`}</code>
                     <small className="rule-frequency">{rule.timeWindow || '-'}</small>
+                    <code>{rule.source === 'custom-probe' ? `${rule.database} · ${rule.table}` : `${rule.database}.${rule.table}${rule.field ? ` · ${rule.field}` : ''}`}</code>
                   </div>
                 </article>
               ))}
