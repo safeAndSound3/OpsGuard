@@ -221,6 +221,66 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		writeJSON(w, http.StatusOK, service.GetSystemConfig())
 	})
 
+	mux.HandleFunc("/api/external-monitor/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, service.ExternalMonitorConfig())
+	})
+
+	mux.HandleFunc("/api/external-monitor/prometheus/alerts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		items, err := service.ListPrometheusAlerts()
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"alerts": items})
+	})
+
+	mux.HandleFunc("/api/external-monitor/prometheus/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		items, err := service.ListPrometheusMetrics(queryLimit(r, 200))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"metrics": items})
+	})
+
+	mux.HandleFunc("/api/external-monitor/prometheus/query", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		data, err := service.QueryPrometheus(r.URL.Query().Get("query"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": data})
+	})
+
+	mux.HandleFunc("/api/external-monitor/grafana/dashboards", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		items, err := service.ListGrafanaDashboards(queryLimit(r, 200))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"dashboards": items})
+	})
+
 	mux.HandleFunc("/api/mysql-monitor/instances", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})

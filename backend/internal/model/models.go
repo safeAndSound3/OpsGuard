@@ -194,3 +194,35 @@ type SSHMetricSnapshot struct {
 	CollectedAt time.Time         `json:"collectedAt"`
 	Metrics     map[string]string `json:"metrics"`
 }
+
+type ExternalMonitorConfig struct {
+	PrometheusURL        string `json:"prometheusUrl,omitempty"`
+	PrometheusConfigured bool   `json:"prometheusConfigured"`
+	GrafanaURL           string `json:"grafanaUrl,omitempty"`
+	GrafanaConfigured    bool   `json:"grafanaConfigured"`
+}
+
+type PrometheusAlert struct {
+	Name        string            `json:"name"`
+	State       string            `json:"state"`
+	Severity    string            `json:"severity,omitempty"`
+	Summary     string            `json:"summary,omitempty"`
+	Description string            `json:"description,omitempty"`
+	ActiveAt    string            `json:"activeAt,omitempty"`
+	Value       string            `json:"value,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+type PrometheusMetric struct {
+	Name string `json:"name"`
+}
+
+type GrafanaDashboard struct {
+	UID         string   `json:"uid"`
+	Title       string   `json:"title"`
+	URI         string   `json:"uri,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	FolderTitle string   `json:"folderTitle,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+}
