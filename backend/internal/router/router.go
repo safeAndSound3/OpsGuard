@@ -221,171 +221,39 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		writeJSON(w, http.StatusOK, service.GetSystemConfig())
 	})
 
-	mux.HandleFunc("/api/external-monitor/config", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			writeJSON(w, http.StatusOK, service.ExternalMonitorConfig())
+	mux.HandleFunc("/api/prometheus/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		if r.Method == http.MethodPut {
-			var req struct {
-				model.ExternalMonitorConfig
-				PrometheusToken string `json:"prometheusToken"`
-				GrafanaToken    string `json:"grafanaToken"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-				return
-			}
-			updated, err := service.SaveExternalMonitorConfig(req.ExternalMonitorConfig, req.PrometheusToken, req.GrafanaToken)
+		p := strings.TrimPrefix(r.URL.Path, "/api/prometheus/")
+		parts := strings.Split(strings.Trim(p, "/"), "/")
+		if len(parts) != 2 || parts[0] == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		switch parts[1] {
+		case "metrics":
+			items, err := service.ListPrometheusMetricNames(parts[0], queryLimit(r, 300))
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			writeJSON(w, http.StatusOK, updated)
-			return
-		}
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-	})
-
-	mux.HandleFunc("/api/external-monitor/prometheus/alerts", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		items, err := service.ListPrometheusAlerts()
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"alerts": items})
-	})
-
-	mux.HandleFunc("/api/external-monitor/prometheus/metrics", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		items, err := service.ListPrometheusMetrics(queryLimit(r, 200))
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"metrics": items})
-	})
-
-	mux.HandleFunc("/api/external-monitor/prometheus/query", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		data, err := service.QueryPrometheus(r.URL.Query().Get("query"))
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"data": data})
-	})
-
-	mux.HandleFunc("/api/external-monitor/grafana/dashboards", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		items, err := service.ListGrafanaDashboards(queryLimit(r, 200))
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"dashboards": items})
-	})
-
-	mux.HandleFunc("/api/mysql-monitor/instances", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"instances": service.ListMySQLInstanceStatuses()})
-	})
-
-	mux.HandleFunc("/api/mysql-monitor/instances/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		p := strings.TrimPrefix(r.URL.Path, "/api/mysql-monitor/instances/")
-		parts := strings.Split(strings.Trim(p, "/"), "/")
-		if len(parts) != 2 || parts[0] == "" {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-			return
-		}
-		limit := queryLimit(r, 100)
-		start, end := queryTimeRange(r)
-		switch parts[1] {
-		case "metrics":
-			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "snapshots": service.ListMySQLMetricSnapshots(parts[0], limit, start, end)})
-		case "slow-queries":
-			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "slowQueries": service.ListMySQLSlowQueries(parts[0], limit, start, end)})
-		default:
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-		}
-	})
-
-	mux.HandleFunc("/api/redis-monitor/instances", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"instances": service.ListRedisInstanceStatuses()})
-	})
-
-	mux.HandleFunc("/api/redis-monitor/instances/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		p := strings.TrimPrefix(r.URL.Path, "/api/redis-monitor/instances/")
-		parts := strings.Split(strings.Trim(p, "/"), "/")
-		if len(parts) != 2 || parts[0] == "" {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-			return
-		}
-		limit := queryLimit(r, 100)
-		start, end := queryTimeRange(r)
-		switch parts[1] {
-		case "metrics":
-			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "snapshots": service.ListRedisMetricSnapshots(parts[0], limit, start, end)})
-		default:
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-		}
-	})
-
-	mux.HandleFunc("/api/ssh-monitor/instances", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"instances": service.ListSSHInstanceStatuses()})
-	})
-
-	mux.HandleFunc("/api/ssh-monitor/instances/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		p := strings.TrimPrefix(r.URL.Path, "/api/ssh-monitor/instances/")
-		parts := strings.Split(strings.Trim(p, "/"), "/")
-		if len(parts) != 2 || parts[0] == "" {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-			return
-		}
-		limit := queryLimit(r, 100)
-		start, end := queryTimeRange(r)
-		switch parts[1] {
-		case "metrics":
-			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "snapshots": service.ListSSHMetricSnapshots(parts[0], limit, start, end)})
+			writeJSON(w, http.StatusOK, map[string]any{"metrics": items})
+		case "query":
+			data, err := service.QueryPrometheusDataSourceByID(parts[0], r.URL.Query().Get("query"))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"data": data})
+		case "alerts":
+			items, err := service.ListPrometheusDataSourceAlerts(parts[0])
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"alerts": items})
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}

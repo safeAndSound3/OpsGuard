@@ -35,6 +35,22 @@ func init() {
 	rules = GetCollectionRules()
 }
 
+func currentStore() *sql.DB {
+	mu.RLock()
+	defer mu.RUnlock()
+	return db
+}
+
+func normalizeLimit(limit int, fallback int) int {
+	if limit <= 0 {
+		return fallback
+	}
+	if limit > 1000 {
+		return 1000
+	}
+	return limit
+}
+
 func InitDataSourceStore() error {
 	host := getEnv("MYSQL_HOST", "127.0.0.1")
 	port := getEnv("MYSQL_PORT", "3306")
@@ -100,30 +116,16 @@ func InitDataSourceStore() error {
 	if _, err := appDB.ExecContext(ctx, `INSERT IGNORE INTO users (username, password, display_name) VALUES ('admin', 'admin@123', '平台管理员')`); err != nil {
 		return err
 	}
-	if err := initMySQLMonitorStore(appDB); err != nil {
-		return err
-	}
-	if err := initRedisMonitorStore(appDB); err != nil {
-		return err
-	}
-	if err := initSSHMonitorStore(appDB); err != nil {
-		return err
-	}
 	if err := initCollectionRuleStore(appDB); err != nil {
 		return err
 	}
-	if err := initExternalMonitorStore(appDB); err != nil {
-		return err
-	}
+	migrateToPrometheusDataSources(appDB)
+	clearCollectionRules(appDB)
 
 	mu.Lock()
 	db = appDB
 	mu.Unlock()
 	go startDataSourceHealthChecker()
-	startMySQLMonitorCollector()
-	startRedisMonitorCollector()
-	startSSHMonitorCollector()
-	startCollectionRuleEvaluator()
 	return nil
 }
 
@@ -204,8 +206,8 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	if ds.Name == "" || ds.Type == "" || ds.Host == "" || ds.Port == "" {
 		return model.DataSource{}, errors.New("name, type, host and port are required")
 	}
-	if strings.EqualFold(ds.Type, "mysql") && (strings.TrimSpace(ds.Username) == "" || strings.TrimSpace(ds.Password) == "") {
-		return model.DataSource{}, errors.New("mysql username and password are required")
+	if !strings.EqualFold(ds.Type, "prometheus") {
+		return model.DataSource{}, errors.New("目前仅支持 Prometheus 数据源")
 	}
 	if ok, msg := TestDataSourceConnection(ds); !ok {
 		return model.DataSource{}, errors.New(msg)
@@ -229,15 +231,6 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 		ds.ID, ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), ds.Enabled, ds.Status, ds.LastTest)
 	if err != nil {
 		return model.DataSource{}, err
-	}
-	if strings.EqualFold(ds.Type, "mysql") {
-		go collectMySQLInstance(current, ds)
-	}
-	if strings.EqualFold(ds.Type, "redis") {
-		go collectRedisInstance(current, ds)
-	}
-	if strings.EqualFold(ds.Type, "ssh") {
-		go collectSSHInstance(current, ds)
 	}
 	ds.Password = ""
 	return ds, nil
@@ -270,8 +263,8 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 		return model.DataSource{}, errors.New("data source not found")
 	}
 	ds.Enabled = existing.Enabled
-	if strings.EqualFold(ds.Type, "mysql") && strings.TrimSpace(ds.Username) == "" {
-		return model.DataSource{}, errors.New("mysql username is required")
+	if !strings.EqualFold(ds.Type, "prometheus") {
+		return model.DataSource{}, errors.New("目前仅支持 Prometheus 数据源")
 	}
 	if ds.Password == "" {
 		_, err = current.ExecContext(ctx, `UPDATE data_sources
@@ -290,36 +283,6 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 	updated, err := GetDataSourceByID(id)
 	if err != nil {
 		return model.DataSource{}, err
-	}
-	if strings.EqualFold(updated.Type, "mysql") {
-		updated.Password = ds.Password
-		if updated.Password == "" {
-			if secret, err := getDataSourcePassword(id); err == nil {
-				updated.Password = secret
-			}
-		}
-		go collectMySQLInstance(current, updated)
-		updated.Password = ""
-	}
-	if strings.EqualFold(updated.Type, "redis") {
-		updated.Password = ds.Password
-		if updated.Password == "" {
-			if secret, err := getDataSourcePassword(id); err == nil {
-				updated.Password = secret
-			}
-		}
-		go collectRedisInstance(current, updated)
-		updated.Password = ""
-	}
-	if strings.EqualFold(updated.Type, "ssh") {
-		updated.Password = ds.Password
-		if updated.Password == "" {
-			if secret, err := getDataSourcePassword(id); err == nil {
-				updated.Password = secret
-			}
-		}
-		go collectSSHInstance(current, updated)
-		updated.Password = ""
 	}
 	return updated, nil
 }
@@ -407,85 +370,23 @@ func SetDataSourceEnabled(id string, enabled bool) (model.DataSource, error) {
 	if err != nil {
 		return model.DataSource{}, err
 	}
-	if !enabled {
-		_, _ = current.ExecContext(ctx, `UPDATE collection_rules SET status = '停用' WHERE source IN (?, ?)`, id, existing.Name)
-	}
-	updated, err := GetDataSourceByID(id)
-	if err != nil {
-		return model.DataSource{}, err
-	}
-	if enabled && strings.EqualFold(updated.Type, "mysql") {
-		if secret, err := getDataSourcePassword(id); err == nil {
-			updated.Password = secret
-			go collectMySQLInstance(current, updated)
-			updated.Password = ""
-		}
-	}
-	if enabled && strings.EqualFold(updated.Type, "redis") {
-		if secret, err := getDataSourcePassword(id); err == nil {
-			updated.Password = secret
-			go collectRedisInstance(current, updated)
-			updated.Password = ""
-		}
-	}
-	if enabled && strings.EqualFold(updated.Type, "ssh") {
-		if secret, err := getDataSourcePassword(id); err == nil {
-			updated.Password = secret
-			go collectSSHInstance(current, updated)
-			updated.Password = ""
-		}
-	}
-	return updated, nil
+	return GetDataSourceByID(id)
 }
 
 func TestDataSourceConnection(ds model.DataSource) (bool, string) {
-	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" && !strings.EqualFold(ds.Type, "redis") {
-		if err := FillDataSourcePassword(&ds); err != nil {
-			return false, err.Error()
-		}
+	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" {
+		_ = FillDataSourcePassword(&ds)
 	}
-	if strings.EqualFold(ds.Type, "mysql") {
-		if strings.TrimSpace(ds.Username) == "" || strings.TrimSpace(ds.Password) == "" {
-			return false, "MySQL 用户名和密码不能为空"
-		}
-		targetDB := primaryDatabase(ds.Database)
-		if targetDB == "" {
-			targetDB = "mysql"
-		}
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?timeout=5s", ds.Username, ds.Password, ds.Host, ds.Port, targetDB)
-		testDB, err := sql.Open("mysql", dsn)
-		if err != nil {
-			return false, err.Error()
-		}
-		defer testDB.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := testDB.PingContext(ctx); err != nil {
-			return false, err.Error()
-		}
-		return true, "MySQL 连接测试成功"
+	if !strings.EqualFold(ds.Type, "prometheus") {
+		return false, "目前仅支持 Prometheus 数据源"
 	}
-	if strings.EqualFold(ds.Type, "redis") {
-		client, err := openRedisTarget(context.Background(), ds)
-		if err != nil {
-			return false, err.Error()
-		}
-		_ = client.Close()
-		return true, "Redis 连接测试成功"
-	}
-	if strings.EqualFold(ds.Type, "ssh") {
-		client, err := openSSHTarget(ds)
-		if err != nil {
-			return false, err.Error()
-		}
-		_ = client.Close()
-		return true, "SSH 连接测试成功"
-	}
-
 	if ds.Host == "" || ds.Port == "" {
 		return false, "主机地址和端口不能为空"
 	}
-	return true, "连接参数已校验，驱动测试待接入"
+	if err := TestPrometheusDataSource(ds); err != nil {
+		return false, err.Error()
+	}
+	return true, "Prometheus 连接测试成功"
 }
 
 func FillDataSourcePassword(ds *model.DataSource) error {
@@ -510,40 +411,7 @@ func primaryDatabase(value string) string {
 }
 
 func ListDataSourceDatabases(ds model.DataSource) ([]string, error) {
-	if strings.EqualFold(ds.Type, "redis") {
-		return []string{"db0", "db1", "db2", "db3", "db4", "db5", "db6", "db7", "db8", "db9", "db10", "db11", "db12", "db13", "db14", "db15"}, nil
-	}
-	if strings.EqualFold(ds.Type, "ssh") {
-		return []string{"system"}, nil
-	}
-	if !strings.EqualFold(ds.Type, "mysql") {
-		return []string{}, nil
-	}
-	if strings.TrimSpace(ds.Username) == "" || strings.TrimSpace(ds.Password) == "" {
-		return nil, errors.New("MySQL 用户名和密码不能为空")
-	}
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/mysql?timeout=5s", ds.Username, ds.Password, ds.Host, ds.Port)
-	testDB, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, err
-	}
-	defer testDB.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	rows, err := testDB.QueryContext(ctx, `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	databases := []string{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		databases = append(databases, name)
-	}
-	return databases, rows.Err()
+	return []string{}, nil
 }
 
 func startDataSourceHealthChecker() {
@@ -789,6 +657,24 @@ func initCollectionRuleStore(appDB *sql.DB) error {
 	return err
 }
 
+func clearCollectionRules(appDB *sql.DB) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = appDB.ExecContext(ctx, `DELETE FROM collection_rules`)
+	_, _ = appDB.ExecContext(ctx, `DELETE FROM alert_notifications`)
+}
+
+func migrateToPrometheusDataSources(appDB *sql.DB) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = appDB.ExecContext(ctx, `DELETE FROM data_sources WHERE LOWER(type) <> 'prometheus'`)
+	_, _ = appDB.ExecContext(ctx, `INSERT INTO data_sources
+		(id, name, type, host, port, username, password, database_name, remark, options_json, enabled, status, last_test)
+		VALUES ('prometheus-local', '本机 Prometheus', 'Prometheus', '127.0.0.1', '9090', '', '', '', 'docker-compose 部署的 Prometheus', '{}', 1, '健康', ?)
+		ON DUPLICATE KEY UPDATE type = VALUES(type), host = VALUES(host), port = VALUES(port), remark = VALUES(remark), enabled = 1`,
+		time.Now().Format("2006-01-02 15:04"))
+}
+
 func startCollectionRuleEvaluator() {
 	collectionRuleEvaluatorOnce.Do(func() {
 		go func() {
@@ -976,42 +862,7 @@ func resolveAlertNotification(appDB *sql.DB, ruleID string) {
 }
 
 func evaluateTodayHasDataRule(rule model.CollectionRule) string {
-	now := time.Now()
-	checkedAt := now.Format("15:04")
-	deadline := todayDataRuleDeadline(rule.TimeWindow, now)
-	ds, err := getRuleDataSourceWithSecret(rule.Source)
-	if err != nil {
-		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
-	}
-	if !ds.Enabled {
-		return fmt.Sprintf("已暂停 %s：数据源未启用", checkedAt)
-	}
-	if !strings.EqualFold(ds.Type, "mysql") {
-		return fmt.Sprintf("执行失败 %s：当天有数据仅支持 MySQL", checkedAt)
-	}
-	if !validSQLIdentifier(rule.Database) || !validSQLIdentifier(rule.Table) || !validSQLIdentifier(rule.Field) {
-		return fmt.Sprintf("执行失败 %s：库名、表名或字段名不合法", checkedAt)
-	}
-	targetDB, err := openMySQLTarget(ds)
-	if err != nil {
-		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
-	}
-	defer targetDB.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	query := fmt.Sprintf("SELECT COUNT(1) FROM `%s`.`%s` WHERE `%s` >= CURDATE() AND `%s` < CURDATE() + INTERVAL 1 DAY",
-		rule.Database, rule.Table, rule.Field, rule.Field)
-	var count int64
-	if err := targetDB.QueryRowContext(ctx, query).Scan(&count); err != nil {
-		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
-	}
-	if count > 0 {
-		return fmt.Sprintf("正常 %s：今日 %d 条", checkedAt, count)
-	}
-	if now.Before(deadline) {
-		return fmt.Sprintf("等待 %s：今日暂无数据，%s 后告警", checkedAt, deadline.Format("15:04"))
-	}
-	return fmt.Sprintf("告警 %s：今日无数据", checkedAt)
+	return fmt.Sprintf("等待 %s：平台已切换为 Prometheus 数据源，旧数据库告警规则已废弃", time.Now().Format("15:04"))
 }
 
 func todayDataRuleDeadline(value string, now time.Time) time.Time {
@@ -1136,59 +987,7 @@ func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
 }
 
 func GetSchemaForDataSource(id string, database string, table string) map[string]map[string][]string {
-	ds, err := GetDataSourceByID(id)
-	if err != nil {
-		return map[string]map[string][]string{}
-	}
-	if strings.EqualFold(ds.Type, "redis") {
-		return redisMetricSchema(ds.Database)
-	}
-	if strings.EqualFold(ds.Type, "ssh") {
-		return sshMetricSchema()
-	}
-	if !strings.EqualFold(ds.Type, "mysql") {
-		return map[string]map[string][]string{}
-	}
-	database = strings.TrimSpace(database)
-	table = strings.TrimSpace(table)
-	password, err := getDataSourcePassword(id)
-	if err != nil {
-		return map[string]map[string][]string{}
-	}
-	ds.Password = password
-	targetDB, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/information_schema?timeout=5s&parseTime=true&loc=Local", ds.Username, ds.Password, ds.Host, ds.Port))
-	if err != nil {
-		return map[string]map[string][]string{}
-	}
-	defer targetDB.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	monitoredDatabases := []string{}
-	for _, item := range strings.Split(ds.Database, ",") {
-		if database := strings.TrimSpace(item); database != "" {
-			monitoredDatabases = append(monitoredDatabases, database)
-		}
-	}
-	if database == "" {
-		if len(monitoredDatabases) == 0 {
-			return listMySQLSchemaDatabases(ctx, targetDB)
-		}
-		result := map[string]map[string][]string{}
-		for _, databaseName := range monitoredDatabases {
-			result[databaseName] = map[string][]string{}
-		}
-		return result
-	}
-	if !validSQLIdentifier(database) || !databaseAllowed(database, monitoredDatabases) {
-		return map[string]map[string][]string{}
-	}
-	if table == "" {
-		return listMySQLSchemaTables(ctx, targetDB, database)
-	}
-	if !validSQLIdentifier(table) {
-		return map[string]map[string][]string{}
-	}
-	return listMySQLSchemaColumns(ctx, targetDB, database, table)
+	return map[string]map[string][]string{}
 }
 
 func listMySQLSchemaDatabases(ctx context.Context, targetDB *sql.DB) map[string]map[string][]string {
