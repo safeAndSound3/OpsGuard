@@ -967,6 +967,12 @@ function formatCollectedAt(value: string) {
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { hour12: false })
 }
+function probeField(condition: string) {
+  if (condition === '页面包含') return 'body'
+  if (condition === '状态码等于') return 'status_code'
+  if (condition === 'TCP端口存活') return 'tcp_connect'
+  return 'http_status'
+}
 function Notifications() {
   const [items, setItems] = useState<NotificationItem[]>([])
   const [filter, setFilter] = useState('all')
@@ -1027,6 +1033,8 @@ function Alerts() {
   const [selectedField, setSelectedField] = useState('')
   const [ruleCondition, setRuleCondition] = useState('大于')
   const [ruleStatus, setRuleStatus] = useState<'启用' | '停用'>('启用')
+  const [ruleMode, setRuleMode] = useState<'source' | 'custom'>('source')
+  const [probeType, setProbeType] = useState('http')
   const [statusSavingId, setStatusSavingId] = useState('')
   useEffect(() => {
     if (!message) return
@@ -1141,16 +1149,19 @@ function Alerts() {
     }
   }
   const openRuleModal = (rule?: Rule) => {
+    const custom = rule?.source === 'custom-probe'
     const source = rule ? sources.find(item => item.name === rule.source || item.id === rule.source) : sources[0]
     setEditingRule(rule || null)
-    setSelectedSourceId(source?.id || '')
-    setSelectedDatabase(rule?.database || '')
+    setRuleMode(custom ? 'custom' : 'source')
+    setProbeType(custom ? (rule?.database || 'http') : 'http')
+    setSelectedSourceId(custom ? '' : source?.id || '')
+    setSelectedDatabase(custom ? '' : rule?.database || '')
     setSelectedTable(rule?.table || '')
     setSelectedField(rule?.field || '')
-    setRuleCondition(rule?.condition || '大于')
+    setRuleCondition(rule?.condition || (custom ? 'HTTP状态正常' : '大于'))
     setRuleStatus(rule?.status === '停用' ? '停用' : '启用')
     setModalOpen(true)
-    if (source?.id) void loadSchema(source.id, rule?.database || '', rule?.table || '', rule?.field || '')
+    if (!custom && source?.id) void loadSchema(source.id, rule?.database || '', rule?.table || '', rule?.field || '')
   }
   const closeRuleModal = () => {
     setModalOpen(false)
@@ -1163,6 +1174,8 @@ function Alerts() {
     setSelectedField('')
     setRuleCondition('大于')
     setRuleStatus('启用')
+    setRuleMode('source')
+    setProbeType('http')
   }
   const sourceDatabases = splitDatabaseList(sources.find(source => source.id === selectedSourceId)?.database || '')
   const databases = sourceDatabases.length > 0 ? Array.from(new Set([...sourceDatabases, ...Object.keys(schema)])) : Object.keys(schema)
@@ -1172,7 +1185,8 @@ function Alerts() {
   const databaseOptions = databases.map(database => ({ value: database, label: database }))
   const tableOptions = tables.map(table => ({ value: table, label: table }))
   const fieldOptions = fields.map(field => ({ value: field, label: field }))
-  const conditionOptions = ['当天有数据', '大于', '大于等于', '等于', '小于', '包含', '不为空'].map(condition => ({ value: condition, label: condition }))
+  const conditionOptions = (ruleMode === 'custom' ? ['HTTP状态正常', '状态码等于', '页面包含', 'TCP端口存活'] : ['当天有数据', '大于', '大于等于', '等于', '小于', '包含', '不为空']).map(condition => ({ value: condition, label: condition }))
+  const probeTypeOptions = [{ value: 'http', label: 'HTTP 页面' }, { value: 'tcp', label: 'TCP 端口' }]
   const alertingCount = rules.filter(rule => rule.lastRun.startsWith('告警') || rule.lastRun.startsWith('执行失败')).length
   const waitingCount = rules.filter(rule => rule.lastRun.startsWith('等待')).length
   const normalCount = rules.filter(rule => rule.lastRun.startsWith('正常')).length
@@ -1189,13 +1203,13 @@ function Alerts() {
     const payload: Rule = {
       id: editingRule?.id || '',
       name: String(form.get('name') || ''),
-      source: selectedSourceId,
-      database: selectedDatabase,
-      table: selectedTable,
-      field: selectedField,
+      source: ruleMode === 'custom' ? 'custom-probe' : selectedSourceId,
+      database: ruleMode === 'custom' ? probeType : selectedDatabase,
+      table: ruleMode === 'custom' ? String(form.get('probeTarget') || '') : selectedTable,
+      field: ruleMode === 'custom' ? probeField(ruleCondition) : selectedField,
       condition: ruleCondition,
       threshold: String(form.get('threshold') || ''),
-      timeWindow: String(form.get('timeWindow') || '5分钟'),
+      timeWindow: ruleMode === 'custom' ? String(form.get('timeWindow') || '5s') : String(form.get('timeWindow') || '5分钟'),
       lastRun: editingRule?.lastRun || '待执行',
       status: ruleStatus,
     }
@@ -1282,7 +1296,7 @@ function Alerts() {
   }
   return (
     <div className="page">
-      <PageHead title="告警规则" description="按具体数据源选择库、表、字段；当天有数据规则支持截止时间，过点无数据才告警。" action="新建规则" onAction={() => openRuleModal()} />
+      <PageHead title="告警规则" description="支持数据源指标规则和自定义 HTTP / TCP 探测规则。" action="新建规则" onAction={() => openRuleModal()} />
       <section className="alert-summary-grid">
         <div className="surface alert-summary-card danger"><span>当前告警</span><b>{alertingCount}</b><small>告警或执行失败</small></div>
         <div className="surface alert-summary-card pending"><span>等待数据</span><b>{waitingCount}</b><small>未到截止时间</small></div>
@@ -1293,14 +1307,16 @@ function Alerts() {
         {rules.length === 0 ? (
           <div className="empty-state alert-empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，选择数据源后会自动加载库表字段。</span></div>
         ) : rules.map(r => {
-          const sourceName = sources.find(source => source.id === r.source || source.name === r.source)?.name || r.source
+          const customRule = r.source === 'custom-probe'
+          const sourceName = customRule ? '自定义探测' : sources.find(source => source.id === r.source || source.name === r.source)?.name || r.source
+          const ruleTarget = customRule ? `${r.database.toUpperCase()} · ${r.table} · ${r.condition}${r.threshold ? ` ${r.threshold}` : ''}` : `${r.database || '-'}.${r.table || '-'}.${r.field || '-'} · ${r.condition}${r.threshold ? ` ${r.threshold}` : ''}`
           const resultKind = r.lastRun.startsWith('告警') || r.lastRun.startsWith('执行失败') ? 'danger' : r.lastRun.startsWith('正常') ? 'success' : r.lastRun.startsWith('等待') ? 'pending' : 'idle'
           return (
             <div className="rule-row alert-rule-row" key={r.id}>
               <i className="rule-icon">⌁</i>
               <div>
                 <b>{r.name}</b>
-                <span>{sourceName} · {r.database || '-'}.{r.table || '-'}.{r.field || '-'} · {r.condition}{r.threshold ? ` ${r.threshold}` : ''} · {r.timeWindow}</span>
+                <span>{sourceName} · {ruleTarget} · {r.timeWindow}</span>
               </div>
               <span className={`alert-result ${resultKind}`}>{r.lastRun || '待执行'}</span>
               <div className="rule-status-cell">
@@ -1324,19 +1340,19 @@ function Alerts() {
             <form onSubmit={saveRule}>
               <div className="modal-form">
                 <label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={editingRule?.name || ''} required /></label>
-                <SelectField label="数据源" required value={selectedSourceId} options={sourceOptions} placeholder="请选择数据源" onChange={(sourceId) => { setSelectedSourceId(sourceId); void loadSchema(sourceId) }} />
-                <SelectField label="数据库" required value={selectedDatabase} options={databaseOptions} placeholder={schemaLoading ? '加载中...' : '请选择数据库'} disabled={!selectedSourceId || schemaLoading || databases.length === 0} onChange={(database) => void loadTablesForDatabase(database)} />
-                <SelectField label="表名" required value={selectedTable} options={tableOptions} placeholder={schemaLoading ? '加载中...' : '请选择表'} disabled={!selectedDatabase || schemaLoading || tables.length === 0} onChange={(table) => void loadFieldsForTable(table)} />
-                <SelectField label="字段 / 指标" required value={selectedField} options={fieldOptions} placeholder={schemaLoading ? '加载中...' : '请选择字段'} disabled={!selectedTable || schemaLoading || fields.length === 0} onChange={(field) => setSelectedField(field)} />
+                <SelectField label="规则类型" value={ruleMode} options={[{ value: 'source', label: '数据源指标' }, { value: 'custom', label: '自定义探测' }]} placeholder="请选择规则类型" onChange={(mode) => { const next = mode === 'custom' ? 'custom' : 'source'; setRuleMode(next); setRuleCondition(next === 'custom' ? 'HTTP状态正常' : '大于') }} />
+                {ruleMode === 'source' && <><SelectField label="数据源" required value={selectedSourceId} options={sourceOptions} placeholder="请选择数据源" onChange={(sourceId) => { setSelectedSourceId(sourceId); void loadSchema(sourceId) }} /><SelectField label="数据库" required value={selectedDatabase} options={databaseOptions} placeholder={schemaLoading ? '加载中...' : '请选择数据库'} disabled={!selectedSourceId || schemaLoading || databases.length === 0} onChange={(database) => void loadTablesForDatabase(database)} /><SelectField label="表名" required value={selectedTable} options={tableOptions} placeholder={schemaLoading ? '加载中...' : '请选择表'} disabled={!selectedDatabase || schemaLoading || tables.length === 0} onChange={(table) => void loadFieldsForTable(table)} /><SelectField label="字段 / 指标" required value={selectedField} options={fieldOptions} placeholder={schemaLoading ? '加载中...' : '请选择字段'} disabled={!selectedTable || schemaLoading || fields.length === 0} onChange={(field) => setSelectedField(field)} /></>}
+                {ruleMode === 'custom' && <><SelectField label="探测类型" value={probeType} options={probeTypeOptions} placeholder="请选择探测类型" onChange={(type) => { setProbeType(type); setRuleCondition(type === 'tcp' ? 'TCP端口存活' : 'HTTP状态正常') }} /><label>目标地址 <span className="required-mark">*</span><input name="probeTarget" defaultValue={editingRule?.source === 'custom-probe' ? editingRule.table : ''} placeholder={probeType === 'tcp' ? '例如 127.0.0.1:80' : '例如 https://example.com/health'} required={ruleMode === 'custom'} /></label></>}
                 <SelectField label="条件" value={ruleCondition} options={conditionOptions} placeholder="请选择条件" onChange={(condition) => setRuleCondition(condition)} />
-                <label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" disabled={ruleCondition === '当天有数据'} /></label>
-                <label>{ruleCondition === '当天有数据' ? '截止时间' : '时间窗口'}<input key={ruleCondition} name="timeWindow" defaultValue={editingRule?.timeWindow || (ruleCondition === '当天有数据' ? '03:00' : '5分钟')} placeholder={ruleCondition === '当天有数据' ? '例如 03:00' : '例如 5分钟'} /></label>
+                <label>{ruleMode === 'custom' && ruleCondition === '页面包含' ? '期望内容' : ruleCondition === '状态码等于' ? '期望状态码' : '阈值'}<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder={ruleMode === 'custom' ? (ruleCondition === '页面包含' ? '例如 OK' : ruleCondition === '状态码等于' ? '例如 200' : '无需填写') : '例如 10 或 80%'} disabled={ruleCondition === '当天有数据' || ruleCondition === 'HTTP状态正常' || ruleCondition === 'TCP端口存活'} /></label>
+                <label>{ruleCondition === '当天有数据' ? '截止时间' : ruleMode === 'custom' ? '超时时间' : '时间窗口'}<input key={`${ruleMode}-${ruleCondition}`} name="timeWindow" defaultValue={editingRule?.timeWindow || (ruleCondition === '当天有数据' ? '03:00' : ruleMode === 'custom' ? '5s' : '5分钟')} placeholder={ruleCondition === '当天有数据' ? '例如 03:00' : ruleMode === 'custom' ? '例如 5s，最长 30s' : '例如 5分钟'} /></label>
                 {editingRule && <div className="field-block status-field"><span className="field-label">状态</span><StatusSwitch checked={ruleStatus === '启用'} onChange={(checked) => setRuleStatus(checked ? '启用' : '停用')} /></div>}
               </div>
-              {selectedSourceId && !schemaLoading && databases.length === 0 && <div className="form-hint">当前数据源没有可用库表字段，或账号没有读取 information_schema 权限。</div>}
+              {ruleMode === 'source' && selectedSourceId && !schemaLoading && databases.length === 0 && <div className="form-hint">当前数据源没有可用库表字段，或账号没有读取 information_schema 权限。</div>}
+              {ruleMode === 'custom' && <div className="form-hint">自定义探测会每分钟执行一次，异常写入通知中心，恢复后自动标记恢复。</div>}
               <footer className="modal-actions">
                 <button className="button secondary" type="button" onClick={(event) => { if (event.target === event.currentTarget) closeRuleModal() }}>取消</button>
-                <button className="button" type="submit" disabled={saving || !selectedSourceId || !selectedDatabase || !selectedTable || !selectedField}>{saving ? '保存中...' : '保存'}</button>
+                <button className="button" type="submit" disabled={saving || (ruleMode === 'source' && (!selectedSourceId || !selectedDatabase || !selectedTable || !selectedField))}>{saving ? '保存中...' : '保存'}</button>
               </footer>
             </form>
           </section>

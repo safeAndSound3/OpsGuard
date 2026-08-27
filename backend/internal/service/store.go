@@ -6,7 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -799,21 +804,136 @@ func evaluateCollectionRules() {
 	if current == nil {
 		return
 	}
-	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, condition_text, time_window
-		FROM collection_rules WHERE status = '启用' AND condition_text = '当天有数据'`)
+	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, condition_text, COALESCE(threshold, ''), time_window
+		FROM collection_rules WHERE status = '启用'`)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var rule model.CollectionRule
-		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition, &rule.TimeWindow); err != nil {
+		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition, &rule.Threshold, &rule.TimeWindow); err != nil {
 			continue
 		}
-		lastRun := evaluateTodayHasDataRule(rule)
+		lastRun := evaluateCollectionRule(rule)
 		_, _ = current.Exec(`UPDATE collection_rules SET last_run = ? WHERE id = ?`, lastRun, rule.ID)
 		syncAlertNotification(current, rule, lastRun)
 	}
+}
+
+func evaluateCollectionRule(rule model.CollectionRule) string {
+	if isCustomProbeRule(rule) {
+		return evaluateCustomProbeRule(rule)
+	}
+	if rule.Condition == "当天有数据" {
+		return evaluateTodayHasDataRule(rule)
+	}
+	return evaluateMetricThresholdRule(rule)
+}
+
+func isCustomProbeRule(rule model.CollectionRule) bool {
+	return strings.EqualFold(strings.TrimSpace(rule.Source), "custom-probe")
+}
+
+func evaluateMetricThresholdRule(rule model.CollectionRule) string {
+	return fmt.Sprintf("等待 %s：普通阈值规则评估待接入", time.Now().Format("15:04"))
+}
+
+func evaluateCustomProbeRule(rule model.CollectionRule) string {
+	now := time.Now()
+	checkedAt := now.Format("15:04")
+	probeType := strings.ToLower(strings.TrimSpace(rule.Database))
+	condition := strings.TrimSpace(rule.Condition)
+	target := strings.TrimSpace(rule.Table)
+	timeout := probeTimeout(rule.TimeWindow)
+	if target == "" {
+		return fmt.Sprintf("执行失败 %s：探测目标不能为空", checkedAt)
+	}
+	switch probeType {
+	case "http", "https", "http页面":
+		return evaluateHTTPProbe(rule, target, condition, timeout, checkedAt)
+	case "tcp", "tcp端口":
+		return evaluateTCPProbe(target, timeout, checkedAt)
+	default:
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+			return evaluateHTTPProbe(rule, target, condition, timeout, checkedAt)
+		}
+		return evaluateTCPProbe(target, timeout, checkedAt)
+	}
+}
+
+func evaluateHTTPProbe(rule model.CollectionRule, target string, condition string, timeout time.Duration, checkedAt string) string {
+	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+		target = "http://" + target
+	}
+	parsed, err := url.ParseRequestURI(target)
+	if err != nil || parsed.Host == "" {
+		return fmt.Sprintf("执行失败 %s：URL 不合法", checkedAt)
+	}
+	client := http.Client{Timeout: timeout}
+	start := time.Now()
+	resp, err := client.Get(target)
+	if err != nil {
+		return fmt.Sprintf("告警 %s：HTTP 探测失败：%s", checkedAt, err.Error())
+	}
+	defer resp.Body.Close()
+	latency := time.Since(start)
+	bodyLimit := int64(256 * 1024)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, bodyLimit))
+	if condition == "页面包含" {
+		expected := strings.TrimSpace(rule.Threshold)
+		if expected == "" {
+			return fmt.Sprintf("执行失败 %s：页面包含规则需要填写期望内容", checkedAt)
+		}
+		if !strings.Contains(string(body), expected) {
+			return fmt.Sprintf("告警 %s：页面未包含“%s”，状态码 %d，耗时 %dms", checkedAt, expected, resp.StatusCode, latency.Milliseconds())
+		}
+		return fmt.Sprintf("正常 %s：页面包含“%s”，状态码 %d，耗时 %dms", checkedAt, expected, resp.StatusCode, latency.Milliseconds())
+	}
+	if condition == "状态码等于" {
+		expected, err := strconv.Atoi(strings.TrimSpace(rule.Threshold))
+		if err != nil {
+			return fmt.Sprintf("执行失败 %s：状态码阈值必须是数字", checkedAt)
+		}
+		if resp.StatusCode != expected {
+			return fmt.Sprintf("告警 %s：HTTP 状态码 %d，不等于 %d，耗时 %dms", checkedAt, resp.StatusCode, expected, latency.Milliseconds())
+		}
+		return fmt.Sprintf("正常 %s：HTTP 状态码 %d，耗时 %dms", checkedAt, resp.StatusCode, latency.Milliseconds())
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return fmt.Sprintf("告警 %s：HTTP 状态码 %d，耗时 %dms", checkedAt, resp.StatusCode, latency.Milliseconds())
+	}
+	return fmt.Sprintf("正常 %s：HTTP 状态码 %d，耗时 %dms", checkedAt, resp.StatusCode, latency.Milliseconds())
+}
+
+func evaluateTCPProbe(target string, timeout time.Duration, checkedAt string) string {
+	if !strings.Contains(target, ":") {
+		return fmt.Sprintf("执行失败 %s：TCP 探测目标必须是 host:port", checkedAt)
+	}
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", target, timeout)
+	if err != nil {
+		return fmt.Sprintf("告警 %s：TCP 连接失败：%s", checkedAt, err.Error())
+	}
+	_ = conn.Close()
+	return fmt.Sprintf("正常 %s：TCP 端口可连接，耗时 %dms", checkedAt, time.Since(start).Milliseconds())
+}
+
+func probeTimeout(value string) time.Duration {
+	text := strings.TrimSpace(strings.ReplaceAll(value, "秒", "s"))
+	if text == "" {
+		return 5 * time.Second
+	}
+	if duration, err := time.ParseDuration(text); err == nil {
+		if duration < time.Second {
+			return time.Second
+		}
+		if duration > 30*time.Second {
+			return 30 * time.Second
+		}
+		return duration
+	}
+	return 5 * time.Second
 }
 
 func syncAlertNotification(appDB *sql.DB, rule model.CollectionRule, lastRun string) {
@@ -984,6 +1104,9 @@ func normalizeCollectionRule(rule model.CollectionRule) model.CollectionRule {
 
 func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
 	if rule.Status != "启用" {
+		return nil
+	}
+	if isCustomProbeRule(rule) {
 		return nil
 	}
 	if currentStore() == nil {
