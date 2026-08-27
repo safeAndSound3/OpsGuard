@@ -252,6 +252,35 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		}
 	})
 
+	mux.HandleFunc("/api/redis-monitor/instances", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"instances": service.ListRedisInstanceStatuses()})
+	})
+
+	mux.HandleFunc("/api/redis-monitor/instances/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		p := strings.TrimPrefix(r.URL.Path, "/api/redis-monitor/instances/")
+		parts := strings.Split(strings.Trim(p, "/"), "/")
+		if len(parts) != 2 || parts[0] == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		limit := queryLimit(r, 100)
+		start, end := queryTimeRange(r)
+		switch parts[1] {
+		case "metrics":
+			writeJSON(w, http.StatusOK, map[string]any{"sourceId": parts[0], "snapshots": service.ListRedisMetricSnapshots(parts[0], limit, start, end)})
+		default:
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		}
+	})
+
 	mux.HandleFunc("/api/collection-rules", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

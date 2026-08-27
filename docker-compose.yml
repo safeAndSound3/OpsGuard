@@ -17,6 +17,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+  redis:
+    image: redis:7.2
+    container_name: monitor-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "6379:6379"
+    volumes:
+      - /usr/local/project/redis:/data
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
   nginx:
     image: nginx:stable
     container_name: nginx-opsguard
@@ -30,4 +47,6 @@ services:
       - /usr/local/project/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       mysql:
+        condition: service_healthy
+      redis:
         condition: service_healthy

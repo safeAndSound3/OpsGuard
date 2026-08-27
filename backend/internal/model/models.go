@@ -112,3 +112,36 @@ type MySQLSlowQuerySample struct {
 	LastSeen         time.Time `json:"lastSeen,omitempty"`
 	CollectedAt      time.Time `json:"collectedAt"`
 }
+
+type RedisInstanceStatus struct {
+	SourceID            string    `json:"sourceId"`
+	SourceName          string    `json:"sourceName"`
+	Host                string    `json:"host"`
+	Port                string    `json:"port"`
+	Status              string    `json:"status"`
+	Version             string    `json:"version,omitempty"`
+	UptimeSeconds       int64     `json:"uptimeSeconds"`
+	ConnectedClients    int64     `json:"connectedClients"`
+	BlockedClients      int64     `json:"blockedClients"`
+	UsedMemory          int64     `json:"usedMemory"`
+	MaxMemory           int64     `json:"maxMemory"`
+	MemoryFragmentation float64   `json:"memoryFragmentation"`
+	OpsPerSecond        int64     `json:"opsPerSecond"`
+	TotalCommands       int64     `json:"totalCommands"`
+	HitRate             float64   `json:"hitRate"`
+	EvictedKeys         int64     `json:"evictedKeys"`
+	ExpiredKeys         int64     `json:"expiredKeys"`
+	RejectedConnections int64     `json:"rejectedConnections"`
+	SlowlogLength       int64     `json:"slowlogLength"`
+	KeyCount            int64     `json:"keyCount"`
+	Role                string    `json:"role,omitempty"`
+	LastError           string    `json:"lastError,omitempty"`
+	LastCollectedAt     time.Time `json:"lastCollectedAt"`
+}
+
+type RedisMetricSnapshot struct {
+	ID          int64             `json:"id"`
+	SourceID    string            `json:"sourceId"`
+	CollectedAt time.Time         `json:"collectedAt"`
+	Metrics     map[string]string `json:"metrics"`
+}

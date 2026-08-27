@@ -96,6 +96,9 @@ func InitDataSourceStore() error {
 	if err := initMySQLMonitorStore(appDB); err != nil {
 		return err
 	}
+	if err := initRedisMonitorStore(appDB); err != nil {
+		return err
+	}
 	if err := initCollectionRuleStore(appDB); err != nil {
 		return err
 	}
@@ -105,6 +108,7 @@ func InitDataSourceStore() error {
 	mu.Unlock()
 	go startDataSourceHealthChecker()
 	startMySQLMonitorCollector()
+	startRedisMonitorCollector()
 	return nil
 }
 
@@ -214,6 +218,9 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	if strings.EqualFold(ds.Type, "mysql") {
 		go collectMySQLInstance(current, ds)
 	}
+	if strings.EqualFold(ds.Type, "redis") {
+		go collectRedisInstance(current, ds)
+	}
 	ds.Password = ""
 	return ds, nil
 }
@@ -274,6 +281,16 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 			}
 		}
 		go collectMySQLInstance(current, updated)
+		updated.Password = ""
+	}
+	if strings.EqualFold(updated.Type, "redis") {
+		updated.Password = ds.Password
+		if updated.Password == "" {
+			if secret, err := getDataSourcePassword(id); err == nil {
+				updated.Password = secret
+			}
+		}
+		go collectRedisInstance(current, updated)
 		updated.Password = ""
 	}
 	return updated, nil
@@ -376,11 +393,18 @@ func SetDataSourceEnabled(id string, enabled bool) (model.DataSource, error) {
 			updated.Password = ""
 		}
 	}
+	if enabled && strings.EqualFold(updated.Type, "redis") {
+		if secret, err := getDataSourcePassword(id); err == nil {
+			updated.Password = secret
+			go collectRedisInstance(current, updated)
+			updated.Password = ""
+		}
+	}
 	return updated, nil
 }
 
 func TestDataSourceConnection(ds model.DataSource) (bool, string) {
-	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" {
+	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" && !strings.EqualFold(ds.Type, "redis") {
 		if err := FillDataSourcePassword(&ds); err != nil {
 			return false, err.Error()
 		}
@@ -405,6 +429,14 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 			return false, err.Error()
 		}
 		return true, "MySQL 连接测试成功"
+	}
+	if strings.EqualFold(ds.Type, "redis") {
+		client, err := openRedisTarget(context.Background(), ds)
+		if err != nil {
+			return false, err.Error()
+		}
+		_ = client.Close()
+		return true, "Redis 连接测试成功"
 	}
 
 	if ds.Host == "" || ds.Port == "" {
@@ -435,6 +467,9 @@ func primaryDatabase(value string) string {
 }
 
 func ListDataSourceDatabases(ds model.DataSource) ([]string, error) {
+	if strings.EqualFold(ds.Type, "redis") {
+		return []string{"db0", "db1", "db2", "db3", "db4", "db5", "db6", "db7", "db8", "db9", "db10", "db11", "db12", "db13", "db14", "db15"}, nil
+	}
 	if !strings.EqualFold(ds.Type, "mysql") {
 		return []string{}, nil
 	}
@@ -676,7 +711,13 @@ func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
 
 func GetSchemaForDataSource(id string) map[string]map[string][]string {
 	ds, err := GetDataSourceByID(id)
-	if err != nil || !strings.EqualFold(ds.Type, "mysql") {
+	if err != nil {
+		return map[string]map[string][]string{}
+	}
+	if strings.EqualFold(ds.Type, "redis") {
+		return redisMetricSchema(ds.Database)
+	}
+	if !strings.EqualFold(ds.Type, "mysql") {
 		return map[string]map[string][]string{}
 	}
 	password, err := getDataSourcePassword(id)
@@ -729,6 +770,41 @@ func GetSchemaForDataSource(id string) map[string]map[string][]string {
 		result[databaseName][tableName] = append(result[databaseName][tableName], columnName)
 	}
 	return result
+}
+
+func redisMetricSchema(database string) map[string]map[string][]string {
+	databases := splitDatabaseList(database)
+	if len(databases) == 0 {
+		databases = []string{"db0"}
+	}
+	fields := []string{
+		"connected_clients",
+		"blocked_clients",
+		"used_memory",
+		"mem_fragmentation_ratio",
+		"instantaneous_ops_per_sec",
+		"hit_rate",
+		"evicted_keys",
+		"expired_keys",
+		"rejected_connections",
+		"slowlog_len",
+		"key_count",
+	}
+	result := make(map[string]map[string][]string, len(databases))
+	for _, databaseName := range databases {
+		result[databaseName] = map[string][]string{"Redis 性能指标": fields}
+	}
+	return result
+}
+
+func splitDatabaseList(value string) []string {
+	items := []string{}
+	for _, item := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+	return items
 }
 
 func getEnv(key, fallback string) string {
