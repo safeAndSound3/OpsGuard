@@ -15,6 +15,12 @@ import (
 
 var prometheusMetricNameRe = regexp.MustCompile(`[^a-zA-Z0-9_:]`)
 
+type mysqlPromMetric struct {
+	Name   string
+	Labels map[string]string
+	Value  float64
+}
+
 func TestMySQLDataSource(ds model.DataSource) error {
 	db, err := openMySQLDataSource(ds)
 	if err != nil {
@@ -43,60 +49,65 @@ func ExportMySQLPrometheusMetrics() string {
 			continue
 		}
 		_ = FillDataSourcePassword(&ds)
-		if err := appendMySQLDataSourceMetrics(&b, ds); err != nil {
+		metrics, err := collectMySQLDataSourceMetrics(ds)
+		if err != nil {
 			writePromMetric(&b, "opsguard_mysql_up", mysqlLabels(ds, nil), 0)
 			writePromMetric(&b, "opsguard_mysql_scrape_error", mysqlLabels(ds, map[string]string{"error": err.Error()}), 1)
+			continue
+		}
+		for _, metric := range metrics {
+			writePromMetric(&b, metric.Name, metric.Labels, metric.Value)
 		}
 	}
 	return b.String()
 }
 
-func appendMySQLDataSourceMetrics(b *strings.Builder, ds model.DataSource) error {
+func collectMySQLDataSourceMetrics(ds model.DataSource) ([]mysqlPromMetric, error) {
 	db, err := openMySQLDataSource(ds)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		return err
+		return nil, err
 	}
-	writePromMetric(b, "opsguard_mysql_up", mysqlLabels(ds, nil), 1)
+	metrics := []mysqlPromMetric{{Name: "opsguard_mysql_up", Labels: mysqlLabels(ds, nil), Value: 1}}
 
 	status, err := mysqlKeyValueRows(ctx, db, `SHOW GLOBAL STATUS`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	variables, err := mysqlKeyValueRows(ctx, db, `SHOW GLOBAL VARIABLES`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, key := range selectedMySQLStatusKeys(status) {
 		if value, ok := parseFloat(status[key]); ok {
-			writePromMetric(b, "opsguard_mysql_global_status", mysqlLabels(ds, map[string]string{"variable": key}), value)
+			metrics = append(metrics, mysqlPromMetric{Name: "opsguard_mysql_global_status", Labels: mysqlLabels(ds, map[string]string{"variable": key}), Value: value})
 		}
 	}
 	for _, key := range []string{"max_connections", "innodb_buffer_pool_size", "slow_query_log", "long_query_time"} {
 		if value, ok := parseFloat(variables[key]); ok {
-			writePromMetric(b, "opsguard_mysql_global_variable", mysqlLabels(ds, map[string]string{"variable": key}), value)
+			metrics = append(metrics, mysqlPromMetric{Name: "opsguard_mysql_global_variable", Labels: mysqlLabels(ds, map[string]string{"variable": key}), Value: value})
 		}
 	}
 	if requests, ok1 := parseFloat(status["Innodb_buffer_pool_read_requests"]); ok1 && requests > 0 {
 		if reads, ok2 := parseFloat(status["Innodb_buffer_pool_reads"]); ok2 {
-			writePromMetric(b, "opsguard_mysql_innodb_buffer_pool_hit_ratio", mysqlLabels(ds, nil), (requests-reads)/requests)
+			metrics = append(metrics, mysqlPromMetric{Name: "opsguard_mysql_innodb_buffer_pool_hit_ratio", Labels: mysqlLabels(ds, nil), Value: (requests - reads) / requests})
 		}
 	}
 	if seconds, ok := mysqlReplicationLagSeconds(ctx, db); ok {
-		writePromMetric(b, "opsguard_mysql_replication_seconds_behind_master", mysqlLabels(ds, nil), seconds)
+		metrics = append(metrics, mysqlPromMetric{Name: "opsguard_mysql_replication_seconds_behind_master", Labels: mysqlLabels(ds, nil), Value: seconds})
 	}
 	if innodb, err := mysqlInnodbStatusText(ctx, db); err == nil {
 		for name, value := range parseInnodbStatusMetrics(innodb) {
-			writePromMetric(b, "opsguard_mysql_innodb_status", mysqlLabels(ds, map[string]string{"variable": name}), value)
+			metrics = append(metrics, mysqlPromMetric{Name: "opsguard_mysql_innodb_status", Labels: mysqlLabels(ds, map[string]string{"variable": name}), Value: value})
 		}
 	}
-	return nil
+	return metrics, nil
 }
 
 func openMySQLDataSource(ds model.DataSource) (*sql.DB, error) {

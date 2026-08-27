@@ -72,6 +72,9 @@ func InitDataSourceStore() error {
 	if _, err := rootDB.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+dataSourceDatabase+" DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
 		return err
 	}
+	if err := initMySQLMetricStore(host, port, user, password); err != nil {
+		return err
+	}
 
 	appDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=Local", user, password, host, port, dataSourceDatabase)
 	appDB, err := sql.Open("mysql", appDSN)
@@ -126,6 +129,7 @@ func InitDataSourceStore() error {
 	db = appDB
 	mu.Unlock()
 	go startDataSourceHealthChecker()
+	startMySQLMetricCollector()
 	return nil
 }
 
