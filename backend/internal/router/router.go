@@ -335,6 +335,31 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		}
 	})
 
+	mux.HandleFunc("/api/notifications", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		items := service.ListAlertNotifications(r.URL.Query().Get("status"), r.URL.Query().Get("unread"), queryLimit(r, 100))
+		writeJSON(w, http.StatusOK, map[string]any{"notifications": items, "unread": service.AlertNotificationUnreadCount()})
+	})
+
+	mux.HandleFunc("/api/notifications/read", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := service.MarkAlertNotificationsRead(req.ID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "unread": service.AlertNotificationUnreadCount()})
+	})
+
 	mux.HandleFunc("/api/system-config/test", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})

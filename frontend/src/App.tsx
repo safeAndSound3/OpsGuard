@@ -17,6 +17,7 @@ type DashboardData = (MySQLDashboardData & { kind: 'MySQL' }) | (RedisDashboardD
 type ImportedDashboard = { sourceId: string; name: string }
 type MetricRow = [string, string | undefined, string?]
 type Rule = { id: string; name: string; source: string; database: string; table: string; field: string; condition: string; threshold?: string; timeWindow: string; lastRun: string; status: string }
+type NotificationItem = { id: string; ruleId: string; ruleName: string; source: string; database: string; table: string; field: string; severity: string; status: string; message: string; unread: boolean; firstSeenAt: string; lastSeenAt: string; resolvedAt?: string }
 type SourceSchema = Record<string, Record<string, string[]>>
 type SourceType = 'MySQL' | 'Kafka' | 'Redis' | 'PostgreSQL' | 'Elasticsearch'
 
@@ -109,7 +110,7 @@ const fallbackSources: Source[] = []
 const fallbackRules: Rule[] = [
   { id: 'rule-001', name: '订单支付慢查询', source: 'MySQL', database: 'order_center', table: 'payment_orders', field: 'paid_at', condition: '大于', threshold: '1000ms', timeWindow: '5分钟', lastRun: '待执行', status: '启用' },
 ]
-const icons: Record<string, string> = { overview: '▦', inspection: '◌', data: '◫', alert: '◇', settings: '⚙', plus: '+', arrow: '→', bell: '●' }
+const icons: Record<string, string> = { overview: '▦', inspection: '◌', data: '◫', alert: '◇', notify: '◉', settings: '⚙', plus: '+', arrow: '→', bell: '●' }
 function Icon({ name }: { name: string }) { return <span className={`icon icon-${name}`} aria-hidden="true">{icons[name]}</span> }
 
 function SelectField({
@@ -182,7 +183,7 @@ function App() {
     setAuthed(false)
   }
   if (!authed) return <Login onLogin={() => setAuthed(true)} />
-  return <BrowserRouter><div className="app-shell"><Sidebar /><main className="workspace"><TopNav onLogout={logout} /><Routes><Route path="/" element={<Dashboard />} /><Route path="/inspection" element={<Inspection />} /><Route path="/alerts" element={<Alerts />} /><Route path="/datasources" element={<DataSources />} /><Route path="/config" element={<Settings />} /></Routes></main></div></BrowserRouter>
+  return <BrowserRouter><div className="app-shell"><Sidebar /><main className="workspace"><TopNav onLogout={logout} /><Routes><Route path="/" element={<Dashboard />} /><Route path="/inspection" element={<Inspection />} /><Route path="/alerts" element={<Alerts />} /><Route path="/notifications" element={<Notifications />} /><Route path="/datasources" element={<DataSources />} /><Route path="/config" element={<Settings />} /></Routes></main></div></BrowserRouter>
 }
 function Login({ onLogin }: { onLogin: () => void }) {
   const [error, setError] = useState('')
@@ -208,9 +209,29 @@ function Login({ onLogin }: { onLogin: () => void }) {
 }
 function TopNav({ onLogout }: { onLogout: () => void | Promise<void> }) {
   const location = useLocation()
-  const titles: Record<string, string> = { '/': '监控总览', '/inspection': '巡检任务', '/alerts': '平台告警', '/datasources': '数据节点', '/config': '系统配置' }
+  const navigate = useNavigate()
+  const [unread, setUnread] = useState(0)
+  const titles: Record<string, string> = { '/': '监控总览', '/inspection': '巡检任务', '/alerts': '告警规则', '/notifications': '通知中心', '/datasources': '数据节点', '/config': '系统配置' }
   const title = titles[location.pathname] || '监控总览'
-  return <header className="page-nav"><div className="nav-path"><span>Ops</span><i>/</i><b>{title}</b></div><AccountMenu onLogout={onLogout} /></header>
+  const loadUnread = async () => {
+    try {
+      const response = await fetch(`${api}/notifications?unread=1&limit=1`)
+      const data = await response.json()
+      setUnread(Number(data.unread) || 0)
+    } catch {
+      setUnread(0)
+    }
+  }
+  useEffect(() => {
+    void loadUnread()
+    const timer = window.setInterval(() => void loadUnread(), 15000)
+    window.addEventListener('opsguard-notifications-change', loadUnread)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('opsguard-notifications-change', loadUnread)
+    }
+  }, [])
+  return <header className="page-nav"><div className="nav-path"><span>Ops</span><i>/</i><b>{title}</b></div><div className="nav-tools"><button className="bell-button" type="button" aria-label="通知中心" onClick={() => navigate('/notifications')}><Icon name="bell" />{unread > 0 && <i>{unread > 99 ? '99+' : unread}</i>}</button><AccountMenu onLogout={onLogout} /></div></header>
 }
 function AccountMenu({ onLogout }: { onLogout: () => void | Promise<void> }) {
   const [open, setOpen] = useState(false)
@@ -264,7 +285,7 @@ function Sidebar() {
       window.removeEventListener('opsguard-data-sources-change', load)
     }
   }, [])
-  const items = [['inspection', '巡检任务', '/inspection'], ['alert', '平台告警', '/alerts'], ['data', '数据节点', '/datasources'], ['settings', '系统配置', '/config']]
+  const items = [['inspection', '巡检任务', '/inspection'], ['alert', '告警规则', '/alerts'], ['notify', '通知中心', '/notifications'], ['data', '数据节点', '/datasources'], ['settings', '系统配置', '/config']]
   const sourceById = new Map(sources.map(source => [source.id, source]))
   const mysqlStatusBySourceId = new Map(mysqlDashboards.map(item => [item.sourceId, item.status]))
   const redisStatusBySourceId = new Map(redisDashboards.map(item => [item.sourceId, item.status]))
@@ -825,6 +846,49 @@ function formatCollectedAt(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { hour12: false })
+}
+function Notifications() {
+  const [items, setItems] = useState<NotificationItem[]>([])
+  const [filter, setFilter] = useState('all')
+  const [unreadOnly, setUnreadOnly] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
+  const loadNotifications = async () => {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ limit: '200' })
+      if (filter !== 'all') params.set('status', filter)
+      if (unreadOnly) params.set('unread', '1')
+      const response = await fetch(`${api}/notifications?${params.toString()}`)
+      const data = await response.json()
+      setItems(Array.isArray(data.notifications) ? data.notifications : [])
+    } catch {
+      setItems([])
+      setMessage('获取通知失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => { void loadNotifications() }, [filter, unreadOnly])
+  useEffect(() => {
+    if (!message) return
+    const timer = window.setTimeout(() => setMessage(''), 2400)
+    return () => window.clearTimeout(timer)
+  }, [message])
+  const markRead = async (id = 'all') => {
+    try {
+      const response = await fetch(`${api}/notifications/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || '标记失败')
+      setItems(current => id === 'all' ? current.map(item => ({ ...item, unread: false })) : current.map(item => item.id === id ? { ...item, unread: false } : item))
+      window.dispatchEvent(new Event('opsguard-notifications-change'))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '标记失败')
+    }
+  }
+  const activeCount = items.filter(item => item.status === 'active').length
+  const unreadCount = items.filter(item => item.unread).length
+  return <div className="page"><PageHead title="通知中心" description="集中查看告警规则产生的通知，支持按状态和未读筛选。" /><section className="notification-toolbar surface"><div><button className={filter === 'all' ? 'active' : ''} type="button" onClick={() => setFilter('all')}>全部</button><button className={filter === 'active' ? 'active' : ''} type="button" onClick={() => setFilter('active')}>告警中</button><button className={filter === 'resolved' ? 'active' : ''} type="button" onClick={() => setFilter('resolved')}>已恢复</button><button className={unreadOnly ? 'active' : ''} type="button" onClick={() => setUnreadOnly(current => !current)}>未读</button></div><div><span>{activeCount} 条告警中 · {unreadCount} 条未读</span><button className="button secondary" type="button" onClick={() => void loadNotifications()} disabled={loading}>{loading ? '刷新中...' : '刷新'}</button><button className="button" type="button" onClick={() => void markRead('all')} disabled={unreadCount === 0}>全部已读</button></div></section><section className="surface notification-list">{items.length === 0 ? <div className="empty-state alert-empty-state"><b>暂无通知</b><span>告警规则产生告警后会同步到这里。</span></div> : items.map(item => <article className={`notification-row ${item.unread ? 'unread' : ''}`} key={item.id}><i className={`notification-dot ${item.status === 'active' ? 'danger' : 'success'}`} /><div><header><b>{item.ruleName}</b><span className={`alert-result ${item.status === 'active' ? 'danger' : 'success'}`}>{item.status === 'active' ? '告警中' : '已恢复'}</span></header><p>{item.message}</p><small>{item.database || '-'}.{item.table || '-'}.{item.field || '-'} · 首次：{formatCollectedAt(item.firstSeenAt)} · 最近：{formatCollectedAt(item.lastSeenAt)}</small></div><button className="text-button" type="button" onClick={() => void markRead(item.id)} disabled={!item.unread}>{item.unread ? '标为已读' : '已读'}</button></article>)}</section>{message && <div className="toast">{message}</div>}</div>
 }
 function Alerts() {
   const [rules, setRules] = useState<Rule[]>([])

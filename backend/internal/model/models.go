@@ -48,6 +48,23 @@ type AlertItem struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type AlertNotification struct {
+	ID          string     `json:"id"`
+	RuleID      string     `json:"ruleId"`
+	RuleName    string     `json:"ruleName"`
+	Source      string     `json:"source"`
+	Database    string     `json:"database"`
+	Table       string     `json:"table"`
+	Field       string     `json:"field"`
+	Severity    string     `json:"severity"`
+	Status      string     `json:"status"`
+	Message     string     `json:"message"`
+	Unread      bool       `json:"unread"`
+	FirstSeenAt time.Time  `json:"firstSeenAt"`
+	LastSeenAt  time.Time  `json:"lastSeenAt"`
+	ResolvedAt  *time.Time `json:"resolvedAt,omitempty"`
+}
+
 type InspectionTask struct {
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`

@@ -631,8 +631,83 @@ func DeleteCollectionRule(id string) error {
 	return nil
 }
 
+func ListAlertNotifications(status string, unread string, limit int) []model.AlertNotification {
+	current := currentStore()
+	if current == nil {
+		return []model.AlertNotification{}
+	}
+	limit = normalizeLimit(limit, 100)
+	conditions := []string{"1 = 1"}
+	args := []any{}
+	status = strings.TrimSpace(status)
+	if status != "" && status != "all" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, status)
+	}
+	if unread == "1" || strings.EqualFold(unread, "true") {
+		conditions = append(conditions, "unread = 1")
+	}
+	args = append(args, limit)
+	rows, err := current.Query(`SELECT id, rule_id, rule_name, source, database_name, table_name, field_name,
+		severity, status, message, unread, first_seen_at, last_seen_at, resolved_at
+		FROM alert_notifications WHERE `+strings.Join(conditions, " AND ")+`
+		ORDER BY last_seen_at DESC LIMIT ?`, args...)
+	if err != nil {
+		return []model.AlertNotification{}
+	}
+	defer rows.Close()
+	items := []model.AlertNotification{}
+	for rows.Next() {
+		var item model.AlertNotification
+		var resolvedAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.RuleID, &item.RuleName, &item.Source, &item.Database, &item.Table, &item.Field,
+			&item.Severity, &item.Status, &item.Message, &item.Unread, &item.FirstSeenAt, &item.LastSeenAt, &resolvedAt); err != nil {
+			continue
+		}
+		if resolvedAt.Valid {
+			item.ResolvedAt = &resolvedAt.Time
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func AlertNotificationUnreadCount() int64 {
+	current := currentStore()
+	if current == nil {
+		return 0
+	}
+	var count int64
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = current.QueryRowContext(ctx, `SELECT COUNT(*) FROM alert_notifications WHERE unread = 1`).Scan(&count)
+	return count
+}
+
+func MarkAlertNotificationsRead(id string) error {
+	current := currentStore()
+	if current == nil {
+		return errors.New("notification store is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if strings.TrimSpace(id) == "" || id == "all" {
+		_, err := current.ExecContext(ctx, `UPDATE alert_notifications SET unread = 0 WHERE unread = 1`)
+		return err
+	}
+	result, err := current.ExecContext(ctx, `UPDATE alert_notifications SET unread = 0 WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return errors.New("notification not found")
+	}
+	return nil
+}
+
 func initCollectionRuleStore(appDB *sql.DB) error {
-	_, err := appDB.Exec(`CREATE TABLE IF NOT EXISTS collection_rules (
+	if _, err := appDB.Exec(`CREATE TABLE IF NOT EXISTS collection_rules (
 		id varchar(64) PRIMARY KEY,
 		name varchar(120) NOT NULL,
 		source varchar(80) NOT NULL,
@@ -646,6 +721,27 @@ func initCollectionRuleStore(appDB *sql.DB) error {
 		status varchar(32) NOT NULL DEFAULT '启用',
 		created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	)`); err != nil {
+		return err
+	}
+	_, err := appDB.Exec(`CREATE TABLE IF NOT EXISTS alert_notifications (
+		id varchar(96) PRIMARY KEY,
+		rule_id varchar(64) NOT NULL,
+		rule_name varchar(120) NOT NULL,
+		source varchar(120) NOT NULL,
+		database_name varchar(120) NOT NULL DEFAULT '',
+		table_name varchar(120) NOT NULL DEFAULT '',
+		field_name varchar(120) NOT NULL DEFAULT '',
+		severity varchar(32) NOT NULL,
+		status varchar(32) NOT NULL,
+		message text NOT NULL,
+		unread tinyint(1) NOT NULL DEFAULT 1,
+		first_seen_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_seen_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		resolved_at timestamp NULL,
+		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_alert_notifications_status_time (status, last_seen_at),
+		INDEX idx_alert_notifications_unread (unread)
 	)`)
 	return err
 }
@@ -681,7 +777,44 @@ func evaluateCollectionRules() {
 		}
 		lastRun := evaluateTodayHasDataRule(rule)
 		_, _ = current.Exec(`UPDATE collection_rules SET last_run = ? WHERE id = ?`, lastRun, rule.ID)
+		syncAlertNotification(current, rule, lastRun)
 	}
+}
+
+func syncAlertNotification(appDB *sql.DB, rule model.CollectionRule, lastRun string) {
+	if strings.HasPrefix(lastRun, "告警") || strings.HasPrefix(lastRun, "执行失败") {
+		severity := "warning"
+		if strings.HasPrefix(lastRun, "执行失败") {
+			severity = "critical"
+		}
+		upsertAlertNotification(appDB, rule, severity, "active", lastRun)
+		return
+	}
+	if strings.HasPrefix(lastRun, "正常") {
+		resolveAlertNotification(appDB, rule.ID)
+	}
+}
+
+func upsertAlertNotification(appDB *sql.DB, rule model.CollectionRule, severity string, status string, message string) {
+	day := time.Now().Format("20060102")
+	id := fmt.Sprintf("%s-%s", rule.ID, day)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = appDB.ExecContext(ctx, `INSERT INTO alert_notifications
+		(id, rule_id, rule_name, source, database_name, table_name, field_name, severity, status, message, unread, first_seen_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())
+		ON DUPLICATE KEY UPDATE rule_name = VALUES(rule_name), source = VALUES(source), database_name = VALUES(database_name),
+			table_name = VALUES(table_name), field_name = VALUES(field_name), severity = VALUES(severity),
+			status = VALUES(status), message = VALUES(message), unread = 1, last_seen_at = NOW(), resolved_at = NULL`,
+		id, rule.ID, rule.Name, rule.Source, rule.Database, rule.Table, rule.Field, severity, status, message)
+}
+
+func resolveAlertNotification(appDB *sql.DB, ruleID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = appDB.ExecContext(ctx, `UPDATE alert_notifications
+		SET status = 'resolved', message = CONCAT('已恢复：', message), resolved_at = IFNULL(resolved_at, NOW()), last_seen_at = NOW()
+		WHERE rule_id = ? AND status = 'active'`, ruleID)
 }
 
 func evaluateTodayHasDataRule(rule model.CollectionRule) string {
