@@ -22,6 +22,8 @@ var (
 	mu    sync.RWMutex
 	db    *sql.DB
 	rules []model.CollectionRule
+
+	collectionRuleEvaluatorOnce sync.Once
 )
 
 func init() {
@@ -109,6 +111,7 @@ func InitDataSourceStore() error {
 	go startDataSourceHealthChecker()
 	startMySQLMonitorCollector()
 	startRedisMonitorCollector()
+	startCollectionRuleEvaluator()
 	return nil
 }
 
@@ -645,6 +648,117 @@ func initCollectionRuleStore(appDB *sql.DB) error {
 		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 	)`)
 	return err
+}
+
+func startCollectionRuleEvaluator() {
+	collectionRuleEvaluatorOnce.Do(func() {
+		go func() {
+			evaluateCollectionRules()
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				evaluateCollectionRules()
+			}
+		}()
+	})
+}
+
+func evaluateCollectionRules() {
+	current := currentStore()
+	if current == nil {
+		return
+	}
+	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, condition_text
+		FROM collection_rules WHERE status = '启用' AND condition_text = '当天有数据'`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rule model.CollectionRule
+		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition); err != nil {
+			continue
+		}
+		lastRun := evaluateTodayHasDataRule(rule)
+		_, _ = current.Exec(`UPDATE collection_rules SET last_run = ? WHERE id = ?`, lastRun, rule.ID)
+	}
+}
+
+func evaluateTodayHasDataRule(rule model.CollectionRule) string {
+	checkedAt := time.Now().Format("15:04")
+	ds, err := getRuleDataSourceWithSecret(rule.Source)
+	if err != nil {
+		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
+	}
+	if !ds.Enabled {
+		return fmt.Sprintf("已暂停 %s：数据源未启用", checkedAt)
+	}
+	if !strings.EqualFold(ds.Type, "mysql") {
+		return fmt.Sprintf("执行失败 %s：当天有数据仅支持 MySQL", checkedAt)
+	}
+	if !validSQLIdentifier(rule.Database) || !validSQLIdentifier(rule.Table) || !validSQLIdentifier(rule.Field) {
+		return fmt.Sprintf("执行失败 %s：库名、表名或字段名不合法", checkedAt)
+	}
+	targetDB, err := openMySQLTarget(ds)
+	if err != nil {
+		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
+	}
+	defer targetDB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	query := fmt.Sprintf("SELECT COUNT(1) FROM `%s`.`%s` WHERE `%s` >= CURDATE() AND `%s` < CURDATE() + INTERVAL 1 DAY",
+		rule.Database, rule.Table, rule.Field, rule.Field)
+	var count int64
+	if err := targetDB.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
+	}
+	if count > 0 {
+		return fmt.Sprintf("正常 %s：今日 %d 条", checkedAt, count)
+	}
+	return fmt.Sprintf("告警 %s：今日无数据", checkedAt)
+}
+
+func getRuleDataSourceWithSecret(source string) (model.DataSource, error) {
+	current := currentStore()
+	if current == nil {
+		return model.DataSource{}, errors.New("data source store is not initialized")
+	}
+	var ds model.DataSource
+	var optionsRaw string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := current.QueryRowContext(ctx, `SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(password, ''),
+		COALESCE(database_name, ''), COALESCE(remark, ''), COALESCE(options_json, '{}'), enabled, status, last_test
+		FROM data_sources WHERE id = ? OR name = ? LIMIT 1`, source, source).
+		Scan(&ds.ID, &ds.Name, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Password, &ds.Database, &ds.Remark, &optionsRaw, &ds.Enabled, &ds.Status, &ds.LastTest)
+	if err != nil {
+		return model.DataSource{}, errors.New("数据源不存在")
+	}
+	_ = json.Unmarshal([]byte(optionsRaw), &ds.Options)
+	return ds, nil
+}
+
+func validSQLIdentifier(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if char >= 'a' && char <= 'z' {
+			continue
+		}
+		if char >= 'A' && char <= 'Z' {
+			continue
+		}
+		if char >= '0' && char <= '9' {
+			continue
+		}
+		if char == '_' || char == '$' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func normalizeCollectionRule(rule model.CollectionRule) model.CollectionRule {

@@ -936,7 +936,7 @@ function Alerts() {
   const databaseOptions = databases.map(database => ({ value: database, label: database }))
   const tableOptions = tables.map(table => ({ value: table, label: table }))
   const fieldOptions = fields.map(field => ({ value: field, label: field }))
-  const conditionOptions = ['大于', '大于等于', '等于', '小于', '包含', '不为空'].map(condition => ({ value: condition, label: condition }))
+  const conditionOptions = ['当天有数据', '大于', '大于等于', '等于', '小于', '包含', '不为空'].map(condition => ({ value: condition, label: condition }))
   const saveRule = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const selectedSource = sources.find(source => source.id === selectedSourceId || source.name === selectedSourceId)
