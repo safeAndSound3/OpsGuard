@@ -196,10 +196,12 @@ type SSHMetricSnapshot struct {
 }
 
 type ExternalMonitorConfig struct {
-	PrometheusURL        string `json:"prometheusUrl,omitempty"`
-	PrometheusConfigured bool   `json:"prometheusConfigured"`
-	GrafanaURL           string `json:"grafanaUrl,omitempty"`
-	GrafanaConfigured    bool   `json:"grafanaConfigured"`
+	PrometheusURL             string `json:"prometheusUrl,omitempty"`
+	PrometheusConfigured      bool   `json:"prometheusConfigured"`
+	PrometheusTokenConfigured bool   `json:"prometheusTokenConfigured"`
+	GrafanaURL                string `json:"grafanaUrl,omitempty"`
+	GrafanaConfigured         bool   `json:"grafanaConfigured"`
+	GrafanaTokenConfigured    bool   `json:"grafanaTokenConfigured"`
 }
 
 type PrometheusAlert struct {

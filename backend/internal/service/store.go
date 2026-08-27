@@ -112,6 +112,9 @@ func InitDataSourceStore() error {
 	if err := initCollectionRuleStore(appDB); err != nil {
 		return err
 	}
+	if err := initExternalMonitorStore(appDB); err != nil {
+		return err
+	}
 
 	mu.Lock()
 	db = appDB

@@ -222,11 +222,32 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 	})
 
 	mux.HandleFunc("/api/external-monitor/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, service.ExternalMonitorConfig())
+			return
+		}
+		if r.Method == http.MethodPut {
+			var req struct {
+				model.ExternalMonitorConfig
+				PrometheusToken string `json:"prometheusToken"`
+				GrafanaToken    string `json:"grafanaToken"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			updated, err := service.SaveExternalMonitorConfig(req.ExternalMonitorConfig, req.PrometheusToken, req.GrafanaToken)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, updated)
+			return
+		}
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		writeJSON(w, http.StatusOK, service.ExternalMonitorConfig())
 	})
 
 	mux.HandleFunc("/api/external-monitor/prometheus/alerts", func(w http.ResponseWriter, r *http.Request) {

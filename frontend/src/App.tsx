@@ -20,7 +20,7 @@ type ImportedDashboard = { sourceId: string; name: string }
 type MetricRow = [string, string | undefined, string?]
 type Rule = { id: string; name: string; source: string; database: string; table: string; field: string; condition: string; threshold?: string; timeWindow: string; lastRun: string; status: string }
 type NotificationItem = { id: string; ruleId: string; ruleName: string; source: string; database: string; table: string; field: string; severity: string; status: string; message: string; unread: boolean; firstSeenAt: string; lastSeenAt: string; resolvedAt?: string }
-type ExternalMonitorConfig = { prometheusUrl?: string; prometheusConfigured: boolean; grafanaUrl?: string; grafanaConfigured: boolean }
+type ExternalMonitorConfig = { prometheusUrl?: string; prometheusConfigured: boolean; prometheusTokenConfigured?: boolean; grafanaUrl?: string; grafanaConfigured: boolean; grafanaTokenConfigured?: boolean }
 type PrometheusAlert = { name: string; state: string; severity?: string; summary?: string; description?: string; activeAt?: string; value?: string; labels?: Record<string, string>; annotations?: Record<string, string> }
 type PrometheusMetric = { name: string }
 type GrafanaDashboardItem = { uid: string; title: string; uri?: string; url?: string; folderTitle?: string; tags?: string[] }
@@ -1081,7 +1081,7 @@ function ExternalMonitor() {
       setMessage(error instanceof Error ? error.message : 'PromQL 查询失败')
     }
   }
-  return <div className="page"><PageHead title="外部监控" description="读取 Prometheus 告警与指标，并同步 Grafana 面板目录。" /><section className="external-toolbar surface"><div><b>接入状态</b><span>Prometheus：{config?.prometheusConfigured ? config.prometheusUrl : '未配置 PROMETHEUS_URL'} · Grafana：{config?.grafanaConfigured ? config.grafanaUrl : '未配置 GRAFANA_URL'}</span></div><button className="button secondary" type="button" onClick={() => void loadExternalMonitor()} disabled={loading}>{loading ? '同步中...' : '刷新'}</button></section>{message && <div className="toast">{message}</div>}<section className="external-grid"><div className="surface external-panel"><SectionTitle title="Prometheus 告警" action={`${alerts.length} 条`} />{!config?.prometheusConfigured ? <div className="empty-state"><b>Prometheus 未配置</b><span>在后端服务环境变量设置 PROMETHEUS_URL，可选 PROMETHEUS_TOKEN。</span></div> : alerts.length === 0 ? <div className="empty-state"><b>暂无 Prometheus 告警</b><span>当前没有从 Prometheus API 读取到告警。</span></div> : <div className="external-list">{alerts.map((alert, index) => <article key={`${alert.name}-${index}`}><header><b>{alert.name}</b><span className={`alert-result ${alert.state === 'firing' ? 'danger' : 'success'}`}>{alert.state || '-'}</span></header><p>{alert.summary || alert.description || '-'}</p><small>{alert.severity || 'unknown'} · {alert.activeAt ? formatCollectedAt(alert.activeAt) : '-'}</small></article>)}</div>}</div><div className="surface external-panel"><SectionTitle title="Prometheus 指标" action={`${metrics.length} 项`} />{!config?.prometheusConfigured ? <div className="empty-state"><b>指标未接入</b><span>配置 Prometheus 后会显示 TSDB 当前存储的指标名。</span></div> : <div className="metric-name-grid">{metrics.map(metric => <span key={metric.name}>{metric.name}</span>)}</div>}</div></section><section className="external-grid"><div className="surface external-panel"><SectionTitle title="PromQL 查询" /><form className="promql-form" onSubmit={runQuery}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如 up 或 rate(http_requests_total[5m])" /><button className="button" type="submit" disabled={!config?.prometheusConfigured}>查询</button></form>{queryResult && <pre className="query-result">{queryResult}</pre>}</div><div className="surface external-panel"><SectionTitle title="Grafana 面板" action={`${dashboards.length} 个`} />{!config?.grafanaConfigured ? <div className="empty-state"><b>Grafana 未配置</b><span>在后端服务环境变量设置 GRAFANA_URL，可选 GRAFANA_TOKEN。</span></div> : dashboards.length === 0 ? <div className="empty-state"><b>暂无 Grafana 面板</b><span>当前没有读取到 dashboard。</span></div> : <div className="external-list dashboard-list">{dashboards.map(dashboard => <article key={dashboard.uid || dashboard.uri}><header><b>{dashboard.title}</b>{dashboard.url && <a href={dashboard.url} target="_blank" rel="noreferrer">打开</a>}</header><p>{dashboard.folderTitle || 'General'}</p><small>{(dashboard.tags || []).join(' / ') || dashboard.uri || '-'}</small></article>)}</div>}</div></section></div>
+  return <div className="page"><PageHead title="外部监控" description="读取 Prometheus 告警与指标，并同步 Grafana 面板目录。" /><section className="external-toolbar surface"><div><b>接入状态</b><span>Prometheus：{config?.prometheusConfigured ? config.prometheusUrl : '未配置'} · Grafana：{config?.grafanaConfigured ? config.grafanaUrl : '未配置'}</span></div><button className="button secondary" type="button" onClick={() => void loadExternalMonitor()} disabled={loading}>{loading ? '同步中...' : '刷新'}</button></section>{message && <div className="toast">{message}</div>}<section className="external-grid"><div className="surface external-panel"><SectionTitle title="Prometheus 告警" action={`${alerts.length} 条`} />{!config?.prometheusConfigured ? <div className="empty-state"><b>Prometheus 未配置</b><span>进入系统配置的外部监控页签填写 Prometheus 地址和 Token。</span></div> : alerts.length === 0 ? <div className="empty-state"><b>暂无 Prometheus 告警</b><span>当前没有从 Prometheus API 读取到告警。</span></div> : <div className="external-list">{alerts.map((alert, index) => <article key={`${alert.name}-${index}`}><header><b>{alert.name}</b><span className={`alert-result ${alert.state === 'firing' ? 'danger' : 'success'}`}>{alert.state || '-'}</span></header><p>{alert.summary || alert.description || '-'}</p><small>{alert.severity || 'unknown'} · {alert.activeAt ? formatCollectedAt(alert.activeAt) : '-'}</small></article>)}</div>}</div><div className="surface external-panel"><SectionTitle title="Prometheus 指标" action={`${metrics.length} 项`} />{!config?.prometheusConfigured ? <div className="empty-state"><b>指标未接入</b><span>配置 Prometheus 后会显示 TSDB 当前存储的指标名。</span></div> : <div className="metric-name-grid">{metrics.map(metric => <span key={metric.name}>{metric.name}</span>)}</div>}</div></section><section className="external-grid"><div className="surface external-panel"><SectionTitle title="PromQL 查询" /><form className="promql-form" onSubmit={runQuery}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如 up 或 rate(http_requests_total[5m])" /><button className="button" type="submit" disabled={!config?.prometheusConfigured}>查询</button></form>{queryResult && <pre className="query-result">{queryResult}</pre>}</div><div className="surface external-panel"><SectionTitle title="Grafana 面板" action={`${dashboards.length} 个`} />{!config?.grafanaConfigured ? <div className="empty-state"><b>Grafana 未配置</b><span>进入系统配置的外部监控页签填写 Grafana 地址和 Token。</span></div> : dashboards.length === 0 ? <div className="empty-state"><b>暂无 Grafana 面板</b><span>当前没有读取到 dashboard。</span></div> : <div className="external-list dashboard-list">{dashboards.map(dashboard => <article key={dashboard.uid || dashboard.uri}><header><b>{dashboard.title}</b>{dashboard.url && <a href={dashboard.url} target="_blank" rel="noreferrer">打开</a>}</header><p>{dashboard.folderTitle || 'General'}</p><small>{(dashboard.tags || []).join(' / ') || dashboard.uri || '-'}</small></article>)}</div>}</div></section></div>
 }
 function Alerts() {
   const [rules, setRules] = useState<Rule[]>([])
@@ -1461,7 +1461,25 @@ function Alerts() {
 }
 function Settings() {
   const [saving, setSaving] = useState(false)
+  const [monitorSaving, setMonitorSaving] = useState(false)
   const [message, setMessage] = useState('')
+  const [activeTab, setActiveTab] = useState<'external' | 'profile'>('external')
+  const [monitorConfig, setMonitorConfig] = useState<ExternalMonitorConfig | null>(null)
+  const [prometheusUrl, setPrometheusUrl] = useState('')
+  const [grafanaUrl, setGrafanaUrl] = useState('')
+  const loadMonitorConfig = async () => {
+    try {
+      const response = await fetch(`${api}/external-monitor/config`)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '外部监控配置获取失败')
+      setMonitorConfig(data)
+      setPrometheusUrl(data.prometheusUrl || '')
+      setGrafanaUrl(data.grafanaUrl || '')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '外部监控配置获取失败')
+    }
+  }
+  useEffect(() => { void loadMonitorConfig() }, [])
   const changePassword = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setMessage('')
@@ -1484,7 +1502,36 @@ function Settings() {
       setSaving(false)
     }
   }
-  return <div className="page"><PageHead title="系统配置" description="维护账号安全与平台基础配置。" /><section className="surface settings"><div className="form-section"><h3>修改密码</h3><form className="settings-form" onSubmit={changePassword}><label>原密码 <span className="required-mark">*</span><input name="oldPassword" type="password" autoComplete="current-password" required /></label><label>新密码 <span className="required-mark">*</span><input name="newPassword" type="password" autoComplete="new-password" required /></label><label>确认新密码 <span className="required-mark">*</span><input name="confirmPassword" type="password" autoComplete="new-password" required /></label><div className="settings-actions"><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存密码'}</button>{message && <span>{message}</span>}</div></form></div></section></div>
+  const saveExternalMonitor = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setMonitorSaving(true)
+    setMessage('')
+    const form = new FormData(event.currentTarget)
+    try {
+      const response = await fetch(`${api}/external-monitor/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prometheusUrl,
+          prometheusToken: form.get('prometheusToken'),
+          grafanaUrl,
+          grafanaToken: form.get('grafanaToken'),
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '保存失败')
+      setMonitorConfig(data)
+      setPrometheusUrl(data.prometheusUrl || '')
+      setGrafanaUrl(data.grafanaUrl || '')
+      event.currentTarget.reset()
+      setMessage('外部监控配置已保存')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setMonitorSaving(false)
+    }
+  }
+  return <div className="page"><PageHead title="系统配置" description="维护平台接入配置与个人账号安全。" /><section className="settings-layout"><nav className="settings-tabs" aria-label="系统设置分类"><button type="button" className={activeTab === 'external' ? 'active' : ''} onClick={() => setActiveTab('external')}>外部监控</button><button type="button" className={activeTab === 'profile' ? 'active' : ''} onClick={() => setActiveTab('profile')}>个人信息</button></nav><section className="surface settings">{activeTab === 'external' ? <div className="form-section"><h3>外部监控</h3><form className="settings-form" onSubmit={saveExternalMonitor}><label>Prometheus 地址<input value={prometheusUrl} onChange={(event) => setPrometheusUrl(event.target.value)} placeholder="例如 http://prometheus:9090" /></label><label>Prometheus Token<input name="prometheusToken" type="password" placeholder={monitorConfig?.prometheusTokenConfigured ? '已配置，留空则不修改' : '可选'} autoComplete="off" /></label><label>Grafana 地址<input value={grafanaUrl} onChange={(event) => setGrafanaUrl(event.target.value)} placeholder="例如 http://grafana:3000" /></label><label>Grafana Token<input name="grafanaToken" type="password" placeholder={monitorConfig?.grafanaTokenConfigured ? '已配置，留空则不修改' : '可选'} autoComplete="off" /></label><div className="settings-actions"><button className="button" type="submit" disabled={monitorSaving}>{monitorSaving ? '保存中...' : '保存配置'}</button><button className="button secondary" type="button" onClick={() => void loadMonitorConfig()}>重新读取</button>{message && <span>{message}</span>}</div></form><div className="settings-hint">保存后，“外部监控”菜单会通过后端读取 Prometheus 告警、指标和 Grafana 面板。Token 不会回显到前端。</div></div> : <div className="form-section"><h3>个人信息</h3><form className="settings-form" onSubmit={changePassword}><label>原密码 <span className="required-mark">*</span><input name="oldPassword" type="password" autoComplete="current-password" required /></label><label>新密码 <span className="required-mark">*</span><input name="newPassword" type="password" autoComplete="new-password" required /></label><label>确认新密码 <span className="required-mark">*</span><input name="confirmPassword" type="password" autoComplete="new-password" required /></label><div className="settings-actions"><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存密码'}</button>{message && <span>{message}</span>}</div></form></div>}</section></section></div>
 }
 function Field({ label, value, name, required }: { label: string; value: string; name?: string; required?: boolean }) { return <label>{label}{required && <span className="required-mark"> *</span>}<input name={name} defaultValue={value} required={required} /></label> }
 export default App

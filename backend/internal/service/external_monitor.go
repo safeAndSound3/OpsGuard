@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,15 +16,65 @@ import (
 	"monitor-platform/internal/model"
 )
 
+type externalMonitorSettings struct {
+	PrometheusURL   string
+	PrometheusToken string
+	GrafanaURL      string
+	GrafanaToken    string
+}
+
 func ExternalMonitorConfig() model.ExternalMonitorConfig {
-	promURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PROMETHEUS_URL")), "/")
-	grafanaURL := strings.TrimRight(strings.TrimSpace(os.Getenv("GRAFANA_URL")), "/")
+	settings := loadExternalMonitorSettings(true)
+	promURL := strings.TrimRight(strings.TrimSpace(settings.PrometheusURL), "/")
+	grafanaURL := strings.TrimRight(strings.TrimSpace(settings.GrafanaURL), "/")
 	return model.ExternalMonitorConfig{
-		PrometheusURL:        promURL,
-		PrometheusConfigured: promURL != "",
-		GrafanaURL:           grafanaURL,
-		GrafanaConfigured:    grafanaURL != "",
+		PrometheusURL:             promURL,
+		PrometheusConfigured:      promURL != "",
+		PrometheusTokenConfigured: strings.TrimSpace(settings.PrometheusToken) != "",
+		GrafanaURL:                grafanaURL,
+		GrafanaConfigured:         grafanaURL != "",
+		GrafanaTokenConfigured:    strings.TrimSpace(settings.GrafanaToken) != "",
 	}
+}
+
+func SaveExternalMonitorConfig(req model.ExternalMonitorConfig, prometheusToken string, grafanaToken string) (model.ExternalMonitorConfig, error) {
+	current := currentStore()
+	if current == nil {
+		return model.ExternalMonitorConfig{}, errors.New("system setting store is not initialized")
+	}
+	settings := loadExternalMonitorSettings(true)
+	settings.PrometheusURL = strings.TrimRight(strings.TrimSpace(req.PrometheusURL), "/")
+	settings.GrafanaURL = strings.TrimRight(strings.TrimSpace(req.GrafanaURL), "/")
+	if strings.TrimSpace(prometheusToken) != "" {
+		settings.PrometheusToken = strings.TrimSpace(prometheusToken)
+	}
+	if strings.TrimSpace(grafanaToken) != "" {
+		settings.GrafanaToken = strings.TrimSpace(grafanaToken)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	values := map[string]string{
+		"prometheus_url":   settings.PrometheusURL,
+		"prometheus_token": settings.PrometheusToken,
+		"grafana_url":      settings.GrafanaURL,
+		"grafana_token":    settings.GrafanaToken,
+	}
+	for key, value := range values {
+		if _, err := current.ExecContext(ctx, `INSERT INTO system_settings (setting_key, setting_value)
+			VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`, key, value); err != nil {
+			return model.ExternalMonitorConfig{}, err
+		}
+	}
+	return ExternalMonitorConfig(), nil
+}
+
+func initExternalMonitorStore(appDB *sql.DB) error {
+	_, err := appDB.Exec(`CREATE TABLE IF NOT EXISTS system_settings (
+		setting_key varchar(120) PRIMARY KEY,
+		setting_value text NULL,
+		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	)`)
+	return err
 }
 
 func ListPrometheusAlerts() ([]model.PrometheusAlert, error) {
@@ -131,7 +182,7 @@ func ListGrafanaDashboards(limit int) ([]model.GrafanaDashboard, error) {
 			UID:         dashboard.UID,
 			Title:       dashboard.Title,
 			URI:         dashboard.URI,
-			URL:         externalAbsoluteURL(os.Getenv("GRAFANA_URL"), dashboard.URL),
+			URL:         externalAbsoluteURL(loadExternalMonitorSettings(false).GrafanaURL, dashboard.URL),
 			FolderTitle: dashboard.FolderTitle,
 			Tags:        dashboard.Tags,
 		})
@@ -140,19 +191,69 @@ func ListGrafanaDashboards(limit int) ([]model.GrafanaDashboard, error) {
 }
 
 func prometheusGet(path string, query url.Values, out any) error {
-	base := strings.TrimRight(strings.TrimSpace(os.Getenv("PROMETHEUS_URL")), "/")
+	settings := loadExternalMonitorSettings(true)
+	base := strings.TrimRight(strings.TrimSpace(settings.PrometheusURL), "/")
 	if base == "" {
 		return errors.New("Prometheus 未配置，请设置 PROMETHEUS_URL")
 	}
-	return externalMonitorGet(base, strings.TrimSpace(os.Getenv("PROMETHEUS_TOKEN")), path, query, out)
+	return externalMonitorGet(base, strings.TrimSpace(settings.PrometheusToken), path, query, out)
 }
 
 func grafanaGet(path string, query url.Values, out any) error {
-	base := strings.TrimRight(strings.TrimSpace(os.Getenv("GRAFANA_URL")), "/")
+	settings := loadExternalMonitorSettings(true)
+	base := strings.TrimRight(strings.TrimSpace(settings.GrafanaURL), "/")
 	if base == "" {
 		return errors.New("Grafana 未配置，请设置 GRAFANA_URL")
 	}
-	return externalMonitorGet(base, strings.TrimSpace(os.Getenv("GRAFANA_TOKEN")), path, query, out)
+	return externalMonitorGet(base, strings.TrimSpace(settings.GrafanaToken), path, query, out)
+}
+
+func loadExternalMonitorSettings(includeToken bool) externalMonitorSettings {
+	settings := externalMonitorSettings{
+		PrometheusURL:   os.Getenv("PROMETHEUS_URL"),
+		PrometheusToken: os.Getenv("PROMETHEUS_TOKEN"),
+		GrafanaURL:      os.Getenv("GRAFANA_URL"),
+		GrafanaToken:    os.Getenv("GRAFANA_TOKEN"),
+	}
+	current := currentStore()
+	if current == nil {
+		if !includeToken {
+			settings.PrometheusToken = ""
+			settings.GrafanaToken = ""
+		}
+		return settings
+	}
+	rows, err := current.Query(`SELECT setting_key, COALESCE(setting_value, '') FROM system_settings
+		WHERE setting_key IN ('prometheus_url', 'prometheus_token', 'grafana_url', 'grafana_token')`)
+	if err != nil {
+		if !includeToken {
+			settings.PrometheusToken = ""
+			settings.GrafanaToken = ""
+		}
+		return settings
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			continue
+		}
+		switch key {
+		case "prometheus_url":
+			settings.PrometheusURL = value
+		case "prometheus_token":
+			settings.PrometheusToken = value
+		case "grafana_url":
+			settings.GrafanaURL = value
+		case "grafana_token":
+			settings.GrafanaToken = value
+		}
+	}
+	if !includeToken {
+		settings.PrometheusToken = ""
+		settings.GrafanaToken = ""
+	}
+	return settings
 }
 
 func externalMonitorGet(base string, token string, path string, query url.Values, out any) error {
