@@ -61,6 +61,40 @@ services:
       redis:
         condition: service_healthy
     command: ["sh", "/mock/redis_mock_writer.sh"]
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.16.0
+    container_name: mysql-mysqld-exporter
+    restart: unless-stopped
+    command:
+      - "--mysqld.address=mysql:3306"
+      - "--mysqld.username=root"
+    environment:
+      MYSQLD_EXPORTER_PASSWORD: ${MYSQL_ROOT_PASSWORD:-Hh0321}
+      TZ: Asia/Shanghai
+    ports:
+      - "9104:9104"
+    depends_on:
+      mysql:
+        condition: service_healthy
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus-opsguard
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /usr/local/project/prometheus:/prometheus
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      mysqld-exporter:
+        condition: service_started
   nginx:
     image: nginx:stable
     container_name: nginx-opsguard
