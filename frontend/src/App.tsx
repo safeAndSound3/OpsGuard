@@ -14,7 +14,9 @@ type RedisInstanceStatus = { sourceId: string; sourceName: string; host: string;
 type RedisMetricSnapshot = { id: number; sourceId: string; collectedAt: string; metrics: Record<string, string> }
 type RedisDashboardData = { status: RedisInstanceStatus; displayName: string; snapshot?: RedisMetricSnapshot; snapshots?: RedisMetricSnapshot[] }
 type SSHInstanceStatus = { sourceId: string; sourceName: string; host: string; port: string; status: string; hostname?: string; kernel?: string; uptimeSeconds: number; cpuUsagePercent: number; load1: number; load5: number; load15: number; memoryUsed: number; memoryTotal: number; memoryPercent: number; diskUsed: number; diskTotal: number; diskPercent: number; processCount: number; tcpConnections: number; lastError?: string; lastCollectedAt: string }
-type DashboardData = (MySQLDashboardData & { kind: 'MySQL' }) | (RedisDashboardData & { kind: 'Redis' })
+type SSHMetricSnapshot = { id: number; sourceId: string; collectedAt: string; metrics: Record<string, string> }
+type SSHDashboardData = { status: SSHInstanceStatus; displayName: string; snapshot?: SSHMetricSnapshot; snapshots?: SSHMetricSnapshot[] }
+type DashboardData = (MySQLDashboardData & { kind: 'MySQL' }) | (RedisDashboardData & { kind: 'Redis' }) | (SSHDashboardData & { kind: 'SSH' })
 type ImportedDashboard = { sourceId: string; name: string }
 type MetricRow = [string, string | undefined, string?]
 type Rule = { id: string; name: string; source: string; database: string; table: string; field: string; condition: string; threshold?: string; timeWindow: string; lastRun: string; status: string }
@@ -26,6 +28,7 @@ const api = '/api'
 const importedDashboardKey = 'opsguard_imported_mysql_dashboards'
 const hiddenDetailMetricKeys = new Set(['Threads_connected', 'max_connections', 'Uptime', 'Slow_queries', 'database_size_bytes', 'replica_status'])
 const hiddenRedisDetailMetricKeys = new Set(['redis_version', 'uptime_in_seconds', 'connected_clients', 'used_memory', 'instantaneous_ops_per_sec', 'hit_rate', 'slowlog_len', 'key_count', 'role'])
+const hiddenSSHDetailMetricKeys = new Set(['hostname', 'kernel', 'uptime_seconds', 'cpu_usage_percent', 'memory_percent', 'disk_percent'])
 const sourceTypes: SourceType[] = ['MySQL', 'Kafka', 'Redis', 'SSH', 'PostgreSQL', 'Elasticsearch']
 const defaultPorts: Record<SourceType, string> = { MySQL: '3306', Kafka: '9092', Redis: '6379', SSH: '22', PostgreSQL: '5432', Elasticsearch: '9200' }
 function splitDatabaseList(value = '') {
@@ -101,6 +104,23 @@ const redisMetricInfo: Record<string, string> = {
   used_cpu_user: '用户态 CPU 累计消耗',
   used_memory: '当前使用内存，是容量压力核心指标',
   used_memory_peak: '历史内存峰值',
+}
+const sshMetricInfo: Record<string, string> = {
+  cpu_usage_percent: 'CPU 使用率，持续偏高代表计算资源压力',
+  disk_percent: '根分区磁盘使用率，接近上限会影响写入和系统稳定性',
+  disk_total: '根分区总容量',
+  disk_used: '根分区已用容量',
+  hostname: '主机名',
+  kernel: '内核版本',
+  load1: '1 分钟系统负载，适合观察当前压力',
+  load5: '5 分钟系统负载，适合观察短周期压力',
+  load15: '15 分钟系统负载，适合观察持续压力',
+  memory_percent: '内存使用率，持续偏高可能导致换页或进程异常',
+  memory_total: '系统总内存',
+  memory_used: '系统已用内存',
+  process_count: '当前进程数，异常增长可能代表任务堆积或泄漏',
+  tcp_connections: '当前 ESTABLISHED TCP 连接数，反映网络连接压力',
+  uptime_seconds: '系统启动后的运行秒数',
 }
 const fallbackTasks: Task[] = [
   { id: 'insp-101', title: '订单系统巡检', owner: '刘旭', status: '运行中', progress: 84, updated: '10 分钟前' },
@@ -357,7 +377,9 @@ function Dashboard() {
       const selectedType = selectedSource?.type || 'MySQL'
       const selected = selectedType === 'Redis'
         ? redisInstances.find(item => item.sourceId === selectedDashboardId)
-        : instances.find(item => item.sourceId === selectedDashboardId)
+        : selectedType === 'SSH'
+          ? sshInstances.find(item => item.sourceId === selectedDashboardId)
+          : instances.find(item => item.sourceId === selectedDashboardId)
       if (!selected) {
         setSelectedDashboard(null)
         return
@@ -378,6 +400,18 @@ function Dashboard() {
         setSelectedDashboard({
           kind: 'Redis',
           status: selected as RedisInstanceStatus,
+          displayName: imported.name,
+          snapshot: Array.isArray(metricData.snapshots) ? metricData.snapshots[0] : undefined,
+          snapshots: Array.isArray(metricData.snapshots) ? metricData.snapshots : [],
+        })
+        return
+      }
+      if (selectedType === 'SSH') {
+        const metricResponse = await fetch(`${api}/ssh-monitor/instances/${selected.sourceId}/metrics?${historyQuery.toString()}`)
+        const metricData = await metricResponse.json()
+        setSelectedDashboard({
+          kind: 'SSH',
+          status: selected as SSHInstanceStatus,
           displayName: imported.name,
           snapshot: Array.isArray(metricData.snapshots) ? metricData.snapshots[0] : undefined,
           snapshots: Array.isArray(metricData.snapshots) ? metricData.snapshots : [],
@@ -418,7 +452,7 @@ function Dashboard() {
     setDeleteTarget(null)
     navigate('/')
   }
-  return <div className="page dashboard"><section className="hero"><div><h2>{selectedDashboardId ? `${selectedDashboard?.kind || ''} 监控大屏` : '监控总览'}</h2><p>{selectedDashboardId ? '当前展示单个数据节点固定大屏，可按时间段查询历史采集数据。' : '当前按数据源展示关键运行信息，详细大屏请从左侧二级菜单进入。'}</p></div><div className="hero-actions">{selectedDashboardId && <div className="history-filter"><label>开始<input type="datetime-local" value={historyStart} onChange={(event) => setHistoryStart(event.target.value)} /></label><label>结束<input type="datetime-local" value={historyEnd} onChange={(event) => setHistoryEnd(event.target.value)} /></label><button className="button secondary" type="button" onClick={() => { setHistoryStart(''); setHistoryEnd('') }}>清空</button></div>}<button className="button secondary" onClick={refresh} disabled={loading}>{loading ? '同步中...' : '刷新数据'} <Icon name="arrow" /></button></div></section>{selectedDashboardId ? (selectedDashboard ? <section className="mysql-dashboard-stack">{selectedDashboard.kind === 'Redis' ? <RedisDashboard data={selectedDashboard} onDelete={() => setDeleteTarget(selectedDashboard)} /> : <MySQLDashboard data={selectedDashboard} onDelete={() => setDeleteTarget(selectedDashboard)} />}</section> : <section className="surface dashboard-empty"><b>未找到该大屏</b><span>该大屏可能尚未导入、对应节点尚未采集成功，或该时间段内没有采集数据。</span></section>) : <MonitorOverview sources={dataSources} mysqlInstances={mysqlInstances} redisInstances={redisInstances} sshInstances={sshInstances} />}{deleteTarget && <div className="modal-backdrop" role="presentation" onMouseDown={() => setDeleteTarget(null)}><section className="surface confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-dashboard-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="delete-dashboard-title">确认删除大屏</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={() => setDeleteTarget(null)}>×</button></header><p>确认删除“{deleteTarget.displayName}”吗？删除后不会影响数据节点和采集数据。</p><footer className="modal-actions"><button className="button secondary" type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="button danger-button" type="button" onClick={() => deleteDashboard(deleteTarget.status.sourceId)}>确认</button></footer></section></div>}</div>
+  return <div className="page dashboard"><section className="hero"><div><h2>{selectedDashboardId ? `${selectedDashboard?.kind || ''} 监控大屏` : '监控总览'}</h2><p>{selectedDashboardId ? '当前展示单个数据节点固定大屏，可按时间段查询历史采集数据。' : '当前按数据源展示关键运行信息，详细大屏请从左侧二级菜单进入。'}</p></div><div className="hero-actions">{selectedDashboardId && <div className="history-filter"><label>开始<input type="datetime-local" value={historyStart} onChange={(event) => setHistoryStart(event.target.value)} /></label><label>结束<input type="datetime-local" value={historyEnd} onChange={(event) => setHistoryEnd(event.target.value)} /></label><button className="button secondary" type="button" onClick={() => { setHistoryStart(''); setHistoryEnd('') }}>清空</button></div>}<button className="button secondary" onClick={refresh} disabled={loading}>{loading ? '同步中...' : '刷新数据'} <Icon name="arrow" /></button></div></section>{selectedDashboardId ? (selectedDashboard ? <section className="mysql-dashboard-stack">{selectedDashboard.kind === 'Redis' ? <RedisDashboard data={selectedDashboard} onDelete={() => setDeleteTarget(selectedDashboard)} /> : selectedDashboard.kind === 'SSH' ? <SSHDashboard data={selectedDashboard} onDelete={() => setDeleteTarget(selectedDashboard)} /> : <MySQLDashboard data={selectedDashboard} onDelete={() => setDeleteTarget(selectedDashboard)} />}</section> : <section className="surface dashboard-empty"><b>未找到该大屏</b><span>该大屏可能尚未导入、对应节点尚未采集成功，或该时间段内没有采集数据。</span></section>) : <MonitorOverview sources={dataSources} mysqlInstances={mysqlInstances} redisInstances={redisInstances} sshInstances={sshInstances} />}{deleteTarget && <div className="modal-backdrop" role="presentation" onMouseDown={() => setDeleteTarget(null)}><section className="surface confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-dashboard-title" onMouseDown={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="delete-dashboard-title">确认删除大屏</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={() => setDeleteTarget(null)}>×</button></header><p>确认删除“{deleteTarget.displayName}”吗？删除后不会影响数据节点和采集数据。</p><footer className="modal-actions"><button className="button secondary" type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="button danger-button" type="button" onClick={() => deleteDashboard(deleteTarget.status.sourceId)}>确认</button></footer></section></div>}</div>
 }
 function MonitorOverview({ sources, mysqlInstances, redisInstances, sshInstances }: { sources: Source[]; mysqlInstances: MySQLInstanceStatus[]; redisInstances: RedisInstanceStatus[]; sshInstances: SSHInstanceStatus[] }) {
   const mysqlStatusBySourceId = new Map(mysqlInstances.map(item => [item.sourceId, item]))
@@ -482,6 +516,21 @@ function RedisDashboard({ data, onDelete }: { data: RedisDashboardData; onDelete
   const allMetrics = Object.entries(metrics).filter(([key]) => redisMetricInfo[key] && !hiddenRedisDetailMetricKeys.has(key)).sort(([a], [b]) => a.localeCompare(b))
   const tabs = [['overview', '总览'], ['throughput', '吞吐'], ['memory', '内存'], ['risk', '风险'], ['metrics', '指标']]
   return <article className="mysql-template redis-template surface"><header className="mysql-template-head"><div><span className="template-kicker">Redis 固定大屏模板</span><h2>{data.displayName}</h2><p>{status.sourceName} · {status.host}:{status.port} · Redis {status.version || '-'}</p></div><div className="template-status"><div className="template-actions"><span className={`tag ${status.status === '健康' ? 'success' : 'pending'}`}>{status.status}</span><button className="delete-dashboard" type="button" onClick={onDelete}>删除</button></div><small>最近采集：{formatCollectedAt(status.lastCollectedAt)} · 历史点 {trendSnapshots.length}</small></div></header><nav className="dashboard-tabs" aria-label="Redis 大屏模板">{tabs.map(([key, label]) => <button key={key} type="button" className={activeTab === key ? 'active' : ''} onClick={() => setActiveTab(key)}>{label}</button>)}</nav>{activeTab === 'overview' && <><section className="mysql-hero-grid"><div className="mysql-score"><div className="mysql-ring redis-ring" style={{ '--ring': `${memoryPercent * 3.6}deg` } as CSSProperties & Record<string, string>}><span>{status.maxMemory > 0 ? `${memoryPercent}%` : '-'}</span></div><b>内存使用率</b><small>{formatBytes(status.usedMemory)} / {status.maxMemory > 0 ? formatBytes(status.maxMemory) : '未限制'}</small></div><div className="mysql-kpi-grid"><DashboardKpi label="存活时间" value={formatDuration(status.uptimeSeconds)} detail="Redis 实例持续运行时间" /><DashboardKpi label="当前 QPS" value={String(status.opsPerSecond)} detail="每秒处理命令数" /><DashboardKpi label="命中率" value={`${hitRatePercent}%`} detail="keyspace hits / 总访问" /><DashboardKpi label="慢日志" value={String(status.slowlogLength)} detail="慢命令样本数量" /></div></section><section className="mysql-chart-grid"><LineChart title="QPS 趋势" points={qpsTrend} /><LineChart title="内存趋势" points={memoryTrend} /><LineChart title="命中率趋势" unit="%" points={hitTrend} /><DonutChart title="Key 生命周期" total={status.evictedKeys + status.expiredKeys} slices={[{ label: 'evicted', value: status.evictedKeys, color: 'red' }, { label: 'expired', value: status.expiredKeys, color: 'amber' }]} /></section></>}{activeTab === 'throughput' && <><section className="mysql-chart-grid two"><LineChart title="QPS 趋势" points={qpsTrend} /><LineChart title="连接趋势" points={clientTrend} /></section><section className="mysql-panels two"><div className="surface mysql-panel"><SectionTitle title="吞吐与连接" /><MetricRows rows={[["当前 QPS", String(status.opsPerSecond), "instantaneous_ops_per_sec"], ["累计命令", String(status.totalCommands), "total_commands_processed"], ["当前连接", String(status.connectedClients), "connected_clients"], ["阻塞连接", String(status.blockedClients), "blocked_clients"], ["拒绝连接", String(status.rejectedConnections), "rejected_connections"]]} /></div><div className="surface mysql-panel"><SectionTitle title="缓存命中" /><MetricRows rows={[["命中率", `${hitRatePercent}%`, "hit_rate"], ["命中次数", metrics.keyspace_hits, "keyspace_hits"], ["未命中次数", metrics.keyspace_misses, "keyspace_misses"], ["Key 数量", String(status.keyCount), "key_count"]]} /></div></section></>}{activeTab === 'memory' && <><section className="mysql-chart-grid two"><LineChart title="内存趋势" points={memoryTrend} /><LineChart title="命中率趋势" unit="%" points={hitTrend} /></section><section className="mysql-panels two"><div className="surface mysql-panel"><SectionTitle title="内存压力" /><div className="buffer-meter"><i style={{ width: `${memoryPercent}%` }} /></div><MetricRows rows={[["已用内存", formatBytes(status.usedMemory), "used_memory"], ["最大内存", status.maxMemory > 0 ? formatBytes(status.maxMemory) : '未限制', "maxmemory"], ["内存峰值", formatBytes(metricNumber(metrics, 'used_memory_peak')), "used_memory_peak"], ["碎片率", status.memoryFragmentation.toFixed(2), "mem_fragmentation_ratio"]]} /></div><div className="surface mysql-panel"><SectionTitle title="淘汰与过期" /><MetricRows rows={[["淘汰 Key", String(status.evictedKeys), "evicted_keys"], ["过期 Key", String(status.expiredKeys), "expired_keys"], ["最近 fork", `${metricNumber(metrics, 'latest_fork_usec')} us`, "latest_fork_usec"]]} /></div></section></>}{activeTab === 'risk' && <section className="mysql-panels two"><div className="surface mysql-panel"><SectionTitle title="性能风险" /><MetricRows rows={[["慢日志长度", String(status.slowlogLength), "slowlog_len"], ["阻塞连接", String(status.blockedClients), "blocked_clients"], ["拒绝连接", String(status.rejectedConnections), "rejected_connections"], ["内存碎片率", status.memoryFragmentation.toFixed(2), "mem_fragmentation_ratio"], ["角色", status.role || '-', "role"]]} /></div><div className="surface mysql-panel"><SectionTitle title="运行状态" /><MetricRows rows={[["版本", status.version || '-'], ["运行时长", formatDuration(status.uptimeSeconds)], ["Key 数量", String(status.keyCount)], ["从节点", metrics.connected_slaves || '0'], ["CPU sys", metrics.used_cpu_sys], ["CPU user", metrics.used_cpu_user]]} /></div></section>}{activeTab === 'metrics' && <section className="surface all-metrics"><SectionTitle title="全部采集指标" action={`${allMetrics.length} 项`} /><div>{allMetrics.map(([key, value]) => <span key={key}><b>{key}</b><small>{redisMetricInfo[key]}</small><em>{value}</em></span>)}</div></section>}</article>
+}
+function SSHDashboard({ data, onDelete }: { data: SSHDashboardData; onDelete: () => void }) {
+  const [activeTab, setActiveTab] = useState('overview')
+  const status = data.status
+  const metrics = data.snapshot?.metrics || {}
+  const trendSnapshots = (data.snapshots && data.snapshots.length > 0 ? data.snapshots : data.snapshot ? [data.snapshot] : []).slice().reverse()
+  const cpuTrend = trendSnapshots.map(item => ({ label: formatChartTime(item.collectedAt), value: metricNumber(item.metrics, 'cpu_usage_percent') }))
+  const memoryTrend = trendSnapshots.map(item => ({ label: formatChartTime(item.collectedAt), value: metricNumber(item.metrics, 'memory_percent') }))
+  const diskTrend = trendSnapshots.map(item => ({ label: formatChartTime(item.collectedAt), value: metricNumber(item.metrics, 'disk_percent') }))
+  const loadTrend = trendSnapshots.map(item => ({ label: formatChartTime(item.collectedAt), value: metricNumber(item.metrics, 'load1') }))
+  const processTrend = trendSnapshots.map(item => ({ label: formatChartTime(item.collectedAt), value: metricNumber(item.metrics, 'process_count') }))
+  const tcpTrend = trendSnapshots.map(item => ({ label: formatChartTime(item.collectedAt), value: metricNumber(item.metrics, 'tcp_connections') }))
+  const allMetrics = Object.entries(metrics).filter(([key]) => sshMetricInfo[key] && !hiddenSSHDetailMetricKeys.has(key)).sort(([a], [b]) => a.localeCompare(b))
+  const tabs = [['overview', '总览'], ['resource', '资源'], ['load', '负载'], ['metrics', '指标']]
+  return <article className="mysql-template ssh-template surface"><header className="mysql-template-head"><div><span className="template-kicker">SSH 固定大屏模板</span><h2>{data.displayName}</h2><p>{status.sourceName} · {status.host}:{status.port} · {status.hostname || 'unknown'} · {status.kernel || '-'}</p></div><div className="template-status"><div className="template-actions"><span className={`tag ${status.status === '健康' ? 'success' : 'pending'}`}>{status.status}</span><button className="delete-dashboard" type="button" onClick={onDelete}>删除</button></div><small>最近采集：{formatCollectedAt(status.lastCollectedAt)} · 历史点 {trendSnapshots.length}</small></div></header><nav className="dashboard-tabs" aria-label="SSH 大屏模板">{tabs.map(([key, label]) => <button key={key} type="button" className={activeTab === key ? 'active' : ''} onClick={() => setActiveTab(key)}>{label}</button>)}</nav>{activeTab === 'overview' && <><section className="mysql-hero-grid"><div className="mysql-score"><div className="mysql-ring ssh-ring" style={{ '--ring': `${status.cpuUsagePercent * 3.6}deg` } as CSSProperties & Record<string, string>}><span>{status.cpuUsagePercent.toFixed(0)}%</span></div><b>CPU 使用率</b><small>系统实时计算压力</small></div><div className="mysql-kpi-grid"><DashboardKpi label="存活时间" value={formatDuration(status.uptimeSeconds)} detail="系统启动后的运行时间" /><DashboardKpi label="内存使用率" value={`${status.memoryPercent.toFixed(1)}%`} detail={`${formatBytes(status.memoryUsed)} / ${formatBytes(status.memoryTotal)}`} /><DashboardKpi label="磁盘使用率" value={`${status.diskPercent.toFixed(1)}%`} detail={`${formatBytes(status.diskUsed)} / ${formatBytes(status.diskTotal)}`} /><DashboardKpi label="1 分钟负载" value={status.load1.toFixed(2)} detail="当前系统负载压力" /></div></section><section className="mysql-chart-grid"><LineChart title="CPU 使用率趋势" unit="%" points={cpuTrend} /><LineChart title="内存使用率趋势" unit="%" points={memoryTrend} /><LineChart title="磁盘使用率趋势" unit="%" points={diskTrend} /><LineChart title="Load1 趋势" points={loadTrend} /></section></>}{activeTab === 'resource' && <><section className="mysql-chart-grid two"><LineChart title="CPU 使用率趋势" unit="%" points={cpuTrend} /><LineChart title="内存使用率趋势" unit="%" points={memoryTrend} /></section><section className="mysql-panels two"><div className="surface mysql-panel"><SectionTitle title="资源水位" /><div className="buffer-meter"><i style={{ width: `${Math.min(100, status.memoryPercent)}%` }} /></div><MetricRows rows={[["CPU 使用率", `${status.cpuUsagePercent.toFixed(2)}%`, "cpu_usage_percent"], ["内存使用率", `${status.memoryPercent.toFixed(2)}%`, "memory_percent"], ["已用内存", formatBytes(status.memoryUsed), "memory_used"], ["总内存", formatBytes(status.memoryTotal), "memory_total"]]} /></div><div className="surface mysql-panel"><SectionTitle title="磁盘容量" /><div className="buffer-meter"><i style={{ width: `${Math.min(100, status.diskPercent)}%` }} /></div><MetricRows rows={[["磁盘使用率", `${status.diskPercent.toFixed(2)}%`, "disk_percent"], ["已用磁盘", formatBytes(status.diskUsed), "disk_used"], ["总磁盘", formatBytes(status.diskTotal), "disk_total"]]} /></div></section></>}{activeTab === 'load' && <><section className="mysql-chart-grid two"><LineChart title="Load1 趋势" points={loadTrend} /><LineChart title="TCP 连接趋势" points={tcpTrend} /></section><section className="mysql-panels two"><div className="surface mysql-panel"><SectionTitle title="系统负载" /><MetricRows rows={[["Load 1", status.load1.toFixed(2), "load1"], ["Load 5", status.load5.toFixed(2), "load5"], ["Load 15", status.load15.toFixed(2), "load15"], ["进程数", String(status.processCount), "process_count"], ["TCP 连接", String(status.tcpConnections), "tcp_connections"]]} /></div><div className="surface mysql-panel"><SectionTitle title="进程与连接趋势" /><MetricRows rows={[["当前进程数", String(status.processCount)], ["当前 TCP 连接", String(status.tcpConnections)], ["主机名", status.hostname || '-'], ["内核", status.kernel || '-']]} /></div></section><section className="mysql-chart-grid two"><LineChart title="进程数趋势" points={processTrend} /><LineChart title="磁盘使用率趋势" unit="%" points={diskTrend} /></section></>}{activeTab === 'metrics' && <section className="surface all-metrics"><SectionTitle title="全部采集指标" action={`${allMetrics.length} 项`} /><div>{allMetrics.map(([key, value]) => <span key={key}><b>{key}</b><small>{sshMetricInfo[key]}</small><em>{key.endsWith('_used') || key.endsWith('_total') ? formatBytes(Number(value)) : value}</em></span>)}</div></section>}</article>
 }
 function DashboardKpi({ label, value, detail }: { label: string; value: string; detail: string }) { return <div className="dashboard-kpi"><span>{label}</span><b>{value}</b><small>{detail}</small></div> }
 function LineChart({ title, points, unit = '' }: { title: string; points: Array<{ label: string; value: number }>; unit?: string }) {
@@ -754,8 +803,8 @@ function DataSources() {
     }
   }
   const importDashboard = (source: Source) => {
-    if (source.type !== 'MySQL' && source.type !== 'Redis') {
-      setMessage('当前仅支持导入 MySQL / Redis 固定大屏')
+    if (source.type !== 'MySQL' && source.type !== 'Redis' && source.type !== 'SSH') {
+      setMessage('当前仅支持导入 MySQL / Redis / SSH 固定大屏')
       return
     }
     if (!source.enabled) {
@@ -819,7 +868,7 @@ function DataSources() {
                 <div className="node-enabled"><StatusSwitch checked={s.enabled} onChange={(checked) => void toggleSourceEnabled(s, checked)} /></div>
                 <div className="node-meta"><span>最近采集：{formatCollectedAt(live?.lastCollectedAt || s.lastTest)}</span>{s.enabled && <span>{liveLabel}</span>}</div>
                 <div className="source-actions">
-                  {(s.type === 'MySQL' || s.type === 'Redis') && <button type="button" disabled={!s.enabled} onClick={() => importDashboard(s)}>导入大屏</button>}
+                  {(s.type === 'MySQL' || s.type === 'Redis' || s.type === 'SSH') && <button type="button" disabled={!s.enabled} onClick={() => importDashboard(s)}>导入大屏</button>}
                   <button type="button" onClick={() => openEditModal(s)}>编辑</button>
                   <button className="danger" type="button" onClick={() => setDeleteSourceTarget(s)}>删除</button>
                 </div>
