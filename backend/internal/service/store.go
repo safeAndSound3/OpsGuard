@@ -307,8 +307,16 @@ func DeleteDataSource(id string) error {
 		return errors.New("id is required")
 	}
 
+	existing, err := GetDataSourceByID(id)
+	if err != nil {
+		return errors.New("data source not found")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if !strings.EqualFold(existing.Type, "prometheus") {
+		_, _ = current.ExecContext(ctx, `DELETE FROM collection_rules WHERE source = ? OR source = ?`, existing.ID, existing.Name)
+		_, _ = current.ExecContext(ctx, `DELETE FROM alert_notifications WHERE source = ? OR source = ?`, existing.ID, existing.Name)
+	}
 	result, err := current.ExecContext(ctx, `DELETE FROM data_sources WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -753,7 +761,65 @@ func isCustomProbeRule(rule model.CollectionRule) bool {
 }
 
 func evaluateMetricThresholdRule(rule model.CollectionRule) string {
-	return fmt.Sprintf("等待 %s：普通阈值规则评估待接入", time.Now().Format("15:04"))
+	now := time.Now()
+	checkedAt := now.Format("15:04")
+	ds, err := getRuleDataSourceWithSecret(rule.Source)
+	if err != nil {
+		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
+	}
+	if !strings.EqualFold(ds.Type, "prometheus") {
+		return fmt.Sprintf("等待 %s：普通阈值规则评估待接入", checkedAt)
+	}
+	data, err := QueryPrometheusDataSourceByID(ds.ID, rule.Table)
+	if err != nil {
+		return fmt.Sprintf("执行失败 %s：Prometheus 查询失败：%s", checkedAt, err.Error())
+	}
+	value, ok := firstPrometheusVectorValue(data)
+	if !ok {
+		return fmt.Sprintf("执行失败 %s：Prometheus 查询无数据", checkedAt)
+	}
+	threshold, err := strconv.ParseFloat(strings.TrimSpace(rule.Threshold), 64)
+	if err != nil {
+		return fmt.Sprintf("执行失败 %s：阈值必须是数字", checkedAt)
+	}
+	matched := false
+	switch rule.Condition {
+	case "小于":
+		matched = value < threshold
+	case "等于":
+		matched = value == threshold
+	default:
+		matched = value > threshold
+	}
+	if matched {
+		return fmt.Sprintf("告警 %s：Prometheus 指标 %.4f %s %.4f", checkedAt, value, rule.Condition, threshold)
+	}
+	return fmt.Sprintf("正常 %s：Prometheus 指标 %.4f 未触发阈值", checkedAt, value)
+}
+
+func firstPrometheusVectorValue(data any) (float64, bool) {
+	payload, ok := data.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	result, ok := payload["result"].([]any)
+	if !ok || len(result) == 0 {
+		return 0, false
+	}
+	row, ok := result[0].(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	value, ok := row["value"].([]any)
+	if !ok || len(value) < 2 {
+		return 0, false
+	}
+	text, ok := value[1].(string)
+	if !ok {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(text, 64)
+	return parsed, err == nil
 }
 
 func evaluateCustomProbeRule(rule model.CollectionRule) string {
