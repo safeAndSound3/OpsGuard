@@ -52,9 +52,9 @@
 @keyframes refresh-spin{to{transform:rotate(360deg)}}
 .alert-section-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .alert-category-select{width:150px;margin-top:0}
-.alert-source-select{width:min(330px,38vw);margin-top:0}
+
 .alert-section-actions .select-shell select{height:38px;border-radius:10px;background:#fff;font-weight:800}
 .alert-rule-modal .select-shell{margin-top:7px}
 .alert-rule-modal label>.select-shell select{height:40px;border-radius:9px;background:#fff;font-weight:800}
 .alert-rule-modal label{min-width:0}
-@media(max-width:700px){.toast{top:12px}.alert-section-actions{width:100%;justify-content:flex-start}.alert-category-select,.alert-source-select{width:100%}.refresh-button{width:36px;height:36px}}
+@media(max-width:700px){.toast{top:12px}.alert-section-actions{width:100%;justify-content:flex-start}.alert-category-select{width:100%}.refresh-button{width:36px;height:36px}}
