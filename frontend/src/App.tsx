@@ -4,7 +4,7 @@ import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate, useSea
 import './App.css'
 
 type Task = { id: string; title: string; owner: string; status: string; progress: number; updated: string }
-type Source = { id: string; name: string; type: string; host: string; port: string; status: string; lastTest: string; username?: string; database?: string; remark?: string; options?: Record<string, string> }
+type Source = { id: string; name: string; type: string; host: string; port: string; enabled: boolean; status: string; lastTest: string; username?: string; database?: string; remark?: string; options?: Record<string, string> }
 type SourceDraft = Partial<Source> & { password?: string }
 type MySQLInstanceStatus = { sourceId: string; sourceName: string; host: string; port: string; status: string; version?: string; uptimeSeconds: number; threadsConnected: number; maxConnections: number; slowQueries: number; questions: number; databaseSizeBytes: number; replicaStatus?: string; lastError?: string; lastCollectedAt: string }
 type MySQLMetricSnapshot = { id: number; sourceId: string; collectedAt: string; metrics: Record<string, string> }
@@ -229,9 +229,14 @@ function Sidebar() {
     }
   }, [])
   const items = [['inspection', '巡检任务', '/inspection'], ['alert', '平台告警', '/alerts'], ['data', '数据节点', '/datasources'], ['settings', '系统配置', '/config']]
-  const importedItems = importedDashboards.map(config => ({ config, status: dashboards.find(item => item.sourceId === config.sourceId) }))
+  const sourceById = new Map(sources.map(source => [source.id, source]))
+  const importedItems = importedDashboards.flatMap(config => {
+    const source = sourceById.get(config.sourceId)
+    if (source && !source.enabled) return []
+    return [{ config, status: dashboards.find(item => item.sourceId === config.sourceId) }]
+  })
   const mysqlStatusBySourceId = new Map(dashboards.map(item => [item.sourceId, item.status]))
-  const onlineSourceCount = sources.filter(source => source.type === 'MySQL' ? mysqlStatusBySourceId.get(source.id) === '健康' : source.status === '健康').length
+  const onlineSourceCount = sources.filter(source => source.enabled && (source.type === 'MySQL' ? mysqlStatusBySourceId.get(source.id) === '健康' : source.status === '健康')).length
   return <aside className="sidebar"><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>OpsGuard</b><small>巡检平台</small></div></div><nav><NavLink end to="/" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name="overview" /><span>监控总览</span></NavLink>{importedItems.length > 0 && <div className="subnav">{importedItems.map(({ config, status }) => <NavLink key={config.sourceId} to={`/?dashboard=${config.sourceId}`} className={({ isActive }) => `subnav-link ${isActive && currentLocation.search.includes(config.sourceId) ? 'active' : ''}`}><span className={status?.status === '健康' ? 'mini-dot ok' : 'mini-dot warn'} /><em>{config.name}</em></NavLink>)}</div>}{items.map(([icon, label, path]) => <NavLink key={path} end={path === '/'} to={path} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name={icon} /><span>{label}</span></NavLink>)}</nav><div className="sidebar-footer"><span className="online-dot" /><span>{onlineSourceCount} / {sources.length} 节点在线</span><small>采集服务运行正常</small></div></aside>
 }
 function Dashboard() {
@@ -255,14 +260,17 @@ function Dashboard() {
       const instanceData = await instanceResponse.json()
       const sourceData = await sourceResponse.json()
       const instances: MySQLInstanceStatus[] = Array.isArray(instanceData.instances) ? instanceData.instances : []
+      const sources: Source[] = Array.isArray(sourceData.dataSources) ? sourceData.dataSources : []
       setMysqlInstances(instances)
-      setDataSources(Array.isArray(sourceData.dataSources) ? sourceData.dataSources : [])
+      setDataSources(sources)
       if (!selectedDashboardId) {
         setSelectedDashboard(null)
         return
       }
       const imported = getImportedDashboards().find(item => item.sourceId === selectedDashboardId)
-      if (!imported) {
+      const selectedSource = sources.find(item => item.id === selectedDashboardId)
+      if (!imported || selectedSource?.enabled === false) {
+        if (selectedSource?.enabled === false) deleteImportedDashboard(selectedDashboardId)
         setSelectedDashboard(null)
         return
       }
@@ -318,11 +326,11 @@ function MonitorOverview({ sources, instances }: { sources: Source[]; instances:
   const statusBySourceId = new Map(instances.map(item => [item.sourceId, item]))
   return <section className="overview-stack">{sources.length === 0 ? <div className="surface dashboard-empty"><b>暂无数据源</b><span>添加数据源并等待采集后，这里会展示关键运行信息。</span></div> : <div className="overview-source-list">{sources.map(source => {
     const mysql = source.type === 'MySQL' ? statusBySourceId.get(source.id) : undefined
-    const status = mysql?.status || (source.type === 'MySQL' ? '待采集' : source.status)
+    const status = source.enabled ? (mysql?.status || (source.type === 'MySQL' ? '待采集' : source.status)) : '停用'
     const isHealthy = status === '健康'
-    const keyMetrics = mysql
+    const keyMetrics = source.enabled && mysql
       ? [['慢查询', String(mysql.slowQueries)], ['负载', `${percent(mysql.threadsConnected, mysql.maxConnections)}%`], ['存活', formatDuration(mysql.uptimeSeconds)], ['最近采集', formatCollectedAt(mysql.lastCollectedAt)]]
-      : [['状态', source.type === 'MySQL' ? '等待采集' : source.status], ['最近检测', formatCollectedAt(source.lastTest)], ['指标', source.type === 'MySQL' ? '采集中' : '待接入']]
+      : [['状态', source.enabled ? (source.type === 'MySQL' ? '等待采集' : source.status) : '已停止'], ['最近检测', formatCollectedAt(source.lastTest)], ['指标', source.enabled ? (source.type === 'MySQL' ? '采集中' : '待接入') : '已暂停']]
     return <article className={`surface overview-source ${isHealthy ? 'healthy' : 'warning'}`} key={source.id}><div className="overview-source-head"><span className="source-logo">{source.type.slice(0, 1)}</span><div><b>{source.name}</b><small>{source.type}{source.database ? ` · ${source.database}` : ''}</small></div><span className={`tag ${isHealthy ? 'success' : 'pending'}`}>{status}</span></div><div className="overview-source-metrics">{keyMetrics.map(([label, value]) => <p key={label}><span>{label}</span><b>{value}</b></p>)}</div>{mysql?.lastError && <em>{mysql.lastError}</em>}</article>
   })}</div>}</section>
 }
@@ -501,6 +509,7 @@ function DataSources() {
       username: String(formData.get('username') || draft?.username || ''),
       password: String(formData.get('password') || draft?.password || ''),
       remark: String(formData.get('remark') || draft?.remark || ''),
+      enabled: editingSource?.enabled ?? true,
       options,
     }
   }
@@ -577,9 +586,39 @@ function DataSources() {
       setMessage(error instanceof Error ? error.message : '删除失败')
     }
   }
+  const toggleSourceEnabled = async (source: Source, enabled: boolean) => {
+    setSources(current => current.map(item => item.id === source.id ? { ...item, enabled, status: enabled ? item.status : '停用' } : item))
+    if (!enabled) {
+      deleteImportedDashboard(source.id)
+    }
+    try {
+      const response = await fetch(`${api}/data-sources/${source.id}/enabled`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+      const updated = await response.json()
+      if (!response.ok) throw new Error(updated.error || '状态更新失败')
+      setSources(current => current.map(item => item.id === source.id ? { ...item, ...updated } : item))
+      if (!enabled) {
+        setMysqlStatuses(current => current.filter(item => item.sourceId !== source.id))
+        setMessage(`${source.name} 已停止，相关大屏已删除，告警规则已暂停`)
+      } else {
+        setMessage(`${source.name} 已启用`)
+      }
+      void loadSources()
+    } catch (error) {
+      setSources(current => current.map(item => item.id === source.id ? source : item))
+      setMessage(error instanceof Error ? error.message : '状态更新失败')
+    }
+  }
   const importDashboard = (source: Source) => {
     if (source.type !== 'MySQL') {
       setMessage('当前仅支持导入 MySQL 固定大屏')
+      return
+    }
+    if (!source.enabled) {
+      setMessage('该数据节点已停止，请先启用后再导入大屏')
       return
     }
     setDashboardSource(source)
@@ -606,11 +645,12 @@ function DataSources() {
 
   const statusBySourceId = new Map(mysqlStatuses.map(item => [item.sourceId, item]))
   const healthyCount = sources.filter(source => {
+    if (!source.enabled) return false
     const live = statusBySourceId.get(source.id)
     return (live?.status || source.status) === '健康'
   }).length
 
-  return <div className="page"><PageHead title="数据节点" description={`实时同步节点采集状态，当前 ${healthyCount} / ${sources.length} 个节点健康。`} action="添加数据节点" onAction={openCreateModal} /><section className="node-toolbar"><span>{refreshing ? '正在同步节点状态' : '每 15 秒自动刷新'}</span><button className="button secondary" type="button" onClick={() => void loadSources()} disabled={refreshing}>{refreshing ? '刷新中...' : '刷新状态'}</button></section>{sources.length === 0 ? <section className="surface empty-state"><b>暂无数据节点</b><span>点击右上角添加数据节点，完成连接测试后即可选择监控库。</span></section> : <section className="source-list">{sources.map(s => { const live = statusBySourceId.get(s.id); const status = live?.status || (s.type === 'MySQL' ? '待采集' : s.status); const isHealthy = status === '健康'; return <article className={`surface source-row ${isHealthy ? 'healthy' : 'warning'}`} key={s.id}><div className="node-main"><span className="source-logo">{s.type.slice(0, 1)}</span><div><h3>{s.name}</h3><p>{s.type} · {s.host}:{s.port}</p>{renderMonitorDatabases(s)}{s.remark && <small className="source-remark">{s.remark}</small>}</div></div><div className="node-status"><span className={`tag ${isHealthy ? 'success' : 'pending'}`}>{status}</span><small>{live?.lastError || (live ? '采集正常' : '等待采集数据')}</small></div><div className="node-meta"><span>最近采集：{formatCollectedAt(live?.lastCollectedAt || s.lastTest)}</span><span>{live?.version ? `MySQL ${live.version}` : '监控数据待生成'}</span></div><div className="source-actions">{s.type === 'MySQL' && <button type="button" onClick={() => importDashboard(s)}>导入大屏</button>}<button type="button" onClick={() => openEditModal(s)}>编辑</button><button className="danger" type="button" onClick={() => setDeleteSourceTarget(s)}>删除</button></div></article> })}</section>}{deleteSourceTarget && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setDeleteSourceTarget(null) }}><section className="surface confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-source-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="delete-source-title">确认删除数据源</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={(event) => { if (event.target === event.currentTarget) setDeleteSourceTarget(null) }}>×</button></header><p>确认删除“{deleteSourceTarget.name}”吗？删除后会同步移除该数据源已导入的大屏入口，历史采集数据不在此处展示。</p><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { if (event.target === event.currentTarget) setDeleteSourceTarget(null) }}>取消</button><button className="button danger-button" type="button" onClick={() => void deleteSource(deleteSourceTarget)}>确认</button></footer></section></div>}{dashboardSource && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setDashboardSource(null) }}><section className="surface dashboard-import-modal" role="dialog" aria-modal="true" aria-labelledby="dashboard-import-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="dashboard-import-title">导入监控大屏</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={(event) => { if (event.target === event.currentTarget) setDashboardSource(null) }}>×</button></header><label><span className="field-label">大屏名称 <span className="required-mark">*</span></span><input value={dashboardName} onChange={(event) => setDashboardName(event.target.value)} autoFocus /></label><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { if (event.target === event.currentTarget) setDashboardSource(null) }}>取消</button><button className="button" type="button" onClick={confirmImportDashboard}>导入</button></footer></section></div>}{modalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) closeModal() }}><section className="surface source-modal source-wizard-modal" role="dialog" aria-modal="true" aria-labelledby="source-modal-title" onClick={(event) => event.stopPropagation()}><form id="source-form" key={`${editingSource?.id || 'new'}-${sourceType}`} onSubmit={saveSource}><header className="modal-head"><div><h2 id="source-modal-title">{editingSource ? '编辑数据节点' : '添加数据节点'}</h2><p>{sourceType === 'MySQL' ? `步骤 ${sourceStep} / 2` : '连接配置'}</p></div><div className="modal-head-actions">{sourceStep === 2 && <button className="button secondary" type="button" onClick={() => setSourceStep(1)}>上一步</button>}<button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.form; if (form) void testConnection(form) }} disabled={testing || sourceStep === 2}>{testing ? '测试中...' : '测试连接'}</button>{sourceStep === 1 && sourceType === 'MySQL' ? <button className="button" type="button" disabled={!testPassed} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setSourceStep(2) }}>{testPassed ? '下一步' : '待测试'}</button> : <button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button>}<button className="close-button" type="button" aria-label="关闭" onClick={(event) => { if (event.target === event.currentTarget) closeModal() }}>×</button></div></header>{sourceStep === 1 && <><div className="type-picker" role="group" aria-label="数据类型">{sourceTypes.map(type => <button key={type} type="button" className={sourceType === type ? 'active' : ''} onClick={() => { setSourceType(type); setTestPassed(false); setAvailableDatabases([]); setSelectedMonitorDatabases([]); setDatabaseRemarks({}); if (!editingSource || editingSource.type !== type) setOptionRows([{ key: '', value: '' }, { key: '', value: '' }]) }}>{type}</button>)}</div><div className="modal-form"><Field label="数据节点名称" name="name" value={editingSource?.name || `${sourceType} 生产节点`} required /><label>主机地址 <span className="required-mark">*</span><input name="host" defaultValue={editingSource?.host || ''} placeholder="例如 127.0.0.1 或 broker.internal" required /></label><label>端口 <span className="required-mark">*</span><input name="port" defaultValue={editingSource?.port || defaultPorts[sourceType]} required /></label>{sourceType === 'Kafka' && <label>Topic / Consumer Group<input name="topic" defaultValue={editingSource?.database || ''} placeholder="例如 ops-events / ops-monitor" /></label>}<label>用户名{sourceType === 'MySQL' && <span className="required-mark"> *</span>}<input name="username" defaultValue={editingSource?.username || ''} required={sourceType === 'MySQL'} placeholder={sourceType === 'Redis' ? '可选' : '请输入用户名'} /></label><label>密码{sourceType === 'MySQL' && !editingSource && <span className="required-mark"> *</span>}<input name="password" type="password" required={sourceType === 'MySQL' && !editingSource} placeholder={editingSource ? '留空则复用已保存密码测试/保存' : '请输入密码'} /></label>{sourceType === 'Elasticsearch' && <label>索引前缀<input name="indexPrefix" placeholder="例如 logs-*" /></label>}<label className="wide">备注<textarea name="remark" defaultValue={editingSource?.remark || ''} placeholder="记录用途、负责人、环境或注意事项" /></label><div className="wide option-editor"><div><b>连接参数</b><span>示例：ssl true、timeout 10s、brokers host1:9092,host2:9092</span></div>{optionRows.map((row, index) => <div className="option-row" key={index}><input aria-label="参数名" placeholder="key" value={row.key} onChange={(event) => setOptionRows(rows => rows.map((item, i) => i === index ? { ...item, key: event.target.value } : item))} /><input aria-label="参数值" placeholder="value" value={row.value} onChange={(event) => setOptionRows(rows => rows.map((item, i) => i === index ? { ...item, value: event.target.value } : item))} /></div>)}<button className="text-button" type="button" onClick={() => setOptionRows(rows => [...rows, { key: '', value: '' }])}>添加参数 <Icon name="plus" /></button></div></div></>}{sourceStep === 2 && <div className="database-picker"><div><b>选择监控库 <span className="required-mark">*</span></b><span>{editingSource ? '当前展示已监控库。如需重新拉取完整库列表，请返回上一步测试连接。' : '可多选，每个库可填写备注，保存后会展示在数据节点列表。'}</span></div><div className="database-list">{availableDatabases.length === 0 ? <p>未获取到可选数据库，请返回上一步重新测试连接。</p> : availableDatabases.map(database => { const checked = selectedMonitorDatabases.includes(database); return <label className={`database-choice ${checked ? 'checked' : ''}`} key={database}><input type="checkbox" checked={checked} onChange={() => toggleMonitorDatabase(database)} /><span><b>{database}</b><input placeholder="备注，可选" value={databaseRemarks[database] || ''} onChange={(event) => setDatabaseRemarks(current => ({ ...current, [database]: event.target.value }))} /></span></label> })}</div></div>}</form></section></div>}{message && <div className="toast">{message}</div>}</div>
+  return <div className="page"><PageHead title="数据节点" description={`实时同步节点采集状态，当前 ${healthyCount} / ${sources.length} 个节点健康。`} action="添加数据节点" onAction={openCreateModal} /><section className="node-toolbar"><span>{refreshing ? '正在同步节点状态' : '每 15 秒自动刷新'}</span><button className="button secondary" type="button" onClick={() => void loadSources()} disabled={refreshing}>{refreshing ? '刷新中...' : '刷新状态'}</button></section>{sources.length === 0 ? <section className="surface empty-state"><b>暂无数据节点</b><span>点击右上角添加数据节点，完成连接测试后即可选择监控库。</span></section> : <section className="source-list">{sources.map(s => { const live = statusBySourceId.get(s.id); const status = s.enabled ? (live?.status || (s.type === 'MySQL' ? '待采集' : s.status)) : '停用'; const isHealthy = status === '健康'; return <article className={`surface source-row ${isHealthy ? 'healthy' : 'warning'} ${!s.enabled ? 'disabled' : ''}`} key={s.id}><div className="node-main"><span className="source-logo">{s.type.slice(0, 1)}</span><div><h3>{s.name}</h3><p>{s.type} · {s.host}:{s.port}</p>{renderMonitorDatabases(s)}{s.remark && <small className="source-remark">{s.remark}</small>}</div></div><div className="node-status"><span className={`tag ${isHealthy ? 'success' : 'pending'}`}>{status}</span><small>{s.enabled ? (live?.lastError || (live ? '采集正常' : '等待采集数据')) : '采集、大屏和告警已暂停'}</small></div><div className="node-enabled"><StatusSwitch checked={s.enabled} onChange={(checked) => void toggleSourceEnabled(s, checked)} /></div><div className="node-meta"><span>最近采集：{formatCollectedAt(live?.lastCollectedAt || s.lastTest)}</span><span>{s.enabled && live?.version ? `MySQL ${live.version}` : s.enabled ? '监控数据待生成' : '节点已停止'}</span></div><div className="source-actions">{s.type === 'MySQL' && <button type="button" disabled={!s.enabled} onClick={() => importDashboard(s)}>导入大屏</button>}<button type="button" onClick={() => openEditModal(s)}>编辑</button><button className="danger" type="button" onClick={() => setDeleteSourceTarget(s)}>删除</button></div></article> })}</section>}{deleteSourceTarget && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setDeleteSourceTarget(null) }}><section className="surface confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-source-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="delete-source-title">确认删除数据源</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={(event) => { if (event.target === event.currentTarget) setDeleteSourceTarget(null) }}>×</button></header><p>确认删除“{deleteSourceTarget.name}”吗？删除后会同步移除该数据源已导入的大屏入口，历史采集数据不在此处展示。</p><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { if (event.target === event.currentTarget) setDeleteSourceTarget(null) }}>取消</button><button className="button danger-button" type="button" onClick={() => void deleteSource(deleteSourceTarget)}>确认</button></footer></section></div>}{dashboardSource && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setDashboardSource(null) }}><section className="surface dashboard-import-modal" role="dialog" aria-modal="true" aria-labelledby="dashboard-import-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="dashboard-import-title">导入监控大屏</h2></div><button className="close-button" type="button" aria-label="关闭" onClick={(event) => { if (event.target === event.currentTarget) setDashboardSource(null) }}>×</button></header><label><span className="field-label">大屏名称 <span className="required-mark">*</span></span><input value={dashboardName} onChange={(event) => setDashboardName(event.target.value)} autoFocus /></label><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { if (event.target === event.currentTarget) setDashboardSource(null) }}>取消</button><button className="button" type="button" onClick={confirmImportDashboard}>导入</button></footer></section></div>}{modalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) closeModal() }}><section className="surface source-modal source-wizard-modal" role="dialog" aria-modal="true" aria-labelledby="source-modal-title" onClick={(event) => event.stopPropagation()}><form id="source-form" key={`${editingSource?.id || 'new'}-${sourceType}`} onSubmit={saveSource}><header className="modal-head"><div><h2 id="source-modal-title">{editingSource ? '编辑数据节点' : '添加数据节点'}</h2><p>{sourceType === 'MySQL' ? `步骤 ${sourceStep} / 2` : '连接配置'}</p></div><div className="modal-head-actions">{sourceStep === 2 && <button className="button secondary" type="button" onClick={() => setSourceStep(1)}>上一步</button>}<button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.form; if (form) void testConnection(form) }} disabled={testing || sourceStep === 2}>{testing ? '测试中...' : '测试连接'}</button>{sourceStep === 1 && sourceType === 'MySQL' ? <button className="button" type="button" disabled={!testPassed} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setSourceStep(2) }}>{testPassed ? '下一步' : '待测试'}</button> : <button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button>}<button className="close-button" type="button" aria-label="关闭" onClick={(event) => { if (event.target === event.currentTarget) closeModal() }}>×</button></div></header>{sourceStep === 1 && <><div className="type-picker" role="group" aria-label="数据类型">{sourceTypes.map(type => <button key={type} type="button" className={sourceType === type ? 'active' : ''} onClick={() => { setSourceType(type); setTestPassed(false); setAvailableDatabases([]); setSelectedMonitorDatabases([]); setDatabaseRemarks({}); if (!editingSource || editingSource.type !== type) setOptionRows([{ key: '', value: '' }, { key: '', value: '' }]) }}>{type}</button>)}</div><div className="modal-form"><Field label="数据节点名称" name="name" value={editingSource?.name || `${sourceType} 生产节点`} required /><label>主机地址 <span className="required-mark">*</span><input name="host" defaultValue={editingSource?.host || ''} placeholder="例如 127.0.0.1 或 broker.internal" required /></label><label>端口 <span className="required-mark">*</span><input name="port" defaultValue={editingSource?.port || defaultPorts[sourceType]} required /></label>{sourceType === 'Kafka' && <label>Topic / Consumer Group<input name="topic" defaultValue={editingSource?.database || ''} placeholder="例如 ops-events / ops-monitor" /></label>}<label>用户名{sourceType === 'MySQL' && <span className="required-mark"> *</span>}<input name="username" defaultValue={editingSource?.username || ''} required={sourceType === 'MySQL'} placeholder={sourceType === 'Redis' ? '可选' : '请输入用户名'} /></label><label>密码{sourceType === 'MySQL' && !editingSource && <span className="required-mark"> *</span>}<input name="password" type="password" required={sourceType === 'MySQL' && !editingSource} placeholder={editingSource ? '留空则复用已保存密码测试/保存' : '请输入密码'} /></label>{sourceType === 'Elasticsearch' && <label>索引前缀<input name="indexPrefix" placeholder="例如 logs-*" /></label>}<label className="wide">备注<textarea name="remark" defaultValue={editingSource?.remark || ''} placeholder="记录用途、负责人、环境或注意事项" /></label><div className="wide option-editor"><div><b>连接参数</b><span>示例：ssl true、timeout 10s、brokers host1:9092,host2:9092</span></div>{optionRows.map((row, index) => <div className="option-row" key={index}><input aria-label="参数名" placeholder="key" value={row.key} onChange={(event) => setOptionRows(rows => rows.map((item, i) => i === index ? { ...item, key: event.target.value } : item))} /><input aria-label="参数值" placeholder="value" value={row.value} onChange={(event) => setOptionRows(rows => rows.map((item, i) => i === index ? { ...item, value: event.target.value } : item))} /></div>)}<button className="text-button" type="button" onClick={() => setOptionRows(rows => [...rows, { key: '', value: '' }])}>添加参数 <Icon name="plus" /></button></div></div></>}{sourceStep === 2 && <div className="database-picker"><div><b>选择监控库 <span className="required-mark">*</span></b><span>{editingSource ? '当前展示已监控库。如需重新拉取完整库列表，请返回上一步测试连接。' : '可多选，每个库可填写备注，保存后会展示在数据节点列表。'}</span></div><div className="database-list">{availableDatabases.length === 0 ? <p>未获取到可选数据库，请返回上一步重新测试连接。</p> : availableDatabases.map(database => { const checked = selectedMonitorDatabases.includes(database); return <label className={`database-choice ${checked ? 'checked' : ''}`} key={database}><input type="checkbox" checked={checked} onChange={() => toggleMonitorDatabase(database)} /><span><b>{database}</b><input placeholder="备注，可选" value={databaseRemarks[database] || ''} onChange={(event) => setDatabaseRemarks(current => ({ ...current, [database]: event.target.value }))} /></span></label> })}</div></div>}</form></section></div>}{message && <div className="toast">{message}</div>}</div>
 }
 function formatDuration(seconds: number) {
   if (!seconds) return '-'
@@ -794,13 +834,18 @@ function Alerts() {
   const databases = sourceDatabases.length > 0 ? Array.from(new Set([...sourceDatabases, ...Object.keys(schema)])) : Object.keys(schema)
   const tables = selectedDatabase ? Object.keys(schema[selectedDatabase] || {}) : []
   const fields = selectedDatabase && selectedTable ? schema[selectedDatabase]?.[selectedTable] || [] : []
-  const sourceOptions = sources.map(source => ({ value: source.id, label: `${source.name}（${source.type}）` }))
+  const sourceOptions = sources.map(source => ({ value: source.id, label: `${source.name}（${source.type}${source.enabled ? '' : '，已停止'}）` }))
   const databaseOptions = databases.map(database => ({ value: database, label: database }))
   const tableOptions = tables.map(table => ({ value: table, label: table }))
   const fieldOptions = fields.map(field => ({ value: field, label: field }))
   const conditionOptions = ['大于', '大于等于', '等于', '小于', '包含', '不为空'].map(condition => ({ value: condition, label: condition }))
   const saveRule = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const selectedSource = sources.find(source => source.id === selectedSourceId || source.name === selectedSourceId)
+    if (ruleStatus === '启用' && selectedSource && !selectedSource.enabled) {
+      setMessage('该数据源已停止，请先启用数据源后再启用告警规则')
+      return
+    }
     setSaving(true)
     const form = new FormData(event.currentTarget)
     const payload: Rule = {
@@ -842,6 +887,11 @@ function Alerts() {
   }
   const toggleRuleStatus = async (rule: Rule, checked: boolean) => {
     const nextStatus = checked ? '启用' : '停用'
+    const source = sources.find(item => item.id === rule.source || item.name === rule.source)
+    if (nextStatus === '启用' && source && !source.enabled) {
+      setMessage('该数据源已停止，请先启用数据源后再启用告警规则')
+      return
+    }
     setStatusSavingId(rule.id)
     setRules(current => current.map(item => item.id === rule.id ? { ...item, status: nextStatus } : item))
     try {

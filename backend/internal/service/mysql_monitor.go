@@ -114,7 +114,7 @@ func collectAllMySQLInstances() {
 
 func listMySQLDataSourcesWithSecrets(appDB *sql.DB) ([]model.DataSource, error) {
 	rows, err := appDB.Query(`SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(password, ''), COALESCE(database_name, '')
-		FROM data_sources WHERE LOWER(type) = 'mysql' ORDER BY created_at DESC`)
+		FROM data_sources WHERE LOWER(type) = 'mysql' AND enabled = 1 ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}

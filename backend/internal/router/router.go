@@ -145,6 +145,28 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 	mux.HandleFunc("/api/data-sources/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		p := strings.TrimPrefix(path, "/api/data-sources/")
+		parts := strings.Split(strings.Trim(p, "/"), "/")
+		if r.Method == http.MethodPut && len(parts) == 2 && parts[1] == "enabled" {
+			id := parts[0]
+			if id == "" {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
+			var req struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			updated, err := service.SetDataSourceEnabled(id, req.Enabled)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, updated)
+			return
+		}
 		if r.Method == http.MethodPut {
 			id := strings.Trim(p, "/")
 			if id == "" || strings.Contains(id, "/") {

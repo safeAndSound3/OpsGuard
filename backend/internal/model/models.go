@@ -14,6 +14,7 @@ type DataSource struct {
 	Description string            `json:"description,omitempty"`
 	Remark      string            `json:"remark,omitempty"`
 	Options     map[string]string `json:"options,omitempty"`
+	Enabled     bool              `json:"enabled"`
 	Status      string            `json:"status"`
 	LastTest    string            `json:"lastTest"`
 	Tags        []string          `json:"tags,omitempty"`

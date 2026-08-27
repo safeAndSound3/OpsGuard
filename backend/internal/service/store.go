@@ -69,8 +69,9 @@ func InitDataSourceStore() error {
 		password varchar(255) NULL,
 		database_name varchar(120) NULL,
 		remark text NULL,
-		options_json json NULL,
-		status varchar(32) NOT NULL DEFAULT '待测试',
+			options_json json NULL,
+			enabled tinyint(1) NOT NULL DEFAULT 1,
+			status varchar(32) NOT NULL DEFAULT '待测试',
 		last_test varchar(64) NOT NULL DEFAULT '未测试',
 		created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -79,6 +80,7 @@ func InitDataSourceStore() error {
 		return err
 	}
 	_, _ = appDB.ExecContext(ctx, `ALTER TABLE data_sources MODIFY database_name text NULL`)
+	_, _ = appDB.ExecContext(ctx, `ALTER TABLE data_sources ADD COLUMN enabled tinyint(1) NOT NULL DEFAULT 1 AFTER options_json`)
 	accountSchema := `CREATE TABLE IF NOT EXISTS users (
 		username varchar(64) PRIMARY KEY,
 		password varchar(255) NOT NULL,
@@ -148,7 +150,7 @@ func ListDataSources() []model.DataSource {
 		return []model.DataSource{}
 	}
 
-	rows, err := current.Query(`SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(database_name, ''), COALESCE(remark, ''), COALESCE(options_json, '{}'), status, last_test FROM data_sources ORDER BY created_at DESC`)
+	rows, err := current.Query(`SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(database_name, ''), COALESCE(remark, ''), COALESCE(options_json, '{}'), enabled, status, last_test FROM data_sources ORDER BY created_at DESC`)
 	if err != nil {
 		return []model.DataSource{}
 	}
@@ -158,7 +160,7 @@ func ListDataSources() []model.DataSource {
 	for rows.Next() {
 		var ds model.DataSource
 		var optionsRaw string
-		if err := rows.Scan(&ds.ID, &ds.Name, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Database, &ds.Remark, &optionsRaw, &ds.Status, &ds.LastTest); err != nil {
+		if err := rows.Scan(&ds.ID, &ds.Name, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Database, &ds.Remark, &optionsRaw, &ds.Enabled, &ds.Status, &ds.LastTest); err != nil {
 			continue
 		}
 		_ = json.Unmarshal([]byte(optionsRaw), &ds.Options)
@@ -193,6 +195,7 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 		ds.ID = fmt.Sprintf("ds-%d", time.Now().UnixNano())
 	}
 	ds.Status = "健康"
+	ds.Enabled = true
 	ds.LastTest = time.Now().Format("2006-01-02 15:04")
 	optionsJSON, err := json.Marshal(ds.Options)
 	if err != nil {
@@ -202,9 +205,9 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = current.ExecContext(ctx, `INSERT INTO data_sources
-		(id, name, type, host, port, username, password, database_name, remark, options_json, status, last_test)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ds.ID, ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), ds.Status, ds.LastTest)
+		(id, name, type, host, port, username, password, database_name, remark, options_json, enabled, status, last_test)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ds.ID, ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), ds.Enabled, ds.Status, ds.LastTest)
 	if err != nil {
 		return model.DataSource{}, err
 	}
@@ -237,9 +240,11 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := GetDataSourceByID(id); err != nil {
+	existing, err := GetDataSourceByID(id)
+	if err != nil {
 		return model.DataSource{}, errors.New("data source not found")
 	}
+	ds.Enabled = existing.Enabled
 	if strings.EqualFold(ds.Type, "mysql") && strings.TrimSpace(ds.Username) == "" {
 		return model.DataSource{}, errors.New("mysql username is required")
 	}
@@ -324,13 +329,54 @@ func GetDataSourceByID(id string) (model.DataSource, error) {
 	var optionsRaw string
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := current.QueryRowContext(ctx, `SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(database_name, ''), COALESCE(remark, ''), COALESCE(options_json, '{}'), status, last_test FROM data_sources WHERE id = ?`, id).
-		Scan(&ds.ID, &ds.Name, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Database, &ds.Remark, &optionsRaw, &ds.Status, &ds.LastTest)
+	err := current.QueryRowContext(ctx, `SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(database_name, ''), COALESCE(remark, ''), COALESCE(options_json, '{}'), enabled, status, last_test FROM data_sources WHERE id = ?`, id).
+		Scan(&ds.ID, &ds.Name, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Database, &ds.Remark, &optionsRaw, &ds.Enabled, &ds.Status, &ds.LastTest)
 	if err != nil {
 		return model.DataSource{}, err
 	}
 	_ = json.Unmarshal([]byte(optionsRaw), &ds.Options)
 	return ds, nil
+}
+
+func SetDataSourceEnabled(id string, enabled bool) (model.DataSource, error) {
+	id = strings.Trim(strings.TrimSuffix(strings.TrimSpace(id), "/enabled"), "/")
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return model.DataSource{}, errors.New("data source store is not initialized")
+	}
+	existing, err := GetDataSourceByID(id)
+	if err != nil {
+		return model.DataSource{}, errors.New("data source not found")
+	}
+	status := existing.Status
+	if !enabled {
+		status = "停用"
+	} else if status == "停用" {
+		status = "待采集"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = current.ExecContext(ctx, `UPDATE data_sources SET enabled = ?, status = ? WHERE id = ?`, enabled, status, id)
+	if err != nil {
+		return model.DataSource{}, err
+	}
+	if !enabled {
+		_, _ = current.ExecContext(ctx, `UPDATE collection_rules SET status = '停用' WHERE source IN (?, ?)`, id, existing.Name)
+	}
+	updated, err := GetDataSourceByID(id)
+	if err != nil {
+		return model.DataSource{}, err
+	}
+	if enabled && strings.EqualFold(updated.Type, "mysql") {
+		if secret, err := getDataSourcePassword(id); err == nil {
+			updated.Password = secret
+			go collectMySQLInstance(current, updated)
+			updated.Password = ""
+		}
+	}
+	return updated, nil
 }
 
 func TestDataSourceConnection(ds model.DataSource) (bool, string) {
@@ -435,7 +481,7 @@ func checkAllDataSourceConnections() {
 		return
 	}
 
-	rows, err := current.Query(`SELECT id, type, host, port, COALESCE(username, ''), COALESCE(password, ''), COALESCE(database_name, '') FROM data_sources`)
+	rows, err := current.Query(`SELECT id, type, host, port, COALESCE(username, ''), COALESCE(password, ''), COALESCE(database_name, '') FROM data_sources WHERE enabled = 1`)
 	if err != nil {
 		return
 	}
@@ -484,6 +530,9 @@ func ListCollectionRules() []model.CollectionRule {
 func AddCollectionRule(rule model.CollectionRule) (model.CollectionRule, error) {
 	current := currentStore()
 	rule = normalizeCollectionRule(rule)
+	if err := validateCollectionRuleSourceEnabled(rule); err != nil {
+		return model.CollectionRule{}, err
+	}
 	if current == nil {
 		mu.Lock()
 		defer mu.Unlock()
@@ -506,6 +555,9 @@ func UpdateCollectionRule(id string, rule model.CollectionRule) (model.Collectio
 	}
 	rule.ID = id
 	rule = normalizeCollectionRule(rule)
+	if err := validateCollectionRuleSourceEnabled(rule); err != nil {
+		return model.CollectionRule{}, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, err := current.ExecContext(ctx, `UPDATE collection_rules
@@ -593,6 +645,33 @@ func normalizeCollectionRule(rule model.CollectionRule) model.CollectionRule {
 		rule.Status = "启用"
 	}
 	return rule
+}
+
+func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
+	if rule.Status != "启用" {
+		return nil
+	}
+	if currentStore() == nil {
+		return nil
+	}
+	ds, err := GetDataSourceByID(rule.Source)
+	if err != nil {
+		sources := ListDataSources()
+		for _, source := range sources {
+			if source.Name == rule.Source {
+				ds = source
+				err = nil
+				break
+			}
+		}
+	}
+	if err != nil {
+		return errors.New("启用告警规则前，请先选择有效的数据源")
+	}
+	if !ds.Enabled {
+		return errors.New("该数据源已停止，请先启用数据源后再启用告警规则")
+	}
+	return nil
 }
 
 func GetSchemaForDataSource(id string) map[string]map[string][]string {
