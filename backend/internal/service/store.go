@@ -612,10 +612,28 @@ func GetSchemaForDataSource(id string) map[string]map[string][]string {
 	defer targetDB.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	rows, err := targetDB.QueryContext(ctx, `SELECT table_schema, table_name, column_name
+	monitoredDatabases := []string{}
+	for _, item := range strings.Split(ds.Database, ",") {
+		if database := strings.TrimSpace(item); database != "" {
+			monitoredDatabases = append(monitoredDatabases, database)
+		}
+	}
+	query := `SELECT table_schema, table_name, column_name
 		FROM information_schema.columns
-		WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
-		ORDER BY table_schema, table_name, ordinal_position`)
+		WHERE `
+	args := []any{}
+	if len(monitoredDatabases) > 0 {
+		placeholders := make([]string, 0, len(monitoredDatabases))
+		for _, database := range monitoredDatabases {
+			placeholders = append(placeholders, "?")
+			args = append(args, database)
+		}
+		query += `table_schema IN (` + strings.Join(placeholders, ",") + `)`
+	} else {
+		query += `table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')`
+	}
+	query += ` ORDER BY table_schema, table_name, ordinal_position`
+	rows, err := targetDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return map[string]map[string][]string{}
 	}
