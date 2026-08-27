@@ -201,15 +201,22 @@ function Sidebar() {
   const currentLocation = useLocation()
   const [dashboards, setDashboards] = useState<MySQLInstanceStatus[]>([])
   const [importedDashboards, setImportedDashboards] = useState<ImportedDashboard[]>([])
+  const [sources, setSources] = useState<Source[]>([])
   useEffect(() => {
     const load = async () => {
       try {
-        const response = await fetch(`${api}/mysql-monitor/instances`)
-        const data = await response.json()
-        setDashboards(Array.isArray(data.instances) ? data.instances : [])
+        const [monitorResponse, sourceResponse] = await Promise.all([
+          fetch(`${api}/mysql-monitor/instances`),
+          fetch(`${api}/data-sources`),
+        ])
+        const monitorData = await monitorResponse.json()
+        const sourceData = await sourceResponse.json()
+        setDashboards(Array.isArray(monitorData.instances) ? monitorData.instances : [])
+        setSources(Array.isArray(sourceData.dataSources) ? sourceData.dataSources : [])
         setImportedDashboards(getImportedDashboards())
       } catch {
         setDashboards([])
+        setSources([])
         setImportedDashboards(getImportedDashboards())
       }
     }
@@ -223,7 +230,9 @@ function Sidebar() {
   }, [])
   const items = [['inspection', '巡检任务', '/inspection'], ['alert', '平台告警', '/alerts'], ['data', '数据节点', '/datasources'], ['settings', '系统配置', '/config']]
   const importedItems = importedDashboards.map(config => ({ config, status: dashboards.find(item => item.sourceId === config.sourceId) }))
-  return <aside className="sidebar"><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>OpsGuard</b><small>巡检平台</small></div></div><nav><NavLink end to="/" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name="overview" /><span>监控总览</span></NavLink>{importedItems.length > 0 && <div className="subnav">{importedItems.map(({ config, status }) => <NavLink key={config.sourceId} to={`/?dashboard=${config.sourceId}`} className={({ isActive }) => `subnav-link ${isActive && currentLocation.search.includes(config.sourceId) ? 'active' : ''}`}><span className={status?.status === '健康' ? 'mini-dot ok' : 'mini-dot warn'} /><em>{config.name}</em></NavLink>)}</div>}{items.map(([icon, label, path]) => <NavLink key={path} end={path === '/'} to={path} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name={icon} /><span>{label}</span></NavLink>)}</nav><div className="sidebar-footer"><span className="online-dot" /><span>{dashboards.filter(item => item.status === '健康').length} / {dashboards.length} 节点在线</span><small>采集服务运行正常</small></div></aside>
+  const mysqlStatusBySourceId = new Map(dashboards.map(item => [item.sourceId, item.status]))
+  const onlineSourceCount = sources.filter(source => source.type === 'MySQL' ? mysqlStatusBySourceId.get(source.id) === '健康' : source.status === '健康').length
+  return <aside className="sidebar"><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>OpsGuard</b><small>巡检平台</small></div></div><nav><NavLink end to="/" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name="overview" /><span>监控总览</span></NavLink>{importedItems.length > 0 && <div className="subnav">{importedItems.map(({ config, status }) => <NavLink key={config.sourceId} to={`/?dashboard=${config.sourceId}`} className={({ isActive }) => `subnav-link ${isActive && currentLocation.search.includes(config.sourceId) ? 'active' : ''}`}><span className={status?.status === '健康' ? 'mini-dot ok' : 'mini-dot warn'} /><em>{config.name}</em></NavLink>)}</div>}{items.map(([icon, label, path]) => <NavLink key={path} end={path === '/'} to={path} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name={icon} /><span>{label}</span></NavLink>)}</nav><div className="sidebar-footer"><span className="online-dot" /><span>{onlineSourceCount} / {sources.length} 节点在线</span><small>采集服务运行正常</small></div></aside>
 }
 function Dashboard() {
   const [searchParams] = useSearchParams()
