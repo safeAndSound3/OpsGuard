@@ -206,7 +206,7 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		}
 		if strings.HasSuffix(p, "/schema") {
 			id := strings.TrimSuffix(strings.TrimSuffix(p, "/schema"), "/")
-			schema := service.GetSchemaForDataSource(id)
+			schema := service.GetSchemaForDataSource(id, r.URL.Query().Get("database"), r.URL.Query().Get("table"))
 			databases := make([]string, 0, len(schema))
 			for databaseName := range schema {
 				databases = append(databases, databaseName)

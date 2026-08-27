@@ -823,7 +823,7 @@ func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
 	return nil
 }
 
-func GetSchemaForDataSource(id string) map[string]map[string][]string {
+func GetSchemaForDataSource(id string, database string, table string) map[string]map[string][]string {
 	ds, err := GetDataSourceByID(id)
 	if err != nil {
 		return map[string]map[string][]string{}
@@ -834,6 +834,8 @@ func GetSchemaForDataSource(id string) map[string]map[string][]string {
 	if !strings.EqualFold(ds.Type, "mysql") {
 		return map[string]map[string][]string{}
 	}
+	database = strings.TrimSpace(database)
+	table = strings.TrimSpace(table)
 	password, err := getDataSourcePassword(id)
 	if err != nil {
 		return map[string]map[string][]string{}
@@ -852,38 +854,95 @@ func GetSchemaForDataSource(id string) map[string]map[string][]string {
 			monitoredDatabases = append(monitoredDatabases, database)
 		}
 	}
-	query := `SELECT table_schema, table_name, column_name
-		FROM information_schema.columns
-		WHERE `
-	args := []any{}
-	if len(monitoredDatabases) > 0 {
-		placeholders := make([]string, 0, len(monitoredDatabases))
-		for _, database := range monitoredDatabases {
-			placeholders = append(placeholders, "?")
-			args = append(args, database)
+	if database == "" {
+		if len(monitoredDatabases) == 0 {
+			return listMySQLSchemaDatabases(ctx, targetDB)
 		}
-		query += `table_schema IN (` + strings.Join(placeholders, ",") + `)`
-	} else {
-		query += `table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')`
+		result := map[string]map[string][]string{}
+		for _, databaseName := range monitoredDatabases {
+			result[databaseName] = map[string][]string{}
+		}
+		return result
 	}
-	query += ` ORDER BY table_schema, table_name, ordinal_position`
-	rows, err := targetDB.QueryContext(ctx, query, args...)
+	if !validSQLIdentifier(database) || !databaseAllowed(database, monitoredDatabases) {
+		return map[string]map[string][]string{}
+	}
+	if table == "" {
+		return listMySQLSchemaTables(ctx, targetDB, database)
+	}
+	if !validSQLIdentifier(table) {
+		return map[string]map[string][]string{}
+	}
+	return listMySQLSchemaColumns(ctx, targetDB, database, table)
+}
+
+func listMySQLSchemaDatabases(ctx context.Context, targetDB *sql.DB) map[string]map[string][]string {
+	rows, err := targetDB.QueryContext(ctx, `SELECT schema_name FROM information_schema.schemata
+		WHERE schema_name NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+		ORDER BY schema_name`)
 	if err != nil {
 		return map[string]map[string][]string{}
 	}
 	defer rows.Close()
 	result := map[string]map[string][]string{}
 	for rows.Next() {
-		var databaseName, tableName, columnName string
-		if err := rows.Scan(&databaseName, &tableName, &columnName); err != nil {
+		var databaseName string
+		if err := rows.Scan(&databaseName); err != nil {
 			continue
 		}
-		if result[databaseName] == nil {
-			result[databaseName] = map[string][]string{}
-		}
-		result[databaseName][tableName] = append(result[databaseName][tableName], columnName)
+		result[databaseName] = map[string][]string{}
 	}
 	return result
+}
+
+func listMySQLSchemaTables(ctx context.Context, targetDB *sql.DB, database string) map[string]map[string][]string {
+	rows, err := targetDB.QueryContext(ctx, `SELECT table_name FROM information_schema.tables
+		WHERE table_schema = ? AND table_type = 'BASE TABLE'
+		ORDER BY table_name`, database)
+	if err != nil {
+		return map[string]map[string][]string{}
+	}
+	defer rows.Close()
+	tables := map[string][]string{}
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			continue
+		}
+		tables[tableName] = []string{}
+	}
+	return map[string]map[string][]string{database: tables}
+}
+
+func listMySQLSchemaColumns(ctx context.Context, targetDB *sql.DB, database string, table string) map[string]map[string][]string {
+	rows, err := targetDB.QueryContext(ctx, `SELECT column_name FROM information_schema.columns
+		WHERE table_schema = ? AND table_name = ?
+		ORDER BY ordinal_position`, database, table)
+	if err != nil {
+		return map[string]map[string][]string{}
+	}
+	defer rows.Close()
+	columns := []string{}
+	for rows.Next() {
+		var columnName string
+		if err := rows.Scan(&columnName); err != nil {
+			continue
+		}
+		columns = append(columns, columnName)
+	}
+	return map[string]map[string][]string{database: map[string][]string{table: columns}}
+}
+
+func databaseAllowed(database string, monitoredDatabases []string) bool {
+	if len(monitoredDatabases) == 0 {
+		return true
+	}
+	for _, item := range monitoredDatabases {
+		if item == database {
+			return true
+		}
+	}
+	return false
 }
 
 func redisMetricSchema(database string) map[string]map[string][]string {

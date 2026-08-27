@@ -868,6 +868,21 @@ function Alerts() {
     }
   }
   useEffect(() => { void loadRules(); void loadSources() }, [])
+  const mergeSchema = (base: SourceSchema, next: SourceSchema): SourceSchema => {
+    const merged: SourceSchema = { ...base }
+    for (const [database, tables] of Object.entries(next)) {
+      merged[database] = { ...(merged[database] || {}), ...tables }
+    }
+    return merged
+  }
+  const fetchSchema = async (sourceId: string, database = '', table = '') => {
+    const params = new URLSearchParams()
+    if (database) params.set('database', database)
+    if (table) params.set('table', table)
+    const response = await fetch(`${api}/data-sources/${sourceId}/schema${params.toString() ? `?${params.toString()}` : ''}`)
+    const data = await response.json()
+    return data.schema && typeof data.schema === 'object' ? data.schema as SourceSchema : {}
+  }
   const loadSchema = async (sourceId: string, preferredDatabase = '', preferredTable = '', preferredField = '') => {
     if (!sourceId) {
       setSchema({})
@@ -879,17 +894,25 @@ function Alerts() {
     setSchemaLoading(true)
     try {
       const source = sources.find(item => item.id === sourceId)
-      const response = await fetch(`${api}/data-sources/${sourceId}/schema`)
-      const data = await response.json()
-      const nextSchema: SourceSchema = data.schema && typeof data.schema === 'object' ? data.schema : {}
+      let nextSchema = await fetchSchema(sourceId)
       const monitoredDatabases = splitDatabaseList(source?.database || '')
-      const database = preferredDatabase && nextSchema[preferredDatabase]
+      const database = preferredDatabase && (nextSchema[preferredDatabase] || monitoredDatabases.includes(preferredDatabase))
         ? preferredDatabase
-        : monitoredDatabases[0] || Object.keys(nextSchema)[0] || ''
-      const tables = database ? Object.keys(nextSchema[database] || {}) : []
-      const table = preferredTable && tables.includes(preferredTable) ? preferredTable : tables[0] || ''
-      const fields = database && table ? nextSchema[database]?.[table] || [] : []
-      const field = preferredField && fields.includes(preferredField) ? preferredField : fields[0] || ''
+        : ''
+      let table = ''
+      let field = ''
+      if (database) {
+        const tableSchema = await fetchSchema(sourceId, database)
+        nextSchema = mergeSchema(nextSchema, tableSchema)
+        const tables = Object.keys(nextSchema[database] || {})
+        table = preferredTable && tables.includes(preferredTable) ? preferredTable : ''
+      }
+      if (database && table) {
+        const fieldSchema = await fetchSchema(sourceId, database, table)
+        nextSchema = mergeSchema(nextSchema, fieldSchema)
+        const fields = nextSchema[database]?.[table] || []
+        field = preferredField && fields.includes(preferredField) ? preferredField : ''
+      }
       setSchema(nextSchema)
       setSelectedDatabase(database)
       setSelectedTable(table)
@@ -900,6 +923,35 @@ function Alerts() {
       setSelectedTable('')
       setSelectedField('')
       setMessage('获取数据源结构失败')
+    } finally {
+      setSchemaLoading(false)
+    }
+  }
+  const loadTablesForDatabase = async (database: string) => {
+    setSelectedDatabase(database)
+    setSelectedTable('')
+    setSelectedField('')
+    if (!selectedSourceId || !database) return
+    setSchemaLoading(true)
+    try {
+      const tableSchema = await fetchSchema(selectedSourceId, database)
+      setSchema(current => mergeSchema(current, tableSchema))
+    } catch {
+      setMessage('获取表列表失败')
+    } finally {
+      setSchemaLoading(false)
+    }
+  }
+  const loadFieldsForTable = async (table: string) => {
+    setSelectedTable(table)
+    setSelectedField('')
+    if (!selectedSourceId || !selectedDatabase || !table) return
+    setSchemaLoading(true)
+    try {
+      const fieldSchema = await fetchSchema(selectedSourceId, selectedDatabase, table)
+      setSchema(current => mergeSchema(current, fieldSchema))
+    } catch {
+      setMessage('获取字段列表失败')
     } finally {
       setSchemaLoading(false)
     }
@@ -1077,9 +1129,9 @@ function Alerts() {
               <div className="modal-form">
                 <label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={editingRule?.name || ''} required /></label>
                 <SelectField label="数据源" required value={selectedSourceId} options={sourceOptions} placeholder="请选择数据源" onChange={(sourceId) => { setSelectedSourceId(sourceId); void loadSchema(sourceId) }} />
-                <SelectField label="数据库" required value={selectedDatabase} options={databaseOptions} placeholder={schemaLoading ? '加载中...' : '请选择数据库'} disabled={!selectedSourceId || schemaLoading || databases.length === 0} onChange={(database) => { const nextTables = Object.keys(schema[database] || {}); const nextTable = nextTables[0] || ''; const nextFields = nextTable ? schema[database]?.[nextTable] || [] : []; setSelectedDatabase(database); setSelectedTable(nextTable); setSelectedField(nextFields[0] || '') }} />
-                <SelectField label="表名" required value={selectedTable} options={tableOptions} placeholder="请选择表" disabled={!selectedDatabase || tables.length === 0} onChange={(table) => { setSelectedTable(table); setSelectedField((selectedDatabase && schema[selectedDatabase]?.[table]?.[0]) || '') }} />
-                <SelectField label="字段 / 指标" required value={selectedField} options={fieldOptions} placeholder="请选择字段" disabled={!selectedTable || fields.length === 0} onChange={(field) => setSelectedField(field)} />
+                <SelectField label="数据库" required value={selectedDatabase} options={databaseOptions} placeholder={schemaLoading ? '加载中...' : '请选择数据库'} disabled={!selectedSourceId || schemaLoading || databases.length === 0} onChange={(database) => void loadTablesForDatabase(database)} />
+                <SelectField label="表名" required value={selectedTable} options={tableOptions} placeholder={schemaLoading ? '加载中...' : '请选择表'} disabled={!selectedDatabase || schemaLoading || tables.length === 0} onChange={(table) => void loadFieldsForTable(table)} />
+                <SelectField label="字段 / 指标" required value={selectedField} options={fieldOptions} placeholder={schemaLoading ? '加载中...' : '请选择字段'} disabled={!selectedTable || schemaLoading || fields.length === 0} onChange={(field) => setSelectedField(field)} />
                 <SelectField label="条件" value={ruleCondition} options={conditionOptions} placeholder="请选择条件" onChange={(condition) => setRuleCondition(condition)} />
                 <label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label>
                 <label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label>
