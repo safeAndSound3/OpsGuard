@@ -668,7 +668,7 @@ func evaluateCollectionRules() {
 	if current == nil {
 		return
 	}
-	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, condition_text
+	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, condition_text, time_window
 		FROM collection_rules WHERE status = '启用' AND condition_text = '当天有数据'`)
 	if err != nil {
 		return
@@ -676,7 +676,7 @@ func evaluateCollectionRules() {
 	defer rows.Close()
 	for rows.Next() {
 		var rule model.CollectionRule
-		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition); err != nil {
+		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition, &rule.TimeWindow); err != nil {
 			continue
 		}
 		lastRun := evaluateTodayHasDataRule(rule)
@@ -685,7 +685,9 @@ func evaluateCollectionRules() {
 }
 
 func evaluateTodayHasDataRule(rule model.CollectionRule) string {
-	checkedAt := time.Now().Format("15:04")
+	now := time.Now()
+	checkedAt := now.Format("15:04")
+	deadline := todayDataRuleDeadline(rule.TimeWindow, now)
 	ds, err := getRuleDataSourceWithSecret(rule.Source)
 	if err != nil {
 		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
@@ -715,7 +717,23 @@ func evaluateTodayHasDataRule(rule model.CollectionRule) string {
 	if count > 0 {
 		return fmt.Sprintf("正常 %s：今日 %d 条", checkedAt, count)
 	}
+	if now.Before(deadline) {
+		return fmt.Sprintf("等待 %s：今日暂无数据，%s 后告警", checkedAt, deadline.Format("15:04"))
+	}
 	return fmt.Sprintf("告警 %s：今日无数据", checkedAt)
+}
+
+func todayDataRuleDeadline(value string, now time.Time) time.Time {
+	hour, minute := 3, 0
+	text := strings.TrimSpace(value)
+	for _, token := range strings.Fields(strings.ReplaceAll(text, "：", ":")) {
+		if parsed, err := time.ParseInLocation("15:04", strings.Trim(token, "，,;；"), time.Local); err == nil {
+			hour = parsed.Hour()
+			minute = parsed.Minute()
+			break
+		}
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
 }
 
 func getRuleDataSourceWithSecret(source string) (model.DataSource, error) {

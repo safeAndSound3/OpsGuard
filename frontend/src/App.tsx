@@ -989,6 +989,10 @@ function Alerts() {
   const tableOptions = tables.map(table => ({ value: table, label: table }))
   const fieldOptions = fields.map(field => ({ value: field, label: field }))
   const conditionOptions = ['当天有数据', '大于', '大于等于', '等于', '小于', '包含', '不为空'].map(condition => ({ value: condition, label: condition }))
+  const alertingCount = rules.filter(rule => rule.lastRun.startsWith('告警') || rule.lastRun.startsWith('执行失败')).length
+  const waitingCount = rules.filter(rule => rule.lastRun.startsWith('等待')).length
+  const normalCount = rules.filter(rule => rule.lastRun.startsWith('正常')).length
+  const enabledCount = rules.filter(rule => rule.status === '启用').length
   const saveRule = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const selectedSource = sources.find(source => source.id === selectedSourceId || source.name === selectedSourceId)
@@ -1094,12 +1098,19 @@ function Alerts() {
   }
   return (
     <div className="page">
-      <PageHead title="告警规则" description="按具体数据源选择库、表、字段，并配置阈值和时间窗口。" action="新建规则" onAction={() => openRuleModal()} />
+      <PageHead title="告警规则" description="按具体数据源选择库、表、字段；当天有数据规则支持截止时间，过点无数据才告警。" action="新建规则" onAction={() => openRuleModal()} />
+      <section className="alert-summary-grid">
+        <div className="surface alert-summary-card danger"><span>当前告警</span><b>{alertingCount}</b><small>告警或执行失败</small></div>
+        <div className="surface alert-summary-card pending"><span>等待数据</span><b>{waitingCount}</b><small>未到截止时间</small></div>
+        <div className="surface alert-summary-card success"><span>正常规则</span><b>{normalCount}</b><small>最近一次通过</small></div>
+        <div className="surface alert-summary-card"><span>启用规则</span><b>{enabledCount}</b><small>共 {rules.length} 条规则</small></div>
+      </section>
       <section className="surface rules">
         {rules.length === 0 ? (
           <div className="empty-state alert-empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，选择数据源后会自动加载库表字段。</span></div>
         ) : rules.map(r => {
           const sourceName = sources.find(source => source.id === r.source || source.name === r.source)?.name || r.source
+          const resultKind = r.lastRun.startsWith('告警') || r.lastRun.startsWith('执行失败') ? 'danger' : r.lastRun.startsWith('正常') ? 'success' : r.lastRun.startsWith('等待') ? 'pending' : 'idle'
           return (
             <div className="rule-row alert-rule-row" key={r.id}>
               <i className="rule-icon">⌁</i>
@@ -1107,6 +1118,7 @@ function Alerts() {
                 <b>{r.name}</b>
                 <span>{sourceName} · {r.database || '-'}.{r.table || '-'}.{r.field || '-'} · {r.condition}{r.threshold ? ` ${r.threshold}` : ''} · {r.timeWindow}</span>
               </div>
+              <span className={`alert-result ${resultKind}`}>{r.lastRun || '待执行'}</span>
               <div className="rule-status-cell">
                 <StatusSwitch checked={r.status === '启用'} disabled={statusSavingId === r.id} onChange={(checked) => void toggleRuleStatus(r, checked)} />
               </div>
@@ -1133,8 +1145,8 @@ function Alerts() {
                 <SelectField label="表名" required value={selectedTable} options={tableOptions} placeholder={schemaLoading ? '加载中...' : '请选择表'} disabled={!selectedDatabase || schemaLoading || tables.length === 0} onChange={(table) => void loadFieldsForTable(table)} />
                 <SelectField label="字段 / 指标" required value={selectedField} options={fieldOptions} placeholder={schemaLoading ? '加载中...' : '请选择字段'} disabled={!selectedTable || schemaLoading || fields.length === 0} onChange={(field) => setSelectedField(field)} />
                 <SelectField label="条件" value={ruleCondition} options={conditionOptions} placeholder="请选择条件" onChange={(condition) => setRuleCondition(condition)} />
-                <label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" /></label>
-                <label>时间窗口<input name="timeWindow" defaultValue={editingRule?.timeWindow || '5分钟'} /></label>
+                <label>阈值<input name="threshold" defaultValue={editingRule?.threshold || ''} placeholder="例如 10 或 80%" disabled={ruleCondition === '当天有数据'} /></label>
+                <label>{ruleCondition === '当天有数据' ? '截止时间' : '时间窗口'}<input key={ruleCondition} name="timeWindow" defaultValue={editingRule?.timeWindow || (ruleCondition === '当天有数据' ? '03:00' : '5分钟')} placeholder={ruleCondition === '当天有数据' ? '例如 03:00' : '例如 5分钟'} /></label>
                 {editingRule && <div className="field-block status-field"><span className="field-label">状态</span><StatusSwitch checked={ruleStatus === '启用'} onChange={(checked) => setRuleStatus(checked ? '启用' : '停用')} /></div>}
               </div>
               {selectedSourceId && !schemaLoading && databases.length === 0 && <div className="form-hint">当前数据源没有可用库表字段，或账号没有读取 information_schema 权限。</div>}
