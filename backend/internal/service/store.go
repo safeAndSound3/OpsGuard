@@ -453,10 +453,15 @@ func ListDataSourceDatabases(ds model.DataSource) ([]string, error) {
 
 func startDataSourceHealthChecker() {
 	checkAllDataSourceConnections()
-	ticker := time.NewTicker(30 * time.Minute)
+	ticker := time.NewTicker(60 * time.Second)
 	for range ticker.C {
 		checkAllDataSourceConnections()
 	}
+}
+
+func RefreshDataSourceHealth() []model.DataSource {
+	checkAllDataSourceConnections()
+	return ListDataSources()
 }
 
 func checkAllDataSourceConnections() {

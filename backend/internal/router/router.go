@@ -141,6 +141,14 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg, "latencyMs": 42, "databases": databases})
 	})
 
+	mux.HandleFunc("/api/data-sources/health-check", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"dataSources": service.RefreshDataSourceHealth()})
+	})
+
 	// schema for a specific data source (mock)
 	mux.HandleFunc("/api/data-sources/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path

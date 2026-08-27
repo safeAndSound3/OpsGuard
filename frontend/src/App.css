@@ -58,3 +58,17 @@
 .alert-rule-modal label>.select-shell select{height:40px;border-radius:9px;background:#fff;font-weight:800}
 .alert-rule-modal label{min-width:0}
 @media(max-width:700px){.toast{top:12px}.alert-section-actions{width:100%;justify-content:flex-start}.alert-category-select{width:100%}.refresh-button{width:36px;height:36px}}
+.page-action-group{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.platform-select{position:relative;display:inline-block;width:150px}
+.platform-select>button{width:100%;height:38px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;color:#24354f;padding:0 38px 0 14px;font-size:13px;font-weight:800;text-align:left;box-shadow:0 1px 0 #eef2f8;position:relative}
+.platform-select>button i{position:absolute;right:14px;top:50%;transform:translateY(-50%);font-style:normal;color:#718096;font-size:15px;line-height:1}
+.platform-select-menu{position:absolute;left:0;top:calc(100% + 8px);z-index:35;width:100%;border:1px solid #dfe6f1;border-radius:10px;background:#fff;box-shadow:0 18px 44px #1c2c4a2b;padding:6px;display:grid;gap:4px}
+.platform-select-menu button{height:34px;border:0;border-radius:8px;background:#fff;color:#33445e;text-align:left;padding:0 12px;font-size:13px;font-weight:800}
+.platform-select-menu button:hover,.platform-select-menu button.active{background:#eef3ff;color:#3158d4}
+.select-shell i{top:50%;line-height:1;display:grid;place-items:center}
+.prometheus-rule-row.compact{padding:11px 13px}
+.prometheus-rule-row.compact header{align-items:center}
+.prometheus-rule-row.compact p{display:none}
+.prometheus-rule-row.compact header b{display:flex;align-items:center;gap:8px;min-width:0}
+.rule-inline-note{display:inline-block;margin:0;color:#7f8ca3;font-size:11px;font-weight:700;max-width:min(560px,48vw);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+@media(max-width:700px){.page-action-group{width:100%;justify-content:flex-start}.platform-select{width:100%}.rule-inline-note{display:block;max-width:100%;margin-top:4px}.prometheus-rule-row.compact header b{display:block}}
