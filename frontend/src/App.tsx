@@ -857,7 +857,7 @@ function Alerts() {
       <PageHead title="告警规则" description="按具体数据源选择库、表、字段，并配置阈值和时间窗口。" action="新建规则" onAction={() => openRuleModal()} />
       <section className="surface rules">
         {rules.length === 0 ? (
-          <div className="empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，选择数据源后会自动加载库表字段。</span></div>
+          <div className="empty-state alert-empty-state"><b>暂无告警规则</b><span>点击右上角新建规则，选择数据源后会自动加载库表字段。</span></div>
         ) : rules.map(r => {
           const sourceName = sources.find(source => source.id === r.source || source.name === r.source)?.name || r.source
           return (
