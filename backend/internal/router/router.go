@@ -221,6 +221,15 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		writeJSON(w, http.StatusOK, service.GetSystemConfig())
 	})
 
+	mux.HandleFunc("/api/exporters/mysql", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		_, _ = w.Write([]byte(service.ExportMySQLPrometheusMetrics()))
+	})
+
 	mux.HandleFunc("/api/prometheus/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})

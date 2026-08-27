@@ -119,7 +119,7 @@ func InitDataSourceStore() error {
 	if err := initCollectionRuleStore(appDB); err != nil {
 		return err
 	}
-	migrateToPrometheusDataSources(appDB)
+	ensureDefaultPrometheusDataSource(appDB)
 	clearCollectionRules(appDB)
 
 	mu.Lock()
@@ -206,8 +206,8 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	if ds.Name == "" || ds.Type == "" || ds.Host == "" || ds.Port == "" {
 		return model.DataSource{}, errors.New("name, type, host and port are required")
 	}
-	if !strings.EqualFold(ds.Type, "prometheus") {
-		return model.DataSource{}, errors.New("目前仅支持 Prometheus 数据源")
+	if !isSupportedDataSourceType(ds.Type) {
+		return model.DataSource{}, errors.New("目前仅支持 Prometheus 和 MySQL 数据源")
 	}
 	if ok, msg := TestDataSourceConnection(ds); !ok {
 		return model.DataSource{}, errors.New(msg)
@@ -263,19 +263,24 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 		return model.DataSource{}, errors.New("data source not found")
 	}
 	ds.Enabled = existing.Enabled
-	if !strings.EqualFold(ds.Type, "prometheus") {
-		return model.DataSource{}, errors.New("目前仅支持 Prometheus 数据源")
+	if !isSupportedDataSourceType(ds.Type) {
+		return model.DataSource{}, errors.New("目前仅支持 Prometheus 和 MySQL 数据源")
 	}
+	if ok, msg := TestDataSourceConnection(ds); !ok {
+		return model.DataSource{}, errors.New(msg)
+	}
+	ds.Status = "健康"
+	ds.LastTest = time.Now().Format("2006-01-02 15:04")
 	if ds.Password == "" {
 		_, err = current.ExecContext(ctx, `UPDATE data_sources
-			SET name = ?, type = ?, host = ?, port = ?, username = ?, database_name = ?, remark = ?, options_json = ?
+			SET name = ?, type = ?, host = ?, port = ?, username = ?, database_name = ?, remark = ?, options_json = ?, status = ?, last_test = ?
 			WHERE id = ?`,
-			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Database, ds.Remark, string(optionsJSON), id)
+			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Database, ds.Remark, string(optionsJSON), ds.Status, ds.LastTest, id)
 	} else {
 		_, err = current.ExecContext(ctx, `UPDATE data_sources
-			SET name = ?, type = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, remark = ?, options_json = ?
+			SET name = ?, type = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, remark = ?, options_json = ?, status = ?, last_test = ?
 			WHERE id = ?`,
-			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), id)
+			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), ds.Status, ds.LastTest, id)
 	}
 	if err != nil {
 		return model.DataSource{}, err
@@ -374,19 +379,39 @@ func SetDataSourceEnabled(id string, enabled bool) (model.DataSource, error) {
 }
 
 func TestDataSourceConnection(ds model.DataSource) (bool, string) {
+	ds.Type = strings.TrimSpace(ds.Type)
+	ds.Host = strings.TrimSpace(ds.Host)
+	ds.Port = strings.TrimSpace(ds.Port)
 	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" {
 		_ = FillDataSourcePassword(&ds)
-	}
-	if !strings.EqualFold(ds.Type, "prometheus") {
-		return false, "目前仅支持 Prometheus 数据源"
 	}
 	if ds.Host == "" || ds.Port == "" {
 		return false, "主机地址和端口不能为空"
 	}
-	if err := TestPrometheusDataSource(ds); err != nil {
-		return false, err.Error()
+	switch {
+	case strings.EqualFold(ds.Type, "prometheus"):
+		if err := TestPrometheusDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "Prometheus 连接测试成功"
+	case strings.EqualFold(ds.Type, "mysql"):
+		if strings.TrimSpace(ds.Username) == "" {
+			return false, "MySQL 用户名不能为空"
+		}
+		if strings.TrimSpace(ds.Password) == "" {
+			return false, "MySQL 密码不能为空"
+		}
+		if err := TestMySQLDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "MySQL 连接测试成功"
+	default:
+		return false, "目前仅支持 Prometheus 和 MySQL 数据源"
 	}
-	return true, "Prometheus 连接测试成功"
+}
+
+func isSupportedDataSourceType(sourceType string) bool {
+	return strings.EqualFold(sourceType, "prometheus") || strings.EqualFold(sourceType, "mysql")
 }
 
 func FillDataSourcePassword(ds *model.DataSource) error {
@@ -664,10 +689,9 @@ func clearCollectionRules(appDB *sql.DB) {
 	_, _ = appDB.ExecContext(ctx, `DELETE FROM alert_notifications`)
 }
 
-func migrateToPrometheusDataSources(appDB *sql.DB) {
+func ensureDefaultPrometheusDataSource(appDB *sql.DB) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = appDB.ExecContext(ctx, `DELETE FROM data_sources WHERE LOWER(type) <> 'prometheus'`)
 	_, _ = appDB.ExecContext(ctx, `INSERT INTO data_sources
 		(id, name, type, host, port, username, password, database_name, remark, options_json, enabled, status, last_test)
 		VALUES ('prometheus-local', '本机 Prometheus', 'Prometheus', '127.0.0.1', '9090', '', '', '', 'docker-compose 部署的 Prometheus', '{}', 1, '健康', ?)

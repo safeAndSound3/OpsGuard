@@ -126,43 +126,50 @@ function DataSources() {
   const [sources, setSources] = useState<Source[]>([])
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Source | null>(null)
+  const [selectedType, setSelectedType] = useState<'Prometheus' | 'MySQL'>('Prometheus')
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
+  const showMessage = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 2600) }
   const loadSources = async () => {
     try {
       const response = await fetch(`${api}/data-sources`)
       const data = await response.json()
-      setSources(Array.isArray(data.dataSources) ? data.dataSources.filter((item: Source) => item.type === 'Prometheus') : [])
+      setSources(Array.isArray(data.dataSources) ? data.dataSources.filter((item: Source) => ['Prometheus', 'MySQL'].includes(item.type)) : [])
     } catch { setSources([]) }
   }
   useEffect(() => { void loadSources() }, [])
-  const openModal = (source?: Source) => { setEditing(source || null); setModalOpen(true) }
+  const openModal = (source?: Source) => { setEditing(source || null); setSelectedType(source?.type === 'MySQL' ? 'MySQL' : 'Prometheus'); setModalOpen(true); setMessage('') }
+  const defaultPort = selectedType === 'MySQL' ? '3306' : '9090'
+  const sourceLogo = (source: Source) => source.type === 'MySQL' ? 'M' : 'P'
+  const sourceSubtitle = (source: Source) => `${source.type} · ${source.host}:${source.port}`
+  const buildPayload = (formElement: HTMLFormElement): Source => {
+    const form = new FormData(formElement)
+    const type = String(form.get('type') || selectedType) as 'Prometheus' | 'MySQL'
+    return { id: editing?.id || '', name: String(form.get('name') || ''), type, host: String(form.get('host') || ''), port: String(form.get('port') || (type === 'MySQL' ? '3306' : '9090')), username: type === 'MySQL' ? String(form.get('username') || '') : '', password: String(form.get(type === 'MySQL' ? 'password' : 'token') || ''), database: type === 'MySQL' ? String(form.get('database') || '') : '', remark: String(form.get('remark') || ''), enabled: true, status: '待测试', lastTest: '' }
+  }
   const saveSource = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setSaving(true)
-    const form = new FormData(event.currentTarget)
-    const payload: Source = { id: editing?.id || '', name: String(form.get('name') || ''), type: 'Prometheus', host: String(form.get('host') || ''), port: String(form.get('port') || '9090'), username: '', password: String(form.get('token') || ''), database: '', remark: String(form.get('remark') || ''), enabled: true, status: '待测试', lastTest: '' }
+    const payload = buildPayload(event.currentTarget)
     try {
       const response = await fetch(editing ? `${api}/data-sources/${editing.id}` : `${api}/data-sources`, { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || '保存失败')
-      setMessage(`${data.name} 已保存`)
+      showMessage(`${data.name} 已保存`)
       setModalOpen(false)
       setEditing(null)
       window.dispatchEvent(new Event('opsguard-data-sources-change'))
       void loadSources()
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : '保存失败')
+      showMessage(err instanceof Error ? err.message : '保存失败')
     } finally { setSaving(false) }
   }
   const testSource = async (formElement: HTMLFormElement) => {
-    const form = new FormData(formElement)
-    const payload = { id: editing?.id || '', name: String(form.get('name') || ''), type: 'Prometheus', host: String(form.get('host') || ''), port: String(form.get('port') || '9090'), password: String(form.get('token') || '') }
     try {
-      const response = await fetch(`${api}/data-sources/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const response = await fetch(`${api}/data-sources/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload(formElement)) })
       const data = await response.json()
-      setMessage(data.message || (data.success ? '测试成功' : '测试失败'))
-    } catch { setMessage('测试失败') }
+      showMessage(data.message || (data.success ? '测试成功' : '测试失败'))
+    } catch { showMessage('测试失败') }
   }
   const toggleEnabled = async (source: Source, enabled: boolean) => {
     try {
@@ -171,9 +178,9 @@ function DataSources() {
       if (!response.ok) throw new Error(data.error || '状态更新失败')
       setSources(current => current.map(item => item.id === source.id ? data : item))
       window.dispatchEvent(new Event('opsguard-data-sources-change'))
-    } catch (err) { setMessage(err instanceof Error ? err.message : '状态更新失败') }
+    } catch (err) { showMessage(err instanceof Error ? err.message : '状态更新失败') }
   }
-  return <div className="page"><PageHead title="数据节点" description="Prometheus 作为唯一数据源接入，平台不再自行采集 MySQL/Redis/SSH。" action="添加 Prometheus" onAction={() => openModal()} />{sources.length === 0 ? <section className="surface empty-state"><b>暂无 Prometheus 数据源</b><span>点击右上角添加 Prometheus 后即可查询指标。</span></section> : <section className="source-list">{sources.map(source => <article className={`surface source-row ${source.status === '健康' ? 'healthy' : 'warning'} ${!source.enabled ? 'disabled' : ''}`} key={source.id}><div className="node-main"><span className="source-logo">P</span><div><h3>{source.name}</h3><p>Prometheus · {source.host}:{source.port}</p>{source.remark && <small className="source-remark">{source.remark}</small>}</div></div><div className="node-status" /><div className="node-enabled"><StatusSwitch checked={source.enabled} onChange={(checked) => void toggleEnabled(source, checked)} /></div><div className="node-meta"><span>最近检测：{formatCollectedAt(source.lastTest)}</span><span>{source.status}</span></div><div className="source-actions"><button type="button" onClick={() => openModal(source)}>编辑</button></div></article>)}</section>}{modalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setModalOpen(false) }}><section className="surface source-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2>{editing ? '编辑 Prometheus' : '添加 Prometheus'}</h2><p>数据源接入</p></div><button className="close-button" type="button" onClick={() => setModalOpen(false)}>×</button></header><form onSubmit={saveSource}><div className="modal-form"><label>名称 <span className="required-mark">*</span><input name="name" defaultValue={editing?.name || '本机 Prometheus'} required /></label><label>地址 <span className="required-mark">*</span><input name="host" defaultValue={editing?.host || '127.0.0.1'} placeholder="127.0.0.1 或 http://prometheus:9090" required /></label><label>端口 <span className="required-mark">*</span><input name="port" defaultValue={editing?.port || '9090'} required /></label><label>Token<input name="token" type="password" placeholder={editing ? '留空则不修改' : '可选'} /></label><label className="wide">备注<textarea name="remark" defaultValue={editing?.remark || ''} placeholder="记录 Prometheus 用途或环境" /></label></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.closest('form'); if (form) void testSource(form) }}>测试连接</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
+  return <div className="page"><PageHead title="数据节点" description="Prometheus 作为查询入口，MySQL 数据源由平台转换成 Prometheus 指标供采集。" action="新增数据源" onAction={() => openModal()} />{sources.length === 0 ? <section className="surface empty-state"><b>暂无数据源</b><span>点击右上角新增 Prometheus 或 MySQL 数据源。</span></section> : <section className="source-list">{sources.map(source => <article className={`surface source-row ${source.status === '健康' ? 'healthy' : 'warning'} ${!source.enabled ? 'disabled' : ''}`} key={source.id}><div className="node-main"><span className="source-logo">{sourceLogo(source)}</span><div><h3>{source.name}</h3><p>{sourceSubtitle(source)}</p>{source.remark && <small className="source-remark">{source.remark}</small>}</div></div><div className="node-status" /><div className="node-enabled"><StatusSwitch checked={source.enabled} onChange={(checked) => void toggleEnabled(source, checked)} /></div><div className="node-meta"><span>最近检测：{formatCollectedAt(source.lastTest)}</span><span>{source.status}</span></div><div className="source-actions"><button type="button" onClick={() => openModal(source)}>编辑</button></div></article>)}</section>}{modalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setModalOpen(false) }}><section className="surface source-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2>{editing ? '编辑数据源' : '新增数据源'}</h2><p>{selectedType} 接入</p></div><button className="close-button" type="button" onClick={() => setModalOpen(false)}>×</button></header><form onSubmit={saveSource}><div className="modal-form"><label>类型 <span className="required-mark">*</span><select name="type" value={selectedType} onChange={(event) => setSelectedType(event.target.value as 'Prometheus' | 'MySQL')} disabled={!!editing}><option value="Prometheus">Prometheus</option><option value="MySQL">MySQL</option></select></label><label>名称 <span className="required-mark">*</span><input key={`name-${selectedType}-${editing?.id || 'new'}`} name="name" defaultValue={editing?.name || (selectedType === 'MySQL' ? 'MySQL 数据源' : '本机 Prometheus')} required /></label><label>地址 <span className="required-mark">*</span><input name="host" defaultValue={editing?.host || '127.0.0.1'} placeholder={selectedType === 'MySQL' ? 'MySQL 主机地址' : '127.0.0.1 或 http://prometheus:9090'} required /></label><label>端口 <span className="required-mark">*</span><input key={`port-${selectedType}-${editing?.id || 'new'}`} name="port" defaultValue={editing?.port || defaultPort} required /></label>{selectedType === 'MySQL' ? <><label>用户名 <span className="required-mark">*</span><input name="username" defaultValue={editing?.username || 'root'} required /></label><label>密码 <span className="required-mark">*</span><input name="password" type="password" placeholder={editing ? '留空则不修改' : 'MySQL 密码'} required={!editing} /></label><label className="wide">数据库<input name="database" defaultValue={editing?.database || ''} placeholder="可选，不填则采集实例级指标" /></label></> : <label>Token<input name="token" type="password" placeholder={editing ? '留空则不修改' : '可选'} /></label>}<label className="wide">备注<textarea name="remark" defaultValue={editing?.remark || ''} placeholder="记录数据源用途或环境" /></label></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.closest('form'); if (form) void testSource(form) }}>测试连接</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
 }
 
 function StatusSwitch({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: (next: boolean) => void }) { return <button type="button" className={`status-switch ${checked ? 'checked' : ''}`} aria-pressed={checked} disabled={disabled} onClick={() => onChange(!checked)}><span className="status-switch-track"><span className="status-switch-thumb" /></span><span>{checked ? '启用' : '停用'}</span></button> }

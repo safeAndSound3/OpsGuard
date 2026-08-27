@@ -17,3 +17,9 @@ scrape_configs:
           - mysqld-exporter:9104
         labels:
           instance: monitor-mysql
+
+  - job_name: opsguard-mysql-datasources
+    metrics_path: /api/exporters/mysql
+    static_configs:
+      - targets:
+          - host.docker.internal:8030
