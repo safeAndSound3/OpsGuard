@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 
 type Source = { id: string; name: string; type: string; host: string; port: string; enabled: boolean; status: string; lastTest: string; username?: string; password?: string; database?: string; remark?: string; options?: Record<string, string> }
-type PrometheusMetric = { name: string }
-type PrometheusAlert = { name: string; state: string; severity?: string; summary?: string; description?: string; activeAt?: string; value?: string }
+type PrometheusRule = { name: string; type: string; query: string; duration: number; health: string; state?: string; severity?: string; summary?: string; description?: string; group: string; file?: string }
 type NotificationItem = { id: string; ruleName: string; status: string; message: string; unread: boolean; firstSeenAt: string; lastSeenAt: string }
 
 const api = '/api'
@@ -89,16 +88,12 @@ function PageHead({ title, description, action, onAction }: { title: string; des
 function MetricQuery() {
   const [sources, setSources] = useState<Source[]>([])
   const [sourceId, setSourceId] = useState('')
-  const [metrics, setMetrics] = useState<PrometheusMetric[]>([])
-  const [alerts, setAlerts] = useState<PrometheusAlert[]>([])
-  const [metricFilter, setMetricFilter] = useState('')
   const [query, setQuery] = useState('mysql_up')
   const [result, setResult] = useState<any>(null)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const enabledSources = sources.filter(item => item.enabled && item.type === 'Prometheus')
   const selectedSourceId = sourceId || enabledSources[0]?.id || ''
-  const filteredMetrics = useMemo(() => metrics.filter(item => item.name.toLowerCase().includes(metricFilter.toLowerCase())).slice(0, 300), [metrics, metricFilter])
   const loadSources = async () => {
     const response = await fetch(`${api}/data-sources`)
     const data = await response.json()
@@ -106,26 +101,7 @@ function MetricQuery() {
     setSources(next)
     if (!sourceId && next[0]) setSourceId(next[0].id)
   }
-  const loadPrometheus = async (id = selectedSourceId) => {
-    if (!id) return
-    setLoading(true)
-    setMessage('')
-    try {
-      const [metricResponse, alertResponse] = await Promise.all([fetch(`${api}/prometheus/${id}/metrics?limit=500`), fetch(`${api}/prometheus/${id}/alerts`)])
-      const metricData = await metricResponse.json()
-      const alertData = await alertResponse.json()
-      if (!metricResponse.ok) throw new Error(metricData.error || '指标获取失败')
-      if (!alertResponse.ok) throw new Error(alertData.error || '告警获取失败')
-      setMetrics(Array.isArray(metricData.metrics) ? metricData.metrics : [])
-      setAlerts(Array.isArray(alertData.alerts) ? alertData.alerts : [])
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Prometheus 数据获取失败')
-      setMetrics([])
-      setAlerts([])
-    } finally { setLoading(false) }
-  }
   useEffect(() => { void loadSources() }, [])
-  useEffect(() => { if (selectedSourceId) void loadPrometheus(selectedSourceId) }, [selectedSourceId])
   const runQuery = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!selectedSourceId) return
@@ -141,7 +117,7 @@ function MetricQuery() {
     } finally { setLoading(false) }
   }
   const vectorRows = Array.isArray(result?.result) ? result.result : []
-  return <div className="page"><PageHead title="Prometheus 指标查询" description="选择 Prometheus 数据源，查询已存储指标、当前告警和 PromQL 结果。" /><section className="external-toolbar surface"><div><b>数据源</b><span>{enabledSources.length > 0 ? 'Prometheus 数据源在线读取' : '暂无启用的 Prometheus 数据源'}</span></div><select className="filter" value={selectedSourceId} onChange={(event) => setSourceId(event.target.value)}>{enabledSources.map(source => <option key={source.id} value={source.id}>{source.name} · {source.host}:{source.port}</option>)}</select><button className="button secondary" type="button" onClick={() => void loadPrometheus()} disabled={loading || !selectedSourceId}>{loading ? '同步中...' : '刷新'}</button></section>{message && <div className="toast">{message}</div>}{enabledSources.length === 0 ? <section className="surface empty-state"><b>暂无 Prometheus 数据源</b><span>请先到数据节点新增 Prometheus 数据源。</span></section> : <><section className="external-grid"><div className="surface external-panel"><SectionTitle title="Prometheus 告警" action={`${alerts.length} 条`} />{alerts.length === 0 ? <div className="empty-state"><b>暂无 firing 告警</b><span>Prometheus 当前没有返回告警。</span></div> : <div className="external-list">{alerts.map((alert, index) => <article key={`${alert.name}-${index}`}><header><b>{alert.name}</b><span className={`alert-result ${alert.state === 'firing' ? 'danger' : 'success'}`}>{alert.state}</span></header><p>{alert.summary || alert.description || '-'}</p><small>{alert.severity || 'unknown'} · {alert.activeAt ? formatCollectedAt(alert.activeAt) : '-'}</small></article>)}</div>}</div><div className="surface external-panel"><SectionTitle title="已存储指标" action={`${metrics.length} 项`} /><input className="metric-filter" value={metricFilter} onChange={(event) => setMetricFilter(event.target.value)} placeholder="搜索指标名" />{filteredMetrics.length === 0 ? <div className="empty-state"><b>暂无指标</b><span>Prometheus 暂未返回指标名。</span></div> : <div className="metric-name-grid">{filteredMetrics.map(metric => <button type="button" key={metric.name} onClick={() => setQuery(metric.name)}>{metric.name}</button>)}</div>}</div></section><section className="surface external-panel promql-panel"><SectionTitle title="PromQL 查询" /><form className="promql-form" onSubmit={runQuery}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如 mysql_up 或 rate(mysql_global_status_questions[5m])" /><button className="button" type="submit" disabled={loading}>查询</button></form>{vectorRows.length > 0 ? <div className="query-table"><div className="query-row query-head"><span>指标标签</span><span>值</span></div>{vectorRows.map((row: any, index: number) => <div className="query-row" key={index}><code>{JSON.stringify(row.metric)}</code><b>{Array.isArray(row.value) ? row.value[1] : '-'}</b></div>)}</div> : result && <pre className="query-result">{JSON.stringify(result, null, 2)}</pre>}</section></>}</div>
+  return <div className="page"><PageHead title="Prometheus 指标查询" description="选择 Prometheus 数据源，输入 PromQL 查询存储指标。" /><section className="external-toolbar surface"><div><b>数据源</b><span>{enabledSources.length > 0 ? 'Prometheus 数据源在线读取' : '暂无启用的 Prometheus 数据源'}</span></div><select className="filter" value={selectedSourceId} onChange={(event) => setSourceId(event.target.value)}>{enabledSources.map(source => <option key={source.id} value={source.id}>{source.name} · {source.host}:{source.port}</option>)}</select><button className="button secondary" type="button" onClick={() => void loadSources()} disabled={loading}>{loading ? '查询中...' : '刷新数据源'}</button></section>{message && <div className="toast">{message}</div>}{enabledSources.length === 0 ? <section className="surface empty-state"><b>暂无 Prometheus 数据源</b><span>请先到数据节点新增 Prometheus 数据源。</span></section> : <section className="surface external-panel promql-panel"><SectionTitle title="PromQL 查询" /><form className="promql-form" onSubmit={runQuery}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如 mysql_up 或 rate(mysql_global_status_questions[5m])" /><button className="button" type="submit" disabled={loading}>{loading ? '查询中...' : '查询'}</button></form>{vectorRows.length > 0 ? <div className="query-table"><div className="query-row query-head"><span>指标标签</span><span>值</span></div>{vectorRows.map((row: any, index: number) => <div className="query-row" key={index}><code>{JSON.stringify(row.metric)}</code><b>{Array.isArray(row.value) ? row.value[1] : '-'}</b></div>)}</div> : result && <pre className="query-result">{JSON.stringify(result, null, 2)}</pre>}</section>}</div>
 }
 
 function SectionTitle({ title, action }: { title: string; action?: string }) { return <div className="section-title"><div><h2>{title}</h2></div>{action && <span className="section-badge">{action}</span>}</div> }
@@ -202,7 +178,42 @@ function DataSources() {
 
 function StatusSwitch({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: (next: boolean) => void }) { return <button type="button" className={`status-switch ${checked ? 'checked' : ''}`} aria-pressed={checked} disabled={disabled} onClick={() => onChange(!checked)}><span className="status-switch-track"><span className="status-switch-thumb" /></span><span>{checked ? '启用' : '停用'}</span></button> }
 
-function Alerts() { return <div className="page"><PageHead title="告警规则" description="旧告警规则已清空；后续告警统一从 Prometheus 规则读取或另行接入 Alertmanager。" /><section className="surface rules"><div className="empty-state alert-empty-state"><b>暂无告警规则</b><span>平台当前不再维护自定义告警规则。</span></div></section></div> }
+function Alerts() {
+  const [sources, setSources] = useState<Source[]>([])
+  const [sourceId, setSourceId] = useState('')
+  const [rules, setRules] = useState<PrometheusRule[]>([])
+  const [message, setMessage] = useState('')
+  const [loading, setLoading] = useState(false)
+  const enabledSources = sources.filter(item => item.enabled && item.type === 'Prometheus')
+  const selectedSourceId = sourceId || enabledSources[0]?.id || ''
+  const loadSources = async () => {
+    try {
+      const response = await fetch(`${api}/data-sources`)
+      const data = await response.json()
+      const next = Array.isArray(data.dataSources) ? data.dataSources.filter((item: Source) => item.type === 'Prometheus') : []
+      setSources(next)
+      if (!sourceId && next[0]) setSourceId(next[0].id)
+    } catch { setSources([]) }
+  }
+  const loadRules = async (id = selectedSourceId) => {
+    if (!id) { setRules([]); return }
+    setLoading(true)
+    setMessage('')
+    try {
+      const response = await fetch(`${api}/prometheus/${id}/rules`)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Prometheus 告警规则获取失败')
+      setRules(Array.isArray(data.rules) ? data.rules : [])
+    } catch (err) {
+      setRules([])
+      setMessage(err instanceof Error ? err.message : 'Prometheus 告警规则获取失败')
+    } finally { setLoading(false) }
+  }
+  useEffect(() => { void loadSources() }, [])
+  useEffect(() => { if (selectedSourceId) void loadRules(selectedSourceId) }, [selectedSourceId])
+  const stateClass = (state?: string, health?: string) => state === 'firing' ? 'danger' : state === 'pending' || health !== 'ok' ? 'pending' : 'success'
+  return <div className="page"><PageHead title="告警规则" description="从当前 Prometheus 数据源读取已配置的告警规则。" /><section className="external-toolbar surface"><div><b>数据源</b><span>{enabledSources.length > 0 ? '读取 Prometheus /api/v1/rules' : '暂无启用的 Prometheus 数据源'}</span></div><select className="filter" value={selectedSourceId} onChange={(event) => setSourceId(event.target.value)}>{enabledSources.map(source => <option key={source.id} value={source.id}>{source.name} · {source.host}:{source.port}</option>)}</select><button className="button secondary" type="button" onClick={() => void loadRules()} disabled={loading || !selectedSourceId}>{loading ? '同步中...' : '刷新规则'}</button></section>{message && <div className="toast">{message}</div>}<section className="surface rules prometheus-rules">{enabledSources.length === 0 ? <div className="empty-state alert-empty-state"><b>暂无 Prometheus 数据源</b><span>请先到数据节点新增并启用 Prometheus。</span></div> : rules.length === 0 ? <div className="empty-state alert-empty-state"><b>暂无告警规则</b><span>当前 Prometheus 没有返回 alerting 规则。</span></div> : <div className="prometheus-rule-list">{rules.map((rule, index) => <article className="prometheus-rule-row" key={`${rule.group}-${rule.name}-${index}`}><i className="rule-icon">!</i><div><header><b>{rule.name}</b><span className={`alert-result ${stateClass(rule.state, rule.health)}`}>{rule.state || rule.health || 'unknown'}</span></header><p>{rule.summary || rule.description || '未配置中文说明'}</p><code>{rule.query}</code><small>{rule.group || '-'}{rule.file ? ` · ${rule.file}` : ''}{rule.severity ? ` · ${rule.severity}` : ''}{rule.duration ? ` · ${Math.round(rule.duration)}s` : ''}</small></div></article>)}</div>}</section></div>
+}
 
 function Notifications() {
   const [items, setItems] = useState<NotificationItem[]>([])

@@ -254,6 +254,13 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"alerts": items})
+		case "rules":
+			items, err := service.ListPrometheusDataSourceRules(parts[0])
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"rules": items})
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}

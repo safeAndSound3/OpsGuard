@@ -116,6 +116,63 @@ func ListPrometheusDataSourceAlerts(sourceID string) ([]model.PrometheusAlert, e
 	return items, nil
 }
 
+func ListPrometheusDataSourceRules(sourceID string) ([]model.PrometheusRule, error) {
+	ds, err := prometheusDataSourceWithSecret(sourceID)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Status string `json:"status"`
+		Data   struct {
+			Groups []struct {
+				Name  string `json:"name"`
+				File  string `json:"file"`
+				Rules []struct {
+					Name        string            `json:"name"`
+					Type        string            `json:"type"`
+					Query       string            `json:"query"`
+					Duration    float64           `json:"duration"`
+					Health      string            `json:"health"`
+					State       string            `json:"state"`
+					Labels      map[string]string `json:"labels"`
+					Annotations map[string]string `json:"annotations"`
+				} `json:"rules"`
+			} `json:"groups"`
+		} `json:"data"`
+		Error string `json:"error"`
+	}
+	if err := prometheusDataSourceGet(ds, "/api/v1/rules", nil, &payload); err != nil {
+		return nil, err
+	}
+	if payload.Status != "" && payload.Status != "success" {
+		return nil, errors.New(payload.Error)
+	}
+	items := make([]model.PrometheusRule, 0)
+	for _, group := range payload.Data.Groups {
+		for _, rule := range group.Rules {
+			if rule.Type != "alerting" {
+				continue
+			}
+			items = append(items, model.PrometheusRule{
+				Name:        firstNonEmpty(rule.Name, "未命名规则"),
+				Type:        rule.Type,
+				Query:       rule.Query,
+				Duration:    rule.Duration,
+				Health:      firstNonEmpty(rule.Health, "unknown"),
+				State:       rule.State,
+				Severity:    rule.Labels["severity"],
+				Summary:     rule.Annotations["summary"],
+				Description: rule.Annotations["description"],
+				Group:       group.Name,
+				File:        group.File,
+				Labels:      rule.Labels,
+				Annotations: rule.Annotations,
+			})
+		}
+	}
+	return items, nil
+}
+
 func prometheusDataSourceWithSecret(sourceID string) (model.DataSource, error) {
 	ds, err := GetDataSourceByID(sourceID)
 	if err != nil {

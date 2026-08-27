@@ -216,6 +216,22 @@ type PrometheusAlert struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
+type PrometheusRule struct {
+	Name        string            `json:"name"`
+	Type        string            `json:"type"`
+	Query       string            `json:"query"`
+	Duration    float64           `json:"duration"`
+	Health      string            `json:"health"`
+	State       string            `json:"state,omitempty"`
+	Severity    string            `json:"severity,omitempty"`
+	Summary     string            `json:"summary,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Group       string            `json:"group"`
+	File        string            `json:"file,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
 type PrometheusMetric struct {
 	Name string `json:"name"`
 }
