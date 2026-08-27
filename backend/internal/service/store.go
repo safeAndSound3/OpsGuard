@@ -101,6 +101,9 @@ func InitDataSourceStore() error {
 	if err := initRedisMonitorStore(appDB); err != nil {
 		return err
 	}
+	if err := initSSHMonitorStore(appDB); err != nil {
+		return err
+	}
 	if err := initCollectionRuleStore(appDB); err != nil {
 		return err
 	}
@@ -111,6 +114,7 @@ func InitDataSourceStore() error {
 	go startDataSourceHealthChecker()
 	startMySQLMonitorCollector()
 	startRedisMonitorCollector()
+	startSSHMonitorCollector()
 	startCollectionRuleEvaluator()
 	return nil
 }
@@ -224,6 +228,9 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	if strings.EqualFold(ds.Type, "redis") {
 		go collectRedisInstance(current, ds)
 	}
+	if strings.EqualFold(ds.Type, "ssh") {
+		go collectSSHInstance(current, ds)
+	}
 	ds.Password = ""
 	return ds, nil
 }
@@ -294,6 +301,16 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 			}
 		}
 		go collectRedisInstance(current, updated)
+		updated.Password = ""
+	}
+	if strings.EqualFold(updated.Type, "ssh") {
+		updated.Password = ds.Password
+		if updated.Password == "" {
+			if secret, err := getDataSourcePassword(id); err == nil {
+				updated.Password = secret
+			}
+		}
+		go collectSSHInstance(current, updated)
 		updated.Password = ""
 	}
 	return updated, nil
@@ -403,6 +420,13 @@ func SetDataSourceEnabled(id string, enabled bool) (model.DataSource, error) {
 			updated.Password = ""
 		}
 	}
+	if enabled && strings.EqualFold(updated.Type, "ssh") {
+		if secret, err := getDataSourcePassword(id); err == nil {
+			updated.Password = secret
+			go collectSSHInstance(current, updated)
+			updated.Password = ""
+		}
+	}
 	return updated, nil
 }
 
@@ -441,6 +465,14 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 		_ = client.Close()
 		return true, "Redis 连接测试成功"
 	}
+	if strings.EqualFold(ds.Type, "ssh") {
+		client, err := openSSHTarget(ds)
+		if err != nil {
+			return false, err.Error()
+		}
+		_ = client.Close()
+		return true, "SSH 连接测试成功"
+	}
 
 	if ds.Host == "" || ds.Port == "" {
 		return false, "主机地址和端口不能为空"
@@ -472,6 +504,9 @@ func primaryDatabase(value string) string {
 func ListDataSourceDatabases(ds model.DataSource) ([]string, error) {
 	if strings.EqualFold(ds.Type, "redis") {
 		return []string{"db0", "db1", "db2", "db3", "db4", "db5", "db6", "db7", "db8", "db9", "db10", "db11", "db12", "db13", "db14", "db15"}, nil
+	}
+	if strings.EqualFold(ds.Type, "ssh") {
+		return []string{"system"}, nil
 	}
 	if !strings.EqualFold(ds.Type, "mysql") {
 		return []string{}, nil
@@ -981,6 +1016,9 @@ func GetSchemaForDataSource(id string, database string, table string) map[string
 	}
 	if strings.EqualFold(ds.Type, "redis") {
 		return redisMetricSchema(ds.Database)
+	}
+	if strings.EqualFold(ds.Type, "ssh") {
+		return sshMetricSchema()
 	}
 	if !strings.EqualFold(ds.Type, "mysql") {
 		return map[string]map[string][]string{}

@@ -162,3 +162,35 @@ type RedisMetricSnapshot struct {
 	CollectedAt time.Time         `json:"collectedAt"`
 	Metrics     map[string]string `json:"metrics"`
 }
+
+type SSHInstanceStatus struct {
+	SourceID        string    `json:"sourceId"`
+	SourceName      string    `json:"sourceName"`
+	Host            string    `json:"host"`
+	Port            string    `json:"port"`
+	Status          string    `json:"status"`
+	Hostname        string    `json:"hostname,omitempty"`
+	Kernel          string    `json:"kernel,omitempty"`
+	UptimeSeconds   int64     `json:"uptimeSeconds"`
+	CPUUsagePercent float64   `json:"cpuUsagePercent"`
+	Load1           float64   `json:"load1"`
+	Load5           float64   `json:"load5"`
+	Load15          float64   `json:"load15"`
+	MemoryUsed      int64     `json:"memoryUsed"`
+	MemoryTotal     int64     `json:"memoryTotal"`
+	MemoryPercent   float64   `json:"memoryPercent"`
+	DiskUsed        int64     `json:"diskUsed"`
+	DiskTotal       int64     `json:"diskTotal"`
+	DiskPercent     float64   `json:"diskPercent"`
+	ProcessCount    int64     `json:"processCount"`
+	TCPConnections  int64     `json:"tcpConnections"`
+	LastError       string    `json:"lastError,omitempty"`
+	LastCollectedAt time.Time `json:"lastCollectedAt"`
+}
+
+type SSHMetricSnapshot struct {
+	ID          int64             `json:"id"`
+	SourceID    string            `json:"sourceId"`
+	CollectedAt time.Time         `json:"collectedAt"`
+	Metrics     map[string]string `json:"metrics"`
+}
