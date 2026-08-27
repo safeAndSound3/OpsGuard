@@ -3,7 +3,6 @@ import type { CSSProperties, FormEvent } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import './App.css'
 
-type Task = { id: string; title: string; owner: string; status: string; progress: number; updated: string }
 type Source = { id: string; name: string; type: string; host: string; port: string; enabled: boolean; status: string; lastTest: string; username?: string; database?: string; remark?: string; options?: Record<string, string> }
 type SourceDraft = Partial<Source> & { password?: string }
 type MySQLInstanceStatus = { sourceId: string; sourceName: string; host: string; port: string; status: string; version?: string; uptimeSeconds: number; threadsConnected: number; maxConnections: number; slowQueries: number; questions: number; databaseSizeBytes: number; replicaStatus?: string; lastError?: string; lastCollectedAt: string }
@@ -122,11 +121,6 @@ const sshMetricInfo: Record<string, string> = {
   tcp_connections: '当前 ESTABLISHED TCP 连接数，反映网络连接压力',
   uptime_seconds: '系统启动后的运行秒数',
 }
-const fallbackTasks: Task[] = [
-  { id: 'insp-101', title: '订单系统巡检', owner: '刘旭', status: '运行中', progress: 84, updated: '10 分钟前' },
-  { id: 'insp-102', title: '支付链路巡检', owner: '周琳', status: '待执行', progress: 24, updated: '32 分钟前' },
-  { id: 'insp-103', title: '日志采集健康检查', owner: '许凯', status: '已完成', progress: 100, updated: '2 小时前' },
-]
 const fallbackSources: Source[] = []
 const fallbackRules: Rule[] = [
   { id: 'rule-001', name: '订单支付慢查询', source: 'MySQL', database: 'order_center', table: 'payment_orders', field: 'paid_at', condition: '大于', threshold: '1000ms', timeWindow: '5分钟', lastRun: '待执行', status: '启用' },
@@ -560,7 +554,7 @@ function DonutChart({ title, total, slices }: { title: string; total: number; sl
 function MetricRows({ rows }: { rows: MetricRow[] }) { return <div className="metric-rows">{rows.map(([label, value, detail]) => <p key={label}><span>{label}{detail && <small>{detail}</small>}</span><b>{value || '-'}</b></p>)}</div> }
 function SectionTitle({ title, action }: { title: string; action?: string }) { return <div className="section-title"><div><h2>{title}</h2></div>{action && <span className="section-badge">{action}</span>}</div> }
 function PageHead({ title, description, action, onAction }: { title: string; description: string; action?: string; onAction?: () => void }) { return <header className="page-head"><div><h2>{title}</h2><span>{description}</span></div>{action && <button className="button" onClick={onAction}><Icon name="plus" /> {action}</button>}</header> }
-function Inspection() { return <div className="page"><PageHead title="巡检任务" description="统一查看任务执行状态与最近的健康检查结果。" action="新建巡检" /><section className="surface table-card"><div className="table-toolbar"><b>全部任务 <small>{fallbackTasks.length}</small></b><div><button className="filter">状态：全部⌄</button><button className="filter">最近更新⌄</button></div></div><div className="task-table">{fallbackTasks.map(t => <div className="task-row" key={t.id}><div><b>{t.title}</b><span>{t.id} · 负责人：{t.owner}</span></div><span className={`tag ${t.status === '已完成' ? 'success' : t.status === '运行中' ? 'running' : 'pending'}`}>{t.status}</span><div className="progress"><i><b style={{ width: `${t.progress}%` }} /></i><span>{t.progress}%</span></div><time>{t.updated}</time><button className="more">•••</button></div>)}</div></section></div> }
+function Inspection() { return <div className="page"><PageHead title="巡检任务" description="统一查看任务执行状态与最近的健康检查结果。" action="新建巡检" /><section className="surface table-card"><div className="table-toolbar"><b>全部任务 <small>0</small></b><div><button className="filter">状态：全部⌄</button><button className="filter">最近更新⌄</button></div></div><div className="empty-state"><b>暂无巡检任务</b><span>当前没有已创建的巡检任务。</span></div></section></div> }
 function slowQueryDetail(item: MySQLSlowQuerySample) {
   return `完整 SQL：${item.queryText}\n最大耗时：${item.maxLatencyMs.toFixed(1)} ms\n总耗时：${item.totalLatencyMs.toFixed(1)} ms\n首次出现：${formatCollectedAt(item.firstSeen || '')}\n最近出现：${formatCollectedAt(item.lastSeen || '')}`
 }

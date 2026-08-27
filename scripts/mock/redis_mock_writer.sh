@@ -3,6 +3,8 @@ set -eu
 
 REDIS_HOST="${REDIS_HOST:-redis}"
 REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_MOCK_BATCH_SIZE="${REDIS_MOCK_BATCH_SIZE:-20}"
+REDIS_MOCK_SLEEP_SECONDS="${REDIS_MOCK_SLEEP_SECONDS:-5}"
 
 until redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" ping >/dev/null 2>&1; do
   sleep 1
@@ -20,7 +22,7 @@ next_rand() {
 while true; do
   ts="$(date +%s)"
   i=0
-  while [ "$i" -lt 120 ]; do
+  while [ "$i" -lt "${REDIS_MOCK_BATCH_SIZE}" ]; do
     next_rand; r1="$rand"
     next_rand; r2="$rand"
     next_rand; r3="$rand"
@@ -54,5 +56,5 @@ while true; do
   done
   redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" DBSIZE >/dev/null
   redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" SLOWLOG LEN >/dev/null
-  sleep 1
+  sleep "${REDIS_MOCK_SLEEP_SECONDS}"
 done

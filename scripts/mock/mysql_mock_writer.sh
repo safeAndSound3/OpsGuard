@@ -6,6 +6,8 @@ MYSQL_PORT="${MYSQL_PORT:-3306}"
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_ROOT_PASSWORD:-Hh0321}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-opsguard_mock}"
+MYSQL_MOCK_BATCH_SIZE="${MYSQL_MOCK_BATCH_SIZE:-8}"
+MYSQL_MOCK_SLEEP_SECONDS="${MYSQL_MOCK_SLEEP_SECONDS:-10}"
 
 mysql_exec() {
   mysql -h"${MYSQL_HOST}" -P"${MYSQL_PORT}" -u"${MYSQL_USER}" -p"${MYSQL_PASSWORD}" --default-character-set=utf8mb4 "$@"
@@ -85,7 +87,7 @@ metrics=(cpu_usage memory_usage queue_depth worker_busy db_pool_usage cache_hit_
 while true; do
   now="$(date '+%Y-%m-%d %H:%M:%S')"
   sql="USE \`${MYSQL_DATABASE}\`;"
-  for i in $(seq 1 40); do
+  for i in $(seq 1 "${MYSQL_MOCK_BATCH_SIZE}"); do
     order_no="MOCK$(date +%Y%m%d%H%M%S)$RANDOM$i"
     user_id=$((100000 + RANDOM % 900000))
     amount_major=$((10 + RANDOM % 2000))
@@ -126,5 +128,5 @@ UPDATE mock_orders SET status = 'finished', updated_at = '${now}' WHERE status =
 UPDATE mock_inventory_snapshots SET locked_qty = locked_qty + 1 WHERE available_qty > 1000 ORDER BY id DESC LIMIT 20;
 SELECT COUNT(*), AVG(latency_ms), MAX(latency_ms) FROM mock_api_events WHERE created_at >= NOW() - INTERVAL 5 MINUTE GROUP BY service_name;"
   mysql_exec -e "${sql}" >/dev/null
-  sleep 2
+  sleep "${MYSQL_MOCK_SLEEP_SECONDS}"
 done
