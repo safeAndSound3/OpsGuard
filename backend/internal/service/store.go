@@ -123,13 +123,13 @@ func InitDataSourceStore() error {
 		return err
 	}
 	ensureDefaultPrometheusDataSource(appDB)
-	clearCollectionRules(appDB)
 
 	mu.Lock()
 	db = appDB
 	mu.Unlock()
 	go startDataSourceHealthChecker()
 	startMySQLMetricCollector()
+	startCollectionRuleEvaluator()
 	return nil
 }
 
@@ -890,7 +890,48 @@ func resolveAlertNotification(appDB *sql.DB, ruleID string) {
 }
 
 func evaluateTodayHasDataRule(rule model.CollectionRule) string {
-	return fmt.Sprintf("等待 %s：平台已切换为 Prometheus 数据源，旧数据库告警规则已废弃", time.Now().Format("15:04"))
+	now := time.Now()
+	checkedAt := now.Format("15:04")
+	deadline := todayDataRuleDeadline(rule.TimeWindow, now)
+	ds, err := getRuleDataSourceWithSecret(rule.Source)
+	if err != nil {
+		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
+	}
+	if !strings.EqualFold(ds.Type, "mysql") {
+		return fmt.Sprintf("执行失败 %s：当天有数据规则仅支持 MySQL 数据源", checkedAt)
+	}
+	if !validSQLIdentifier(rule.Database) || !validSQLIdentifier(rule.Table) {
+		return fmt.Sprintf("执行失败 %s：库名或表名不合法", checkedAt)
+	}
+	if rule.Field != "" && !validSQLIdentifier(rule.Field) {
+		return fmt.Sprintf("执行失败 %s：字段名不合法", checkedAt)
+	}
+	targetDB, err := openMySQLDataSource(ds)
+	if err != nil {
+		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error())
+	}
+	defer targetDB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	query := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", rule.Database, rule.Table)
+	args := []any{}
+	if rule.Field != "" {
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		end := start.AddDate(0, 0, 1)
+		query += fmt.Sprintf(" WHERE `%s` >= ? AND `%s` < ?", rule.Field, rule.Field)
+		args = append(args, start, end)
+	}
+	var count int64
+	if err := targetDB.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return fmt.Sprintf("执行失败 %s：查询失败：%s", checkedAt, err.Error())
+	}
+	if count > 0 {
+		return fmt.Sprintf("正常 %s：%s.%s 今日数据 %d 条", checkedAt, rule.Database, rule.Table, count)
+	}
+	if now.Before(deadline) {
+		return fmt.Sprintf("等待 %s：%s.%s 今日暂无数据，%s 后仍无数据再告警", checkedAt, rule.Database, rule.Table, deadline.Format("15:04"))
+	}
+	return fmt.Sprintf("告警 %s：%s.%s 今日暂无数据", checkedAt, rule.Database, rule.Table)
 }
 
 func todayDataRuleDeadline(value string, now time.Time) time.Time {
@@ -1015,7 +1056,32 @@ func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
 }
 
 func GetSchemaForDataSource(id string, database string, table string) map[string]map[string][]string {
-	return map[string]map[string][]string{}
+	ds, err := getRuleDataSourceWithSecret(id)
+	if err != nil || !strings.EqualFold(ds.Type, "mysql") || !ds.Enabled {
+		return map[string]map[string][]string{}
+	}
+	targetDB, err := openMySQLDataSource(ds)
+	if err != nil {
+		return map[string]map[string][]string{}
+	}
+	defer targetDB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	database = strings.TrimSpace(database)
+	table = strings.TrimSpace(table)
+	if database != "" && !validSQLIdentifier(database) {
+		return map[string]map[string][]string{}
+	}
+	if table != "" && !validSQLIdentifier(table) {
+		return map[string]map[string][]string{}
+	}
+	if database != "" && table != "" {
+		return listMySQLSchemaColumns(ctx, targetDB, database, table)
+	}
+	if database != "" {
+		return listMySQLSchemaTables(ctx, targetDB, database)
+	}
+	return listMySQLSchemaDatabases(ctx, targetDB)
 }
 
 func listMySQLSchemaDatabases(ctx context.Context, targetDB *sql.DB) map[string]map[string][]string {

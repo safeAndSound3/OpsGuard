@@ -6,6 +6,7 @@ import './App.css'
 type Source = { id: string; name: string; type: string; host: string; port: string; enabled: boolean; status: string; lastTest: string; username?: string; password?: string; database?: string; remark?: string; options?: Record<string, string> }
 type PrometheusRule = { name: string; type: string; query: string; duration: number; health: string; state?: string; severity?: string; summary?: string; description?: string; group: string; file?: string }
 type NotificationItem = { id: string; ruleName: string; status: string; message: string; unread: boolean; firstSeenAt: string; lastSeenAt: string }
+type CollectionRule = { id: string; name: string; source: string; database: string; table: string; field: string; condition: string; threshold?: string; timeWindow: string; lastRun: string; status: string }
 
 const api = '/api'
 const icons: Record<string, string> = { query: '◎', data: '◫', alert: '◇', notify: '◉', settings: '⚙', plus: '+', arrow: '→', bell: '●' }
@@ -77,12 +78,12 @@ function Sidebar() {
   }
   useEffect(() => { void load(); const timer = window.setInterval(load, 15000); window.addEventListener('opsguard-data-sources-change', load); return () => { window.clearInterval(timer); window.removeEventListener('opsguard-data-sources-change', load) } }, [])
   const online = sources.filter(item => item.enabled && item.status === '健康').length
-  const items = [['query', '指标查询', '/'], ['data', '数据节点', '/datasources'], ['alert', '告警规则', '/alerts'], ['notify', '通知中心', '/notifications'], ['settings', '系统设置', '/config']]
+  const items = [['query', '指标查询', '/'], ['alert', '告警规则', '/alerts'], ['notify', '通知中心', '/notifications'], ['data', '数据节点', '/datasources'], ['settings', '系统设置', '/config']]
   return <aside className="sidebar"><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>OpsGuard</b><small>Prometheus</small></div></div><nav>{items.map(([icon, label, path]) => <NavLink key={path} end={path === '/'} to={path} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon name={icon} /><span>{label}</span></NavLink>)}</nav><div className="sidebar-footer"><span className="online-dot" /><span>{online} / {sources.length} 节点在线</span><small>Prometheus 数据源</small></div></aside>
 }
 
-function PageHead({ title, description, action, onAction }: { title: string; description: string; action?: string; onAction?: () => void }) {
-  return <header className="page-head"><div><h2>{title}</h2><span>{description}</span></div>{action && <button className="button" onClick={onAction}><Icon name="plus" /> {action}</button>}</header>
+function PageHead({ title, description, action, onAction, actionNode }: { title: string; description: string; action?: string; onAction?: () => void; actionNode?: any }) {
+  return <header className="page-head"><div><h2>{title}</h2><span>{description}</span></div>{actionNode || (action && <button className="button" onClick={onAction}><Icon name="plus" /> {action}</button>)}</header>
 }
 
 function MetricQuery() {
@@ -117,10 +118,10 @@ function MetricQuery() {
     } finally { setLoading(false) }
   }
   const vectorRows = Array.isArray(result?.result) ? result.result : []
-  return <div className="page"><PageHead title="Prometheus 指标查询" description="选择 Prometheus 数据源，输入 PromQL 查询存储指标。" /><section className="external-toolbar surface"><div><b>数据源</b><span>{enabledSources.length > 0 ? 'Prometheus 数据源在线读取' : '暂无启用的 Prometheus 数据源'}</span></div><select className="filter" value={selectedSourceId} onChange={(event) => setSourceId(event.target.value)}>{enabledSources.map(source => <option key={source.id} value={source.id}>{source.name} · {source.host}:{source.port}</option>)}</select><button className="button secondary" type="button" onClick={() => void loadSources()} disabled={loading}>{loading ? '查询中...' : '刷新数据源'}</button></section>{message && <div className="toast">{message}</div>}{enabledSources.length === 0 ? <section className="surface empty-state"><b>暂无 Prometheus 数据源</b><span>请先到数据节点新增 Prometheus 数据源。</span></section> : <section className="surface external-panel promql-panel"><SectionTitle title="PromQL 查询" /><form className="promql-form" onSubmit={runQuery}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如 mysql_up 或 rate(mysql_global_status_questions[5m])" /><button className="button" type="submit" disabled={loading}>{loading ? '查询中...' : '查询'}</button></form>{vectorRows.length > 0 ? <div className="query-table"><div className="query-row query-head"><span>指标标签</span><span>值</span></div>{vectorRows.map((row: any, index: number) => <div className="query-row" key={index}><code>{JSON.stringify(row.metric)}</code><b>{Array.isArray(row.value) ? row.value[1] : '-'}</b></div>)}</div> : result && <pre className="query-result">{JSON.stringify(result, null, 2)}</pre>}</section>}</div>
+  const sourceSelect = <select className="filter metric-source-select" value={selectedSourceId} onChange={(event) => setSourceId(event.target.value)}>{enabledSources.map(source => <option key={source.id} value={source.id}>{source.name} · {source.host}:{source.port}</option>)}</select>
+  return <div className="page"><PageHead title="指标查询" description="输入 PromQL 查询存储指标。" actionNode={sourceSelect} />{message && <div className="toast">{message}</div>}{enabledSources.length === 0 ? <section className="surface empty-state"><b>暂无 Prometheus 数据源</b><span>请先到数据节点新增 Prometheus 数据源。</span></section> : <section className="surface external-panel promql-panel"><form className="promql-form" onSubmit={runQuery}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如 mysql_up 或 opsguard_mysql_global_status{variable=Threads_connected}" /><button className="button" type="submit" disabled={loading}>{loading ? '查询中...' : '查询'}</button></form>{vectorRows.length > 0 ? <div className="query-table"><div className="query-row query-head"><span>指标标签</span><span>值</span></div>{vectorRows.map((row: any, index: number) => <div className="query-row" key={index}><code>{JSON.stringify(row.metric)}</code><b>{Array.isArray(row.value) ? row.value[1] : '-'}</b></div>)}</div> : result && <pre className="query-result">{JSON.stringify(result, null, 2)}</pre>}</section>}</div>
 }
 
-function SectionTitle({ title, action }: { title: string; action?: string }) { return <div className="section-title"><div><h2>{title}</h2></div>{action && <span className="section-badge">{action}</span>}</div> }
 
 function DataSources() {
   const [sources, setSources] = useState<Source[]>([])
@@ -188,38 +189,81 @@ function StatusSwitch({ checked, disabled, onChange }: { checked: boolean; disab
 function Alerts() {
   const [sources, setSources] = useState<Source[]>([])
   const [sourceId, setSourceId] = useState('')
-  const [rules, setRules] = useState<PrometheusRule[]>([])
+  const [promRules, setPromRules] = useState<PrometheusRule[]>([])
+  const [customRules, setCustomRules] = useState<CollectionRule[]>([])
+  const [schema, setSchema] = useState<Record<string, Record<string, string[]>>>({})
+  const [selectedCustomSource, setSelectedCustomSource] = useState('')
+  const [selectedDatabase, setSelectedDatabase] = useState('')
+  const [selectedTable, setSelectedTable] = useState('')
+  const [ruleKind, setRuleKind] = useState<'today' | 'http' | 'tcp'>('today')
+  const [modalOpen, setModalOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
-  const enabledSources = sources.filter(item => item.enabled && item.type === 'Prometheus')
-  const selectedSourceId = sourceId || enabledSources[0]?.id || ''
+  const prometheusSources = sources.filter(item => item.enabled && item.type === 'Prometheus')
+  const mysqlSources = sources.filter(item => item.enabled && item.type === 'MySQL')
+  const selectedSourceId = sourceId || prometheusSources[0]?.id || ''
   const loadSources = async () => {
     try {
       const response = await fetch(`${api}/data-sources`)
       const data = await response.json()
-      const next = Array.isArray(data.dataSources) ? data.dataSources.filter((item: Source) => item.type === 'Prometheus') : []
+      const next = Array.isArray(data.dataSources) ? data.dataSources : []
       setSources(next)
-      if (!sourceId && next[0]) setSourceId(next[0].id)
+      if (!sourceId && next.find((item: Source) => item.type === 'Prometheus')) setSourceId(next.find((item: Source) => item.type === 'Prometheus')!.id)
+      if (!selectedCustomSource && next.find((item: Source) => item.type === 'MySQL')) setSelectedCustomSource(next.find((item: Source) => item.type === 'MySQL')!.id)
     } catch { setSources([]) }
   }
-  const loadRules = async (id = selectedSourceId) => {
-    if (!id) { setRules([]); return }
+  const loadPromRules = async (id = selectedSourceId) => {
+    if (!id) { setPromRules([]); return }
     setLoading(true)
     setMessage('')
     try {
       const response = await fetch(`${api}/prometheus/${id}/rules`)
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Prometheus 告警规则获取失败')
-      setRules(Array.isArray(data.rules) ? data.rules : [])
+      setPromRules(Array.isArray(data.rules) ? data.rules : [])
     } catch (err) {
-      setRules([])
+      setPromRules([])
       setMessage(err instanceof Error ? err.message : 'Prometheus 告警规则获取失败')
     } finally { setLoading(false) }
   }
-  useEffect(() => { void loadSources() }, [])
-  useEffect(() => { if (selectedSourceId) void loadRules(selectedSourceId) }, [selectedSourceId])
+  const loadCustomRules = async () => {
+    try {
+      const response = await fetch(`${api}/collection-rules`)
+      const data = await response.json()
+      setCustomRules(Array.isArray(data.rules) ? data.rules : [])
+    } catch { setCustomRules([]) }
+  }
+  const loadSchema = async (source = selectedCustomSource, database = selectedDatabase, table = selectedTable) => {
+    if (!source) { setSchema({}); return }
+    const params = new URLSearchParams()
+    if (database) params.set('database', database)
+    if (table) params.set('table', table)
+    const response = await fetch(`${api}/data-sources/${source}/schema?${params.toString()}`)
+    const data = await response.json()
+    setSchema(data.schema || {})
+  }
+  useEffect(() => { void loadSources(); void loadCustomRules() }, [])
+  useEffect(() => { if (selectedSourceId) void loadPromRules(selectedSourceId) }, [selectedSourceId])
+  useEffect(() => { if (modalOpen && ruleKind === 'today') void loadSchema(selectedCustomSource, selectedDatabase, selectedTable) }, [modalOpen, ruleKind, selectedCustomSource, selectedDatabase, selectedTable])
+  const databases = Object.keys(schema)
+  const tables = selectedDatabase ? Object.keys(schema[selectedDatabase] || {}) : []
+  const fields = selectedDatabase && selectedTable ? (schema[selectedDatabase]?.[selectedTable] || []) : []
   const stateClass = (state?: string, health?: string) => state === 'firing' ? 'danger' : state === 'pending' || health !== 'ok' ? 'pending' : 'success'
-  return <div className="page"><PageHead title="告警规则" description="从当前 Prometheus 数据源读取已配置的告警规则。" /><section className="external-toolbar surface"><div><b>数据源</b><span>{enabledSources.length > 0 ? '读取 Prometheus /api/v1/rules' : '暂无启用的 Prometheus 数据源'}</span></div><select className="filter" value={selectedSourceId} onChange={(event) => setSourceId(event.target.value)}>{enabledSources.map(source => <option key={source.id} value={source.id}>{source.name} · {source.host}:{source.port}</option>)}</select><button className="button secondary" type="button" onClick={() => void loadRules()} disabled={loading || !selectedSourceId}>{loading ? '同步中...' : '刷新规则'}</button></section>{message && <div className="toast">{message}</div>}<section className="surface rules prometheus-rules">{enabledSources.length === 0 ? <div className="empty-state alert-empty-state"><b>暂无 Prometheus 数据源</b><span>请先到数据节点新增并启用 Prometheus。</span></div> : rules.length === 0 ? <div className="empty-state alert-empty-state"><b>暂无告警规则</b><span>当前 Prometheus 没有返回 alerting 规则。</span></div> : <div className="prometheus-rule-list">{rules.map((rule, index) => <article className="prometheus-rule-row" key={`${rule.group}-${rule.name}-${index}`}><i className="rule-icon">!</i><div><header><b>{rule.name}</b><span className={`alert-result ${stateClass(rule.state, rule.health)}`}>{rule.state || rule.health || 'unknown'}</span></header><p>{rule.summary || rule.description || '未配置中文说明'}</p><code>{rule.query}</code><small>{rule.group || '-'}{rule.file ? ` · ${rule.file}` : ''}{rule.severity ? ` · ${rule.severity}` : ''}{rule.duration ? ` · ${Math.round(rule.duration)}s` : ''}</small></div></article>)}</div>}</section></div>
+  const customStateClass = (lastRun: string) => lastRun.startsWith('告警') || lastRun.startsWith('执行失败') ? 'danger' : lastRun.startsWith('正常') ? 'success' : 'pending'
+  const saveRule = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const payload: CollectionRule = ruleKind === 'today' ? { id: '', name: String(form.get('name') || ''), source: selectedCustomSource, database: selectedDatabase, table: selectedTable, field: String(form.get('field') || ''), condition: '当天有数据', threshold: '', timeWindow: String(form.get('deadline') || '03:00'), lastRun: '待执行', status: '启用' } : { id: '', name: String(form.get('name') || ''), source: 'custom-probe', database: ruleKind, table: String(form.get('target') || ''), field: '', condition: ruleKind === 'http' ? String(form.get('condition') || '状态码小于400') : 'TCP端口可连接', threshold: String(form.get('threshold') || ''), timeWindow: String(form.get('timeout') || '5s'), lastRun: '待执行', status: '启用' }
+    try {
+      const response = await fetch(`${api}/collection-rules`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '保存失败')
+      setModalOpen(false)
+      setMessage('自定义告警规则已添加')
+      void loadCustomRules()
+    } catch (err) { setMessage(err instanceof Error ? err.message : '保存失败') }
+  }
+  return <div className="page"><PageHead title="告警规则" description="按 Prometheus 和自定义规则分类展示。" action="新建自定义规则" onAction={() => setModalOpen(true)} />{message && <div className="toast">{message}</div>}<section className="alert-rule-section"><div className="alert-section-head"><div><h3>Prometheus 告警规则</h3><span>读取当前 Prometheus 数据源已有 alerting 规则</span></div><div className="alert-section-actions"><select className="filter" value={selectedSourceId} onChange={(event) => setSourceId(event.target.value)}>{prometheusSources.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select><button className="button secondary" type="button" onClick={() => void loadPromRules()} disabled={loading || !selectedSourceId}>{loading ? '同步中...' : '刷新'}</button></div></div><section className="surface rules prometheus-rules">{prometheusSources.length === 0 ? <div className="empty-state alert-empty-state"><b>暂无 Prometheus 数据源</b><span>请先到数据节点新增并启用 Prometheus。</span></div> : promRules.length === 0 ? <div className="empty-state alert-empty-state"><b>暂无 Prometheus 告警规则</b><span>当前 Prometheus 没有返回 alerting 规则。</span></div> : <div className="prometheus-rule-list">{promRules.map((rule, index) => <article className="prometheus-rule-row" key={`${rule.group}-${rule.name}-${index}`}><i className="rule-icon">P</i><div><header><b>{rule.name}</b><span className={`alert-result ${stateClass(rule.state, rule.health)}`}>{rule.state || rule.health || 'unknown'}</span></header><p>{rule.summary || rule.description || '未配置中文说明'}</p><code>{rule.query}</code><small>{rule.group || '-'}{rule.file ? ` · ${rule.file}` : ''}{rule.severity ? ` · ${rule.severity}` : ''}{rule.duration ? ` · ${Math.round(rule.duration)}s` : ''}</small></div></article>)}</div>}</section></section><section className="alert-rule-section"><div className="alert-section-head"><div><h3>自定义告警规则</h3><span>平台内置规则，包括 MySQL 当天有数据、HTTP/TCP 探测</span></div><button className="button secondary" type="button" onClick={() => void loadCustomRules()}>刷新</button></div><section className="surface rules prometheus-rules">{customRules.length === 0 ? <div className="empty-state alert-empty-state"><b>暂无自定义告警规则</b><span>点击右上角新建自定义规则。</span></div> : <div className="prometheus-rule-list">{customRules.map(rule => <article className="prometheus-rule-row" key={rule.id}><i className="rule-icon">C</i><div><header><b>{rule.name}</b><span className={`alert-result ${customStateClass(rule.lastRun)}`}>{rule.status}</span></header><p>{rule.lastRun || '待执行'}</p><code>{rule.source === 'custom-probe' ? `${rule.database} · ${rule.table}` : `${rule.database}.${rule.table}${rule.field ? ` · ${rule.field}` : ''}`}</code><small>{rule.condition} · {rule.timeWindow}</small></div></article>)}</div>}</section></section>{modalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setModalOpen(false) }}><section className="surface source-modal alert-rule-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2>新建自定义规则</h2><p>Custom alert rule</p></div><button className="close-button" type="button" onClick={() => setModalOpen(false)}>×</button></header><form onSubmit={saveRule}><div className="modal-form"><label>规则类型 <span className="required-mark">*</span><select value={ruleKind} onChange={(event) => { setRuleKind(event.target.value as 'today' | 'http' | 'tcp'); setSchema({}); setSelectedDatabase(''); setSelectedTable('') }}><option value="today">MySQL 当天有数据</option><option value="http">HTTP 页面探测</option><option value="tcp">TCP 端口探测</option></select></label><label>规则名称 <span className="required-mark">*</span><input name="name" defaultValue={ruleKind === 'today' ? '当天有数据检查' : '自定义探测'} required /></label>{ruleKind === 'today' ? <><label>数据源 <span className="required-mark">*</span><select value={selectedCustomSource} onChange={(event) => { setSelectedCustomSource(event.target.value); setSelectedDatabase(''); setSelectedTable(''); setSchema({}) }} required>{mysqlSources.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label><label>数据库 <span className="required-mark">*</span><select value={selectedDatabase} onChange={(event) => { setSelectedDatabase(event.target.value); setSelectedTable('') }} required><option value="">请选择数据库</option>{databases.map(name => <option key={name} value={name}>{name}</option>)}</select></label><label>表 <span className="required-mark">*</span><select value={selectedTable} onChange={(event) => setSelectedTable(event.target.value)} required><option value="">请选择表</option>{tables.map(name => <option key={name} value={name}>{name}</option>)}</select></label><label>时间字段<select name="field"><option value="">不按时间字段过滤</option>{fields.map(name => <option key={name} value={name}>{name}</option>)}</select></label><label>告警截止时间<input name="deadline" defaultValue="03:00" placeholder="03:00" /></label></> : <><label className="wide">目标 <span className="required-mark">*</span><input name="target" placeholder={ruleKind === 'http' ? 'https://example.com/health' : '127.0.0.1:3306'} required /></label>{ruleKind === 'http' && <><label>判断方式<select name="condition"><option value="状态码等于">状态码等于</option><option value="页面包含">页面包含</option><option value="状态码小于400">状态码小于400</option></select></label><label>期望值<input name="threshold" placeholder="200 或页面关键字" /></label></>}<label>超时时间<input name="timeout" defaultValue="5s" /></label></>}</div><footer className="modal-actions"><button className="button secondary" type="button" onClick={() => setModalOpen(false)}>取消</button><button className="button" type="submit">保存</button></footer></form></section></div>}</div>
 }
 
 function Notifications() {
