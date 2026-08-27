@@ -34,6 +34,33 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+  mysql-mock-writer:
+    image: mysql:8.0
+    container_name: mock-mysql-writer
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-Hh0321}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./scripts/mock/mysql_mock_writer.sh:/mock/mysql_mock_writer.sh:ro
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["bash", "/mock/mysql_mock_writer.sh"]
+  redis-mock-writer:
+    image: redis:7.2
+    container_name: mock-redis-writer
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./scripts/mock/redis_mock_writer.sh:/mock/redis_mock_writer.sh:ro
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["sh", "/mock/redis_mock_writer.sh"]
   nginx:
     image: nginx:stable
     container_name: nginx-opsguard
