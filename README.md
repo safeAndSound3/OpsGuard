@@ -1,64 +1,51 @@
-# 监控与采集管理平台
+# OpsGuard
 
-这是一个使用 React + Vite + TypeScript 前端和 Go 后端的监控平台演示项目，结构分层清晰，适合后续继续扩展并推送到 GitHub。
+OpsGuard is a monitoring and collection management platform built with a React + TypeScript frontend and a Go API. The local entry point is `http://localhost:3000`; Vite proxies `/api` and `/health` requests to the Go API.
 
-## 目录结构
+## Architecture
 
-- `frontend/`: React 前端应用
-- `backend/`: Go API 与 mock 数据服务（当前未接入 MySQL 持久化）
-- `nginx/default.conf`: SPA 回退和 `/api` 反向代理配置
-- `docker-compose.yml`: MySQL 8.0 与 Nginx 容器定义
+- `frontend/`: React + Vite interface
+- `backend/`: Go API, collection rules, and MySQL metric export
+- Remote database: the `opsguard` database on Alibaba Cloud RDS
 
-## 功能概览
+The project no longer uses Docker Compose or a local MySQL server. The application connects to the remote RDS with the restricted `opsguard_app` account. Business data, data sources, alerts, and metric samples share the same project database.
 
-- 一级菜单：监控大屏、巡检、数据源、系统配置
-- 监控大屏：模拟数据、指标卡片、趋势面板、告警中心
-- 数据源：MySQL / Kafka / Redis / 中间件结构地址配置
-- 系统配置：必填项、选填项、配置保存和测试告警通道
-- 自定义采集：支持选择数据源 -> 数据库 -> 表 -> 字段，并配置条件（今天有数据 / 数值为 0 / 为空等）
-- Go 后端：提供 /api/overview、/api/data-sources、/api/system-config、/api/collection-rules 等接口
+## Local Development
 
-## 启动方式
+Use Node.js 22+ and Go 1.22+. Database settings are loaded from `backend/.env`, which is intentionally excluded from Git. Use `backend/.env.example` as the configuration template.
 
-### 1. 启动前端
+Start the API:
 
-```bash
-export NVM_DIR="$HOME/.nvm"
-. "$NVM_DIR/nvm.sh"
-nvm use 22
-cd frontend
-npm install
-npm run dev -- --host 0.0.0.0 --port 5173
-```
-
-访问：http://localhost:5173
-
-### 2. 启动后端
-
-```bash
+```powershell
 cd backend
 go run ./cmd/server
 ```
 
-访问：http://localhost:8030/health
+Start the web application:
 
-## 生产构建
-
-```bash
+```powershell
 cd frontend
+npm ci
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+## Build
+
+```powershell
+cd frontend
+npm run typecheck
 npm run build
+
+cd ..\backend
+go build -trimpath -ldflags="-s -w" -o bin\opsguard.exe ./cmd/server
 ```
 
-```bash
-cd backend
-go build ./...
-```
+The frontend build splits the React runtime, disables sourcemaps, and skips compressed-size reporting. The backend build removes debug paths and symbol data to reduce the binary size.
 
-## 容器部署
+## Development Rules
 
-```bash
-cd frontend && npm run build
-cd .. && docker compose up -d --force-recreate mysql nginx
-```
-
-页面访问 `http://localhost:8028`。MySQL 数据使用具名卷 `monitor-mysql-data` 持久化，重建容器不会清空数据。
+- Browser code uses only relative `/api` calls; it never exposes the RDS address or credentials.
+- Update `backend/.env.example` when adding a server configuration. Keep real values only in `backend/.env`.
+- Backend schema initialization creates application tables in the remote `opsguard` database as needed.

@@ -13,10 +13,10 @@ import (
 	"monitor-platform/internal/service"
 )
 
-func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
+func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 	if err := service.InitDataSourceStore(); err != nil {
-		fmt.Printf("data source store init failed: %v\n", err)
+		return nil, fmt.Errorf("initialize MySQL store: %w", err)
 	}
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -370,7 +370,7 @@ func SetupRoutes(cfg config.AppConfig) *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "告警通道测试成功，告警消息已发送"})
 	})
 
-	return mux
+	return mux, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

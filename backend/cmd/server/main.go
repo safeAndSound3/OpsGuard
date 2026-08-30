@@ -12,7 +12,10 @@ import (
 
 func main() {
 	cfg := config.Load()
-	mux := router.SetupRoutes(cfg)
+	mux, err := router.SetupRoutes(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),

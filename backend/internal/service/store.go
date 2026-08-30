@@ -21,7 +21,7 @@ import (
 	"monitor-platform/internal/model"
 )
 
-const dataSourceDatabase = "opsguard_lab"
+const defaultDatabase = "opsguard"
 
 var (
 	mu    sync.RWMutex
@@ -52,35 +52,29 @@ func normalizeLimit(limit int, fallback int) int {
 }
 
 func InitDataSourceStore() error {
-	host := getEnv("MYSQL_HOST", "127.0.0.1")
+	host := getEnv("MYSQL_HOST", "rm-bp16f9ux6a109l00p1o.mysql.rds.aliyuncs.com")
 	port := getEnv("MYSQL_PORT", "3306")
-	user := getEnv("MYSQL_USER", "root")
-	password := getEnv("MYSQL_PASSWORD", "Hh0321")
-
-	rootDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/?parseTime=true&multiStatements=true", user, password, host, port)
-	rootDB, err := sql.Open("mysql", rootDSN)
-	if err != nil {
-		return err
+	user := getEnv("MYSQL_USER", "opsguard_app")
+	password := getEnv("MYSQL_PASSWORD", "")
+	database := getEnv("MYSQL_DATABASE", defaultDatabase)
+	if password == "" {
+		return errors.New("MYSQL_PASSWORD is required")
 	}
-	defer rootDB.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if err := rootDB.PingContext(ctx); err != nil {
-		return err
-	}
-	if _, err := rootDB.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+dataSourceDatabase+" DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
-		return err
-	}
-	if err := initMySQLMetricStore(host, port, user, password); err != nil {
+	if err := initMySQLMetricStore(host, port, user, password, database); err != nil {
 		return err
 	}
 
-	appDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=Local", user, password, host, port, dataSourceDatabase)
+	appDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=Local&timeout=5s&readTimeout=8s&writeTimeout=8s", user, password, host, port, database)
 	appDB, err := sql.Open("mysql", appDSN)
 	if err != nil {
 		return err
 	}
+	appDB.SetMaxOpenConns(10)
+	appDB.SetMaxIdleConns(5)
+	appDB.SetConnMaxLifetime(5 * time.Minute)
 	if err := appDB.PingContext(ctx); err != nil {
 		return err
 	}

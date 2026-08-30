@@ -12,35 +12,23 @@ import (
 	"monitor-platform/internal/model"
 )
 
-const metricsDatabase = "opsmetrics"
-
 var (
 	metricsMu sync.RWMutex
 	metricsDB *sql.DB
 )
 
-func initMySQLMetricStore(host, port, user, password string) error {
-	rootDSN := user + ":" + password + "@tcp(" + host + ":" + port + ")/?parseTime=true&multiStatements=true"
-	rootDB, err := sql.Open("mysql", rootDSN)
-	if err != nil {
-		return err
-	}
-	defer rootDB.Close()
+func initMySQLMetricStore(host, port, user, password, database string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if err := rootDB.PingContext(ctx); err != nil {
-		return err
-	}
-	if _, err := rootDB.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+metricsDatabase+" DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
-		return err
-	}
-
-	metricsDSN := user + ":" + password + "@tcp(" + host + ":" + port + ")/" + metricsDatabase + "?parseTime=true&loc=Local"
+	metricsDSN := user + ":" + password + "@tcp(" + host + ":" + port + ")/" + database + "?parseTime=true&loc=Local&timeout=5s&readTimeout=8s&writeTimeout=8s"
 	next, err := sql.Open("mysql", metricsDSN)
 	if err != nil {
 		return err
 	}
+	next.SetMaxOpenConns(6)
+	next.SetMaxIdleConns(3)
+	next.SetConnMaxLifetime(5 * time.Minute)
 	if err := next.PingContext(ctx); err != nil {
 		return err
 	}

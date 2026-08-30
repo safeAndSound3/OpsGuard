@@ -9,3 +9,7 @@ backend/*.exe
 
 # System
 .DS_Store
+.env
+backend/.env
+frontend/.env
+.tools/
