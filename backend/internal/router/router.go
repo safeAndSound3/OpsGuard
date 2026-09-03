@@ -212,6 +212,38 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
+		if len(parts) == 2 && parts[1] == "dashboard-metrics" {
+			ds, err := service.GetDataSourceByID(parts[0])
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "data source not found"})
+				return
+			}
+			var metrics map[string]float64
+			var collectedAt time.Time
+			if strings.EqualFold(ds.Type, "mysql") {
+				metrics, collectedAt, err = service.LatestMySQLDashboardMetrics(ds.ID)
+			} else if strings.EqualFold(ds.Type, "ssh") {
+				metrics, collectedAt, err = service.LatestSSHDashboardMetrics(ds.ID)
+			} else {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only MySQL and SSH support dashboards"})
+				return
+			}
+			if err != nil {
+				writeJSON(w, http.StatusOK, map[string]any{"metrics": map[string]float64{}, "collectedAt": "", "message": "暂无采集样本"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"metrics": metrics, "collectedAt": collectedAt})
+			return
+		}
+		if len(parts) == 2 && parts[1] == "dashboard-sql" {
+			items, mode, err := service.ListMySQLDashboardSQL(parts[0])
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"items": items, "mode": mode})
+			return
+		}
 		if strings.HasSuffix(p, "/schema") {
 			id := strings.TrimSuffix(strings.TrimSuffix(p, "/schema"), "/")
 			schema := service.GetSchemaForDataSource(id, r.URL.Query().Get("database"), r.URL.Query().Get("table"))
@@ -251,7 +283,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		}
 		switch parts[1] {
 		case "metrics":
-			items, err := service.ListPrometheusMetricNames(parts[0], queryLimit(r, 300))
+			items, err := service.ListPrometheusMetricNames(parts[0], queryLimitMax(r, 1000, 5000))
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
@@ -281,6 +313,42 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
+	})
+
+	mux.HandleFunc("/api/hadoop/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/hadoop/"), "/"), "/")
+		if len(parts) < 2 || parts[0] == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		var payload any
+		var err error
+		switch parts[1] {
+		case "apps":
+			if len(parts) == 2 {
+				payload, err = service.ListHadoopApplications(parts[0], service.HadoopApplicationQuery{
+					Page: queryInt(r, "page", 1), PageSize: queryInt(r, "pageSize", 20), Keyword: r.URL.Query().Get("keyword"),
+					User: r.URL.Query().Get("user"), Type: r.URL.Query().Get("type"), State: r.URL.Query().Get("state"), FinalStatus: r.URL.Query().Get("finalStatus"),
+				})
+			} else if len(parts) == 3 {
+				payload, err = service.ListHadoopContainers(parts[0], parts[2])
+			} else {
+				err = fmt.Errorf("not found")
+			}
+		case "log":
+			payload, err = service.HadoopContainerLog(parts[0], r.URL.Query().Get("url"))
+		default:
+			err = fmt.Errorf("not found")
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": payload})
 	})
 
 	mux.HandleFunc("/api/collection-rules", func(w http.ResponseWriter, r *http.Request) {
@@ -342,7 +410,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		items := service.ListAlertNotifications(r.URL.Query().Get("status"), r.URL.Query().Get("unread"), queryLimit(r, 100))
+		items := service.ListAlertNotifications(r.URL.Query().Get("status"), r.URL.Query().Get("unread"), r.URL.Query().Get("start"), r.URL.Query().Get("end"), queryLimit(r, 100))
 		writeJSON(w, http.StatusOK, map[string]any{"notifications": items, "unread": service.AlertNotificationUnreadCount()})
 	})
 
@@ -356,6 +424,26 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if err := service.MarkAlertNotificationsRead(req.ID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "unread": service.AlertNotificationUnreadCount()})
+	})
+
+	mux.HandleFunc("/api/notifications/mute", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var req struct {
+			ID    string `json:"id"`
+			Muted bool   `json:"muted"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求参数错误"})
+			return
+		}
+		if err := service.SetAlertNotificationMuted(req.ID, req.Muted); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -383,12 +471,24 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func queryLimit(r *http.Request, fallback int) int {
+	return queryLimitMax(r, fallback, 500)
+}
+
+func queryInt(r *http.Request, key string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get(key)))
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
+}
+
+func queryLimitMax(r *http.Request, fallback int, max int) int {
 	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
 	if err != nil || limit <= 0 {
 		return fallback
 	}
-	if limit > 500 {
-		return 500
+	if limit > max {
+		return max
 	}
 	return limit
 }

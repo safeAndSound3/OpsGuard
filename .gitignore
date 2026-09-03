@@ -6,6 +6,13 @@ frontend/.vite
 # Backend
 backend/bin
 backend/*.exe
+backend/*.log
+bin/
+
+# Local caches and package stores
+.cache/
+.pnpm-store/
+*.tsbuildinfo
 
 # System
 .DS_Store

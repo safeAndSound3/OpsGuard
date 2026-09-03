@@ -21,7 +21,7 @@ func initMySQLMetricStore(host, port, user, password, database string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	metricsDSN := user + ":" + password + "@tcp(" + host + ":" + port + ")/" + database + "?parseTime=true&loc=Local&timeout=5s&readTimeout=8s&writeTimeout=8s"
+	metricsDSN := user + ":" + password + "@tcp(" + host + ":" + port + ")/" + database + "?parseTime=true&loc=Local&timeout=5s&readTimeout=8s&writeTimeout=8s" + mysqlSessionTimeZone
 	next, err := sql.Open("mysql", metricsDSN)
 	if err != nil {
 		return err
@@ -134,4 +134,58 @@ func splitMySQLMetricName(metric mysqlPromMetric) (string, string) {
 		return strings.TrimPrefix(metric.Name, "opsguard_mysql_"), variable
 	}
 	return strings.TrimPrefix(metric.Name, "opsguard_mysql_"), metric.Name
+}
+
+// LatestMySQLDashboardMetrics returns the most recently collected values for one instance.
+// The dashboard deliberately reads the local collector store instead of relying on a
+// separately configured Prometheus scrape target.
+func LatestMySQLDashboardMetrics(sourceID string) (map[string]float64, time.Time, error) {
+	metricsMu.RLock()
+	current := metricsDB
+	metricsMu.RUnlock()
+	if current == nil {
+		return nil, time.Time{}, errors.New("metrics store is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := current.QueryContext(ctx, `SELECT metric_group, metric_name, metric_value, collected_at
+		FROM mysql_metric_samples WHERE source_id = ? ORDER BY collected_at DESC, id DESC LIMIT 200`, sourceID)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	defer rows.Close()
+	result := map[string]float64{}
+	var collectedAt time.Time
+	for rows.Next() {
+		var group, name string
+		var value float64
+		var at time.Time
+		if err := rows.Scan(&group, &name, &value, &at); err != nil {
+			return nil, time.Time{}, err
+		}
+		if collectedAt.IsZero() {
+			collectedAt = at
+		}
+		key := ""
+		switch {
+		case name == "opsguard_mysql_up":
+			key = "up"
+		case group == "global_status" && name == "Threads_connected":
+			key = "threads"
+		case group == "global_status" && name == "Threads_running":
+			key = "running"
+		case group == "global_status" && name == "Slow_queries":
+			key = "slow"
+		case group == "global_status" && name == "Questions":
+			key = "questions"
+		case name == "opsguard_mysql_innodb_buffer_pool_hit_ratio":
+			key = "hit"
+		}
+		if key != "" {
+			if _, exists := result[key]; !exists {
+				result[key] = value
+			}
+		}
+	}
+	return result, collectedAt, rows.Err()
 }

@@ -124,7 +124,7 @@ func openMySQLDataSource(ds model.DataSource) (*sql.DB, error) {
 	if database != "" {
 		path += database
 	}
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)%s?parseTime=true&timeout=5s&readTimeout=8s&writeTimeout=8s&loc=Local", user, ds.Password, strings.TrimSpace(ds.Host), port, path)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)%s?parseTime=true&timeout=5s&readTimeout=8s&writeTimeout=8s&loc=Local%s", user, ds.Password, strings.TrimSpace(ds.Host), port, path, mysqlSessionTimeZone)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, err

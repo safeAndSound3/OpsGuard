@@ -36,8 +36,8 @@ func ListPrometheusMetricNames(sourceID string, limit int) ([]model.PrometheusMe
 		return nil, errors.New(payload.Error)
 	}
 	sort.Strings(payload.Data)
-	if limit <= 0 || limit > 1000 {
-		limit = 300
+	if limit <= 0 || limit > 5000 {
+		limit = 1000
 	}
 	if len(payload.Data) > limit {
 		payload.Data = payload.Data[:limit]
@@ -125,9 +125,10 @@ func ListPrometheusDataSourceRules(sourceID string) ([]model.PrometheusRule, err
 		Status string `json:"status"`
 		Data   struct {
 			Groups []struct {
-				Name  string `json:"name"`
-				File  string `json:"file"`
-				Rules []struct {
+				Name               string  `json:"name"`
+				File               string  `json:"file"`
+				EvaluationInterval float64 `json:"evaluationInterval"`
+				Rules              []struct {
 					Name        string            `json:"name"`
 					Type        string            `json:"type"`
 					Query       string            `json:"query"`
@@ -147,8 +148,13 @@ func ListPrometheusDataSourceRules(sourceID string) ([]model.PrometheusRule, err
 	if payload.Status != "" && payload.Status != "success" {
 		return nil, errors.New(payload.Error)
 	}
+	defaultFrequency := prometheusEvaluationInterval(ds)
 	items := make([]model.PrometheusRule, 0)
 	for _, group := range payload.Data.Groups {
+		frequency := group.EvaluationInterval
+		if frequency <= 0 {
+			frequency = defaultFrequency
+		}
 		for _, rule := range group.Rules {
 			if rule.Type != "alerting" {
 				continue
@@ -158,6 +164,7 @@ func ListPrometheusDataSourceRules(sourceID string) ([]model.PrometheusRule, err
 				Type:        rule.Type,
 				Query:       rule.Query,
 				Duration:    rule.Duration,
+				Frequency:   frequency,
 				Health:      firstNonEmpty(rule.Health, "unknown"),
 				State:       rule.State,
 				Severity:    rule.Labels["severity"],
@@ -171,6 +178,29 @@ func ListPrometheusDataSourceRules(sourceID string) ([]model.PrometheusRule, err
 		}
 	}
 	return items, nil
+}
+
+func prometheusEvaluationInterval(ds model.DataSource) float64 {
+	var payload struct {
+		Status string `json:"status"`
+		Data   struct {
+			YAML string `json:"yaml"`
+		} `json:"data"`
+	}
+	if err := prometheusDataSourceGet(ds, "/api/v1/status/config", nil, &payload); err != nil || (payload.Status != "" && payload.Status != "success") {
+		return 0
+	}
+	for _, line := range strings.Split(payload.Data.YAML, "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), ":")
+		if !found || strings.TrimSpace(key) != "evaluation_interval" {
+			continue
+		}
+		interval, err := time.ParseDuration(strings.Trim(strings.TrimSpace(value), "'\""))
+		if err == nil && interval > 0 {
+			return interval.Seconds()
+		}
+	}
+	return 0
 }
 
 func prometheusDataSourceWithSecret(sourceID string) (model.DataSource, error) {

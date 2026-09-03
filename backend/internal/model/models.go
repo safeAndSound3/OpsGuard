@@ -20,18 +20,47 @@ type DataSource struct {
 	Tags        []string          `json:"tags,omitempty"`
 }
 
+type HadoopApplication struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	User         string  `json:"user"`
+	Queue        string  `json:"queue"`
+	Type         string  `json:"applicationType"`
+	State        string  `json:"state"`
+	FinalStatus  string  `json:"finalStatus"`
+	Progress     float64 `json:"progress"`
+	StartedTime  int64   `json:"startedTime"`
+	FinishedTime int64   `json:"finishedTime"`
+}
+
+type HadoopApplicationPage struct {
+	Items  []HadoopApplication `json:"items"`
+	Total  int                 `json:"total"`
+	Facets map[string][]string `json:"facets"`
+}
+
+type HadoopContainer struct {
+	ID              string `json:"id"`
+	NodeHTTPAddress string `json:"nodeHttpAddress"`
+	State           string `json:"state"`
+	LogURL          string `json:"logUrl"`
+}
+
 type CollectionRule struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Source     string `json:"source"`
-	Database   string `json:"database"`
-	Table      string `json:"table"`
-	Field      string `json:"field"`
-	Condition  string `json:"condition"`
-	Threshold  string `json:"threshold,omitempty"`
-	TimeWindow string `json:"timeWindow"`
-	LastRun    string `json:"lastRun"`
-	Status     string `json:"status"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Source        string `json:"source"`
+	Database      string `json:"database"`
+	Table         string `json:"table"`
+	Field         string `json:"field"`
+	Condition     string `json:"condition"`
+	Threshold     string `json:"threshold,omitempty"`
+	TimeWindow    string `json:"timeWindow"`
+	Frequency     string `json:"frequency"`
+	Remark        string `json:"remark,omitempty"`
+	LastRun       string `json:"lastRun"`
+	ResultDetails string `json:"resultDetails,omitempty"`
+	Status        string `json:"status"`
 }
 
 type OverviewMetric struct {
@@ -60,6 +89,7 @@ type AlertNotification struct {
 	Status      string     `json:"status"`
 	Message     string     `json:"message"`
 	Unread      bool       `json:"unread"`
+	Muted       bool       `json:"muted"`
 	FirstSeenAt time.Time  `json:"firstSeenAt"`
 	LastSeenAt  time.Time  `json:"lastSeenAt"`
 	ResolvedAt  *time.Time `json:"resolvedAt,omitempty"`
@@ -221,6 +251,7 @@ type PrometheusRule struct {
 	Type        string            `json:"type"`
 	Query       string            `json:"query"`
 	Duration    float64           `json:"duration"`
+	Frequency   float64           `json:"frequency,omitempty"`
 	Health      string            `json:"health"`
 	State       string            `json:"state,omitempty"`
 	Severity    string            `json:"severity,omitempty"`
