@@ -110,7 +110,7 @@ Use the ResourceManager web endpoint when adding a Hadoop source, for example `h
 - NodeManager reads container logs that remain on a node.
 - JobHistory reads aggregated logs and supplements completed MapReduce applications.
 
-The Hadoop page uses server-side filtering and pages of 20 applications. Each remote read is bounded to 1,000 tasks; local snapshots retain 30 days and read at most 5,000 entries per source so refreshes do not degrade over time. ResourceManager supplies running applications. If JobHistory is unavailable, running applications remain available but completed history may be incomplete. Container logs are grouped by ApplicationAttempt and show AM and worker containers, nodes, and states. Individual reads are capped at 1 MB with an explicit truncation indicator; bulk download uses at most three concurrent reads.
+The Hadoop page uses server-side filtering and pages of 20 applications. Each remote read is bounded to 1,000 tasks; local snapshots retain 30 days and read at most 5,000 entries per source so refreshes do not degrade over time. ResourceManager supplies running applications. If JobHistory is unavailable, running applications remain available but completed history may be incomplete.
 
 ## Development Rules
 

@@ -118,29 +118,10 @@ type HadoopApplicationPage struct {
 
 type HadoopContainer struct {
 	ID              string `json:"id"`
-	AttemptID       string `json:"attemptId"`
 	NodeHTTPAddress string `json:"nodeHttpAddress"`
 	State           string `json:"state"`
 	LogURL          string `json:"logUrl"`
 	Priority        string `json:"priority,omitempty"`
-	IsAM            bool   `json:"isAM"`
-}
-
-type HadoopApplicationAttempt struct {
-	ID              string `json:"id"`
-	ContainerID     string `json:"containerId"`
-	NodeHTTPAddress string `json:"nodeHttpAddress"`
-	LogURL          string `json:"logUrl"`
-}
-
-type HadoopContainerSet struct {
-	Attempts   []HadoopApplicationAttempt `json:"attempts"`
-	Containers []HadoopContainer          `json:"containers"`
-}
-
-type HadoopLogContent struct {
-	Content   string `json:"content"`
-	Truncated bool   `json:"truncated"`
 }
 
 type CollectionRule struct {
