@@ -236,7 +236,7 @@ func prometheusDataSourceGet(ds model.DataSource, path string, query url.Values,
 	if token := strings.TrimSpace(ds.Password); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := safeHTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		return err
 	}

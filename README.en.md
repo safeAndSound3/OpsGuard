@@ -28,7 +28,7 @@ Browser
           └─ SSH: node metrics and custom check scripts
 ```
 
-Platform data is isolated from monitored systems. Each Prometheus, Hadoop, SSH, and MySQL data source is queried within its own data-source ID boundary.
+Platform data is isolated from monitored systems. Each Prometheus, Hadoop, SSH, and MySQL data source is queried within its own data-source ID boundary. Login sessions use HttpOnly cookies and are stored in the platform MySQL database for restart and multi-instance resilience; successful, failed, and rate-limited logins are recorded in the security audit log.
 
 ## Prerequisites
 
@@ -59,12 +59,19 @@ OPSGUARD_ADMIN_PASSWORD=change-this-initial-password
 SESSION_COOKIE_SECURE=false
 SESSION_TTL=12h
 
+# Optional: restrict targets reachable by data sources and HTTP probes.
+OUTBOUND_ALLOWED_HOSTS=prometheus.example.com,hadoop.example.com
+OUTBOUND_ALLOWED_CIDRS=10.0.0.0/8,192.168.0.0/16
+OUTBOUND_ALLOW_LOOPBACK=false
+
 # Verify SSH host keys in production
 SSH_HOST_KEY_POLICY=strict
 SSH_KNOWN_HOSTS_FILE=C:/opsguard/ssh_known_hosts
 ```
 
 The backend initializes its tables on startup. An existing `admin` account is never overwritten by the bootstrap password; legacy plaintext user passwords are migrated to bcrypt hashes. Data-source credentials are encrypted with `OPSGUARD_ENCRYPTION_KEY`. `backend/config/opsguard.conf` is ignored by Git and must not contain committed credentials. Container and service deployments can point `OPSGUARD_CONFIG` at any absolute configuration-file path; environment variables take precedence over file values. For a cross-origin frontend, configure complete allowed origins with `CORS_ALLOWED_ORIGINS`; same-origin deployments need no CORS setting.
+
+In production, set `OUTBOUND_ALLOWED_HOSTS` and `OUTBOUND_ALLOWED_CIDRS` to prevent data sources and custom HTTP checks from becoming an internal scanning path. Once configured, both a hostname and its resolved IP must match; link-local, multicast, unspecified, and loopback targets are denied by default. Set `OUTBOUND_ALLOW_LOOPBACK=true` only for local development.
 
 ## Local Development
 
@@ -103,7 +110,7 @@ Use the ResourceManager web endpoint when adding a Hadoop source, for example `h
 - NodeManager reads container logs that remain on a node.
 - JobHistory reads aggregated logs and supplements completed MapReduce applications.
 
-The Hadoop page uses server-side filtering and pages of 20 applications. ResourceManager supplies running applications. If JobHistory is unavailable, running applications remain available but completed history may be incomplete.
+The Hadoop page uses server-side filtering and pages of 20 applications. Each remote read is bounded to 1,000 tasks; local snapshots retain 30 days and read at most 5,000 entries per source so refreshes do not degrade over time. ResourceManager supplies running applications. If JobHistory is unavailable, running applications remain available but completed history may be incomplete.
 
 ## Development Rules
 

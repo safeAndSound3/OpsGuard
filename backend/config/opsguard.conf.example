@@ -21,6 +21,13 @@ SESSION_COOKIE_SECURE=true
 # 默认同源访问，无需配置。只有前后端跨域部署时才填写允许的完整来源，逗号分隔。
 # CORS_ALLOWED_ORIGINS=https://opsguard.example.com
 
+# Optional egress restriction for data sources and custom HTTP checks. When set,
+# both a host and resolved IP must match. Link-local, multicast, unspecified and
+# loopback targets are rejected unless OUTBOUND_ALLOW_LOOPBACK=true is explicit.
+# OUTBOUND_ALLOWED_HOSTS=prometheus.example.com,hadoop.example.com
+# OUTBOUND_ALLOWED_CIDRS=10.0.0.0/8,192.168.0.0/16
+# OUTBOUND_ALLOW_LOOPBACK=false
+
 # OpsGuard 平台数据库。保存平台用户、数据源定义、告警通知、规则和采样数据。
 # 该数据库不同于平台接入并监控的 MySQL 数据源。
 MYSQL_HOST=mysql.example.com

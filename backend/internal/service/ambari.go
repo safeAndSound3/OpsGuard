@@ -43,7 +43,7 @@ func ambariGet(ds model.DataSource, path string, target any) error {
 	if strings.TrimSpace(ds.Username) != "" {
 		req.SetBasicAuth(ds.Username, ds.Password)
 	}
-	response, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	response, err := safeHTTPClient(12 * time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("Ambari 请求失败：%w", err)
 	}

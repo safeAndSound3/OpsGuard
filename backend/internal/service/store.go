@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -152,6 +151,9 @@ func InitDataSourceStore() error {
 		return err
 	}
 	if err := initNavigationStore(appDB); err != nil {
+		return err
+	}
+	if err := initSessionStore(appDB); err != nil {
 		return err
 	}
 	mu.Lock()
@@ -1267,7 +1269,7 @@ func evaluateHTTPProbe(rule model.CollectionRule, target string, condition strin
 	if err != nil || parsed.Host == "" {
 		return fmt.Sprintf("执行失败 %s：URL 不合法", checkedAt)
 	}
-	client := http.Client{Timeout: timeout}
+	client := safeHTTPClient(timeout)
 	start := time.Now()
 	resp, err := client.Get(target)
 	if err != nil {
@@ -1308,7 +1310,7 @@ func evaluateTCPProbe(target string, timeout time.Duration, checkedAt string) st
 		return fmt.Sprintf("执行失败 %s：TCP 探测目标必须是 host:port", checkedAt)
 	}
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", target, timeout)
+	conn, err := safeDialTimeout("tcp", target, timeout)
 	if err != nil {
 		return fmt.Sprintf("告警 %s：TCP 连接失败：%s", checkedAt, err.Error())
 	}
@@ -1321,7 +1323,7 @@ func evaluateUDPProbe(target string, timeout time.Duration, checkedAt string) st
 		return fmt.Sprintf("执行失败 %s：UDP 探测目标必须是 host:port", checkedAt)
 	}
 	start := time.Now()
-	conn, err := net.DialTimeout("udp", target, timeout)
+	conn, err := safeDialTimeout("udp", target, timeout)
 	if err != nil {
 		return fmt.Sprintf("告警 %s：UDP 探测失败：%s", checkedAt, err.Error())
 	}

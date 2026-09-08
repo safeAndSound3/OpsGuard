@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -187,7 +186,7 @@ func collectRedisMetrics(ds model.DataSource) (map[string]float64, error) {
 }
 
 func redisInfo(ds model.DataSource) (map[string]string, error) {
-	connection, err := net.DialTimeout("tcp", middlewareAddress(ds), 5*time.Second)
+	connection, err := safeDialTimeout("tcp", middlewareAddress(ds), 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +290,7 @@ func clickHouseMetricQuery(ds model.DataSource, query string) (map[string]float6
 	if strings.TrimSpace(ds.Username) != "" {
 		req.SetBasicAuth(ds.Username, ds.Password)
 	}
-	response, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	response, err := safeHTTPClient(8 * time.Second).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +329,7 @@ func parseClickHouseMetricValue(raw json.RawMessage) (float64, error) {
 }
 
 func collectKafkaMetrics(ds model.DataSource) (map[string]float64, error) {
-	connection, err := net.DialTimeout("tcp", middlewareAddress(ds), 6*time.Second)
+	connection, err := safeDialTimeout("tcp", middlewareAddress(ds), 6*time.Second)
 	if err != nil {
 		return nil, err
 	}

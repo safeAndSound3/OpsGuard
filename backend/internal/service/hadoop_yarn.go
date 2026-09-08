@@ -48,7 +48,9 @@ func ListHadoopApplications(sourceID string, query HadoopApplicationQuery) (mode
 			App []model.HadoopApplication `json:"app"`
 		} `json:"apps"`
 	}
-	rmErr := hadoopGetJSON(base+"/ws/v1/cluster/apps", &payload)
+	// Bound remote and local reads so a long-lived cluster cannot turn page
+	// refreshes into unbounded scans. The durable snapshot remains the fallback.
+	rmErr := hadoopGetJSON(base+"/ws/v1/cluster/apps?limit=1000", &payload)
 	applications := make(map[string]struct{}, len(payload.Apps.App))
 	all := make([]model.HadoopApplication, 0, len(payload.Apps.App))
 	for _, app := range payload.Apps.App {
@@ -116,6 +118,9 @@ func upsertHadoopApplicationSnapshots(sourceID string, apps []model.HadoopApplic
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
+	if _, err := current.ExecContext(ctx, `DELETE FROM hadoop_application_snapshots WHERE source_id = ? AND last_seen_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 30 DAY)`, sourceID); err != nil {
+		return err
+	}
 	for _, app := range apps {
 		if strings.TrimSpace(app.ID) == "" {
 			continue
@@ -137,7 +142,7 @@ func listHadoopApplicationSnapshots(sourceID string) ([]model.HadoopApplication,
 	if current == nil {
 		return nil, errors.New("Hadoop snapshot store is not initialized")
 	}
-	rows, err := current.Query(`SELECT application_json FROM hadoop_application_snapshots WHERE source_id = ? ORDER BY application_id DESC`, sourceID)
+	rows, err := current.Query(`SELECT application_json FROM hadoop_application_snapshots WHERE source_id = ? ORDER BY last_seen_at DESC LIMIT 5000`, sourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +188,7 @@ func listHadoopHistoryApplications(ds model.DataSource) []model.HadoopApplicatio
 			} `json:"job"`
 		} `json:"jobs"`
 	}
-	if err := hadoopGetJSON(base+"/ws/v1/history/mapreduce/jobs", &payload); err != nil {
+	if err := hadoopGetJSON(base+"/ws/v1/history/mapreduce/jobs?limit=1000", &payload); err != nil {
 		return nil
 	}
 	items := make([]model.HadoopApplication, 0, len(payload.Jobs.Job))
@@ -310,7 +315,8 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 		return "", errors.New("日志地址不属于当前 Hadoop 数据源")
 	}
 	requestURL := hadoopNodeManagerLogURL(ds, logURL)
-	client := &http.Client{Timeout: 12 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	client := safeHTTPClient(12 * time.Second)
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := hadoopLogGet(client, requestURL)
 	if err != nil {
 		return "", fmt.Errorf("日志服务不可用：%w", err)
@@ -527,7 +533,7 @@ func hadoopJobHistoryLogURL(hadoop model.DataSource, target *url.URL) string {
 }
 
 func hadoopGetJSON(url string, target any) error {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := safeHTTPClient(10 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {
 		return err

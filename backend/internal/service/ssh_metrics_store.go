@@ -120,7 +120,11 @@ func executeSSHCommandWithExitStatus(ds model.DataSource, command string) (strin
 	if strings.TrimSpace(ds.Password) == "" {
 		return "", 0, errors.New("SSH 密码不能为空")
 	}
-	addr := net.JoinHostPort(strings.TrimSpace(ds.Host), strings.TrimSpace(ds.Port))
+	host := strings.TrimSpace(ds.Host)
+	if err := validateOutboundAddress(host); err != nil {
+		return "", 0, err
+	}
+	addr := net.JoinHostPort(host, strings.TrimSpace(ds.Port))
 	hostKeyCallback, err := sshHostKeyCallback()
 	if err != nil {
 		return "", 0, err

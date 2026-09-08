@@ -14,8 +14,12 @@ import (
 )
 
 func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
+	if err := service.ConfigureOutboundPolicy(service.OutboundPolicy{AllowedHosts: cfg.OutboundAllowedHosts, AllowedCIDRs: cfg.OutboundAllowedCIDRs, AllowLoopback: cfg.AllowLoopbackTargets}); err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
 	sessions := newSessionManager(cfg)
+	logins := newLoginLimiter()
 	if err := service.InitDataSourceStore(); err != nil {
 		return nil, fmt.Errorf("initialize MySQL store: %w", err)
 	}
@@ -41,10 +45,19 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
+		if !logins.allowed(r, req.Username) {
+			service.RecordSecurityEvent("login_rate_limited", req.Username, r.RemoteAddr, "too many failed attempts")
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "登录失败次数过多，请 15 分钟后再试"})
+			return
+		}
 		if !service.AuthenticateUser(req.Username, req.Password) {
+			logins.failure(r, req.Username)
+			service.RecordSecurityEvent("login_failed", req.Username, r.RemoteAddr, "invalid credentials")
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "用户名或密码错误"})
 			return
 		}
+		logins.success(r, req.Username)
+		service.RecordSecurityEvent("login_succeeded", req.Username, r.RemoteAddr, "")
 		if _, err := sessions.create(w, req.Username); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "创建登录会话失败"})
 			return

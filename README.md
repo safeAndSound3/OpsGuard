@@ -28,7 +28,7 @@ Browser
           └─ SSH: 节点指标与自定义检测脚本
 ```
 
-平台数据与被监控的数据源相互隔离。每个 Prometheus、Hadoop、SSH、MySQL 数据源都以其数据源 ID 作为查询边界。
+平台数据与被监控的数据源相互隔离。每个 Prometheus、Hadoop、SSH、MySQL 数据源都以其数据源 ID 作为查询边界。登录会话以 HttpOnly Cookie 传递，服务重启或多实例部署时会话保存在平台 MySQL 中；安全审计表记录登录成功、失败与限流事件。
 
 ## 前置条件
 
@@ -59,12 +59,19 @@ OPSGUARD_ADMIN_PASSWORD=change-this-initial-password
 SESSION_COOKIE_SECURE=false
 SESSION_TTL=12h
 
+# 可选：限制数据源和 HTTP 探测可访问的目标。生产环境建议配置。
+OUTBOUND_ALLOWED_HOSTS=prometheus.example.com,hadoop.example.com
+OUTBOUND_ALLOWED_CIDRS=10.0.0.0/8,192.168.0.0/16
+OUTBOUND_ALLOW_LOOPBACK=false
+
 # 生产环境校验 SSH 主机密钥
 SSH_HOST_KEY_POLICY=strict
 SSH_KNOWN_HOSTS_FILE=C:/opsguard/ssh_known_hosts
 ```
 
 启动时后端会自动初始化平台所需表结构。已有 `admin` 账号不会被初始密码配置覆盖；旧版明文账号密码会在启动后迁移为 bcrypt 哈希。数据源凭据使用 `OPSGUARD_ENCRYPTION_KEY` 加密保存。`backend/config/opsguard.conf` 已被 Git 忽略，不应提交真实密码。容器或系统服务部署时，也可以通过 `OPSGUARD_CONFIG` 指向任意绝对配置文件路径；环境变量优先级高于配置文件。前后端跨域部署时，通过 `CORS_ALLOWED_ORIGINS` 配置允许的完整来源；同源部署无需配置。
+
+为避免数据源配置和自定义 HTTP 探测被用作内网扫描入口，生产环境应设置 `OUTBOUND_ALLOWED_HOSTS` 和 `OUTBOUND_ALLOWED_CIDRS`。配置后，目标域名与其解析 IP 都必须在白名单内；默认禁止链路本地、组播、未指定和回环地址。仅在本机开发时才将 `OUTBOUND_ALLOW_LOOPBACK=true`。
 
 ## 本地运行
 
@@ -103,7 +110,7 @@ pnpm build
 - NodeManager：读取仍在节点上的容器日志。
 - JobHistory：读取聚合后的日志，并补充完成的 MapReduce 任务。
 
-Hadoop 页面默认每页 20 条，筛选和分页在后端执行。运行中任务由 ResourceManager 提供；JobHistory 不可用时，页面仍可展示运行中任务，但已完成历史可能不完整。
+Hadoop 页面默认每页 20 条，筛选和分页在后端执行。每次远端读取最多 1000 个任务，本地快照保留最近 30 天且单数据源最多读取 5000 条，避免长期运行导致刷新退化。运行中任务由 ResourceManager 提供；JobHistory 不可用时，页面仍可展示运行中任务，但已完成历史可能不完整。
 
 ## 开发约定
 

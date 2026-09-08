@@ -22,7 +22,7 @@ func TestRedisDataSource(ds model.DataSource) error {
 	if _, err := collectRedisMetrics(ds); err == nil {
 		return nil
 	}
-	connection, err := net.DialTimeout("tcp", middlewareAddress(ds), 5*time.Second)
+	connection, err := safeDialTimeout("tcp", middlewareAddress(ds), 5*time.Second)
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func TestClickHouseDataSource(ds model.DataSource) error {
 	if strings.TrimSpace(ds.Username) != "" {
 		req.SetBasicAuth(ds.Username, ds.Password)
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := safeHTTPClient(8 * time.Second)
 	response, err := client.Do(req)
 	if err != nil {
 		return err
@@ -99,7 +99,7 @@ func TestKafkaDataSource(ds model.DataSource) error {
 	if _, err := collectKafkaMetrics(ds); err == nil {
 		return nil
 	}
-	connection, err := net.DialTimeout("tcp", middlewareAddress(ds), 5*time.Second)
+	connection, err := safeDialTimeout("tcp", middlewareAddress(ds), 5*time.Second)
 	if err != nil {
 		return err
 	}

@@ -29,7 +29,7 @@ func legacyTestHadoopDataSource(ds model.DataSource) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := safeHTTPClient(8 * time.Second)
 	for _, candidate := range []struct {
 		path string
 		role string
@@ -59,7 +59,7 @@ func CheckHadoopHealth(ds model.DataSource) (model.HadoopHealth, error) {
 		return model.HadoopHealth{}, err
 	}
 	health := model.HadoopHealth{SourceID: ds.ID, NodeManager: "未配置", JobHistory: "未配置", CheckedAt: time.Now().Format("2006-01-02 15:04:05")}
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := safeHTTPClient(8 * time.Second)
 	check := func(target, path string) (string, string) {
 		resp, reqErr := client.Get(strings.TrimRight(target, "/") + path)
 		if reqErr != nil {

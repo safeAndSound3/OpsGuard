@@ -7,12 +7,15 @@ import (
 )
 
 type AppConfig struct {
-	Host                string
-	Port                string
-	Env                 string
-	CORSAllowedOrigins  []string
-	SessionCookieSecure bool
-	SessionTTL          string
+	Host                 string
+	Port                 string
+	Env                  string
+	CORSAllowedOrigins   []string
+	SessionCookieSecure  bool
+	SessionTTL           string
+	OutboundAllowedHosts []string
+	OutboundAllowedCIDRs []string
+	AllowLoopbackTargets bool
 }
 
 func Load() AppConfig {
@@ -25,12 +28,15 @@ func Load() AppConfig {
 	// Keep existing local installations working during the config-file migration.
 	loadEnvFile(".env")
 	return AppConfig{
-		Host:                getEnv("HOST", "0.0.0.0"),
-		Port:                getEnv("PORT", "8030"),
-		Env:                 getEnv("ENV", "development"),
-		CORSAllowedOrigins:  splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
-		SessionCookieSecure: strings.EqualFold(getEnv("SESSION_COOKIE_SECURE", "false"), "true"),
-		SessionTTL:          getEnv("SESSION_TTL", "12h"),
+		Host:                 getEnv("HOST", "0.0.0.0"),
+		Port:                 getEnv("PORT", "8030"),
+		Env:                  getEnv("ENV", "development"),
+		CORSAllowedOrigins:   splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		SessionCookieSecure:  strings.EqualFold(getEnv("SESSION_COOKIE_SECURE", "false"), "true"),
+		SessionTTL:           getEnv("SESSION_TTL", "12h"),
+		OutboundAllowedHosts: splitCSV(os.Getenv("OUTBOUND_ALLOWED_HOSTS")),
+		OutboundAllowedCIDRs: splitCSV(os.Getenv("OUTBOUND_ALLOWED_CIDRS")),
+		AllowLoopbackTargets: strings.EqualFold(getEnv("OUTBOUND_ALLOW_LOOPBACK", "false"), "true"),
 	}
 }
 

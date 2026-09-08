@@ -2,7 +2,9 @@ package router
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"monitor-platform/internal/config"
+	"monitor-platform/internal/service"
 )
 
 const sessionCookieName = "opsguard_session"
@@ -45,6 +48,12 @@ func (m *sessionManager) create(w http.ResponseWriter, username string) (string,
 	m.mu.Lock()
 	m.sessions[token] = sessionEntry{username: username, expiresAt: expiresAt}
 	m.mu.Unlock()
+	if service.SessionStoreAvailable() {
+		if err := service.StoreSession(sessionTokenHash(token), username, expiresAt); err != nil {
+			return "", err
+		}
+		service.PruneSessions()
+	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: token, Path: "/", HttpOnly: true, Secure: m.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: expiresAt, MaxAge: int(m.ttl.Seconds())})
 	return token, nil
 }
@@ -57,11 +66,19 @@ func (m *sessionManager) username(r *http.Request) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entry, ok := m.sessions[cookie.Value]
+	if ok && !time.Now().After(entry.expiresAt) {
+		return entry.username, true
+	}
+	if service.SessionStoreAvailable() {
+		if username, persisted := service.LoadSession(sessionTokenHash(cookie.Value)); persisted {
+			return username, true
+		}
+	}
 	if !ok || time.Now().After(entry.expiresAt) {
 		delete(m.sessions, cookie.Value)
 		return "", false
 	}
-	return entry.username, true
+	return "", false
 }
 
 func (m *sessionManager) destroy(w http.ResponseWriter, r *http.Request) {
@@ -69,8 +86,13 @@ func (m *sessionManager) destroy(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		delete(m.sessions, cookie.Value)
 		m.mu.Unlock()
+		service.DeleteSession(sessionTokenHash(cookie.Value))
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Path: "/", HttpOnly: true, Secure: m.cookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})
+}
+
+func sessionTokenHash(token string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
 }
 
 func (m *sessionManager) require(next http.Handler) http.Handler {
