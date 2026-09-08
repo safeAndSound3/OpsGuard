@@ -18,5 +18,6 @@ bin/
 .DS_Store
 .env
 backend/.env
+backend/config/opsguard.conf
 frontend/.env
 .tools/

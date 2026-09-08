@@ -58,6 +58,9 @@ func normalizeLimit(limit int, fallback int) int {
 }
 
 func InitDataSourceStore() error {
+	if err := initializeCredentialEncryption(); err != nil {
+		return err
+	}
 	host := getEnv("MYSQL_HOST", "rm-bp16f9ux6a109l00p1o.mysql.rds.aliyuncs.com")
 	port := getEnv("MYSQL_PORT", "3306")
 	user := getEnv("MYSQL_USER", "opsguard_app")
@@ -73,6 +76,9 @@ func InitDataSourceStore() error {
 		return err
 	}
 	if err := initSSHMetricStore(); err != nil {
+		return err
+	}
+	if err := initMiddlewareMetricStore(); err != nil {
 		return err
 	}
 
@@ -95,7 +101,7 @@ func InitDataSourceStore() error {
 		host varchar(255) NOT NULL,
 		port varchar(16) NOT NULL,
 		username varchar(120) NULL,
-		password varchar(255) NULL,
+		password text NULL,
 		database_name varchar(120) NULL,
 		remark text NULL,
 			options_json json NULL,
@@ -109,6 +115,9 @@ func InitDataSourceStore() error {
 		return err
 	}
 	_, _ = appDB.ExecContext(ctx, `ALTER TABLE data_sources MODIFY database_name text NULL`)
+	if _, err := appDB.ExecContext(ctx, `ALTER TABLE data_sources MODIFY password text NULL`); err != nil {
+		return err
+	}
 	_, _ = appDB.ExecContext(ctx, `ALTER TABLE data_sources ADD COLUMN enabled tinyint(1) NOT NULL DEFAULT 1 AFTER options_json`)
 	accountSchema := `CREATE TABLE IF NOT EXISTS users (
 		username varchar(64) PRIMARY KEY,
@@ -119,10 +128,30 @@ func InitDataSourceStore() error {
 	if _, err := appDB.ExecContext(ctx, accountSchema); err != nil {
 		return err
 	}
-	if _, err := appDB.ExecContext(ctx, `INSERT IGNORE INTO users (username, password, display_name) VALUES ('admin', 'admin@123', '平台管理员')`); err != nil {
+	var adminCount int
+	if err := appDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE username = 'admin'`).Scan(&adminCount); err != nil {
+		return err
+	}
+	if adminCount == 0 {
+		initialPassword := strings.TrimSpace(os.Getenv("OPSGUARD_ADMIN_PASSWORD"))
+		if len(initialPassword) < 12 {
+			return errors.New("first startup requires OPSGUARD_ADMIN_PASSWORD with at least 12 characters")
+		}
+		hash, err := hashUserPassword(initialPassword)
+		if err != nil {
+			return fmt.Errorf("hash initial administrator password: %w", err)
+		}
+		if _, err := appDB.ExecContext(ctx, `INSERT INTO users (username, password, display_name) VALUES ('admin', ?, '平台管理员')`, hash); err != nil {
+			return err
+		}
+	}
+	if err := migrateStoredCredentials(ctx, appDB); err != nil {
 		return err
 	}
 	if err := initCollectionRuleStore(appDB); err != nil {
+		return err
+	}
+	if err := initNavigationStore(appDB); err != nil {
 		return err
 	}
 	mu.Lock()
@@ -131,6 +160,7 @@ func InitDataSourceStore() error {
 	go startDataSourceHealthChecker()
 	startMySQLMetricCollector()
 	startSSHMetricCollector()
+	startMiddlewareMetricCollector()
 	startCollectionRuleEvaluator()
 	startPrometheusAlertSynchronizer()
 	return nil
@@ -141,7 +171,7 @@ func AuthenticateUser(username string, password string) bool {
 	current := db
 	mu.RUnlock()
 	if current == nil {
-		return username == "admin" && password == "admin@123"
+		return false
 	}
 
 	var stored string
@@ -150,7 +180,13 @@ func AuthenticateUser(username string, password string) bool {
 	if err := current.QueryRowContext(ctx, `SELECT password FROM users WHERE username = ?`, username).Scan(&stored); err != nil {
 		return false
 	}
-	return password == stored
+	valid := verifyUserPassword(stored, password)
+	if valid && !strings.HasPrefix(stored, "$2") {
+		if hash, err := hashUserPassword(password); err == nil {
+			_, _ = current.ExecContext(ctx, `UPDATE users SET password = ? WHERE username = ?`, hash, username)
+		}
+	}
+	return valid
 }
 
 func ChangeUserPassword(username string, oldPassword string, newPassword string) error {
@@ -166,7 +202,11 @@ func ChangeUserPassword(username string, oldPassword string, newPassword string)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := current.ExecContext(ctx, `UPDATE users SET password = ? WHERE username = ?`, newPassword, username)
+	hash, err := hashUserPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	_, err = current.ExecContext(ctx, `UPDATE users SET password = ? WHERE username = ?`, hash, username)
 	return err
 }
 
@@ -210,34 +250,42 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	ds.Type = strings.TrimSpace(ds.Type)
 	ds.Host = strings.TrimSpace(ds.Host)
 	ds.Port = strings.TrimSpace(ds.Port)
-	if ds.Name == "" || ds.Type == "" || ds.Host == "" || (ds.Port == "" && !strings.EqualFold(ds.Type, "hadoop")) {
+	if ds.Name == "" || ds.Type == "" || ds.Host == "" || (ds.Port == "" && !strings.EqualFold(ds.Type, "hadoop") && !strings.EqualFold(ds.Type, "ambari")) {
 		return model.DataSource{}, errors.New("name, type, host and port are required")
 	}
 	if !isSupportedDataSourceType(ds.Type) {
 		return model.DataSource{}, errors.New("目前仅支持 Prometheus、MySQL、SSH 和 Hadoop 数据源")
 	}
-	if ok, msg := TestDataSourceConnection(ds); !ok {
-		return model.DataSource{}, errors.New(msg)
-	}
-	if ds.ID == "" {
-		ds.ID = fmt.Sprintf("ds-%d", time.Now().UnixNano())
-	}
-	ds.Status = "健康"
-	ds.Enabled = true
-	ds.LastTest = time.Now().Format("2006-01-02 15:04")
 	optionsJSON, err := json.Marshal(ds.Options)
 	if err != nil {
 		return model.DataSource{}, err
 	}
-
+	connectionOK, connectionMessage := TestDataSourceConnection(ds)
+	if ds.ID == "" {
+		ds.ID = fmt.Sprintf("ds-%d", time.Now().UnixNano())
+	}
+	if connectionOK {
+		ds.Status = "健康"
+	} else {
+		ds.Status = "异常"
+	}
+	ds.Enabled = true
+	ds.LastTest = time.Now().Format("2006-01-02 15:04")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	encryptedPassword, err := encryptCredential(ds.Password)
+	if err != nil {
+		return model.DataSource{}, err
+	}
 	_, err = current.ExecContext(ctx, `INSERT INTO data_sources
 		(id, name, type, host, port, username, password, database_name, remark, options_json, enabled, status, last_test)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ds.ID, ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), ds.Enabled, ds.Status, ds.LastTest)
+		ds.ID, ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, encryptedPassword, ds.Database, ds.Remark, string(optionsJSON), ds.Enabled, ds.Status, ds.LastTest)
 	if err != nil {
 		return model.DataSource{}, err
+	}
+	if !connectionOK {
+		upsertDataSourceHealthNotification(current, ds, connectionMessage)
 	}
 	ds.Password = ""
 	return ds, nil
@@ -255,28 +303,44 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 	ds.Type = strings.TrimSpace(ds.Type)
 	ds.Host = strings.TrimSpace(ds.Host)
 	ds.Port = strings.TrimSpace(ds.Port)
-	if id == "" || ds.Name == "" || ds.Type == "" || ds.Host == "" || (ds.Port == "" && !strings.EqualFold(ds.Type, "hadoop")) {
+	if id == "" || ds.Name == "" || ds.Type == "" || ds.Host == "" || (ds.Port == "" && !strings.EqualFold(ds.Type, "hadoop") && !strings.EqualFold(ds.Type, "ambari")) {
 		return model.DataSource{}, errors.New("id, name, type, host and port are required")
 	}
-	optionsJSON, err := json.Marshal(ds.Options)
-	if err != nil {
-		return model.DataSource{}, err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	existing, err := GetDataSourceByID(id)
 	if err != nil {
 		return model.DataSource{}, errors.New("data source not found")
 	}
+	ds.ID = id
 	ds.Enabled = existing.Enabled
+	if strings.EqualFold(ds.Type, "hadoop") {
+		merged := make(map[string]string, len(existing.Options)+len(ds.Options))
+		for key, value := range existing.Options {
+			merged[key] = value
+		}
+		for key, value := range ds.Options {
+			if strings.TrimSpace(value) == "" {
+				delete(merged, key)
+			} else {
+				merged[key] = strings.TrimSpace(value)
+			}
+		}
+		ds.Options = merged
+	}
+	optionsJSON, err := json.Marshal(ds.Options)
+	if err != nil {
+		return model.DataSource{}, err
+	}
 	if !isSupportedDataSourceType(ds.Type) {
 		return model.DataSource{}, errors.New("目前仅支持 Prometheus、MySQL、SSH 和 Hadoop 数据源")
 	}
-	if ok, msg := TestDataSourceConnection(ds); !ok {
-		return model.DataSource{}, errors.New(msg)
+	connectionOK, connectionMessage := TestDataSourceConnection(ds)
+	if connectionOK {
+		ds.Status = "健康"
+	} else {
+		ds.Status = "异常"
 	}
-	ds.Status = "健康"
 	ds.LastTest = time.Now().Format("2006-01-02 15:04")
 	if ds.Password == "" {
 		_, err = current.ExecContext(ctx, `UPDATE data_sources
@@ -284,12 +348,30 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 			WHERE id = ?`,
 			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Database, ds.Remark, string(optionsJSON), ds.Status, ds.LastTest, id)
 	} else {
+		encryptedPassword, encryptErr := encryptCredential(ds.Password)
+		if encryptErr != nil {
+			return model.DataSource{}, encryptErr
+		}
 		_, err = current.ExecContext(ctx, `UPDATE data_sources
 			SET name = ?, type = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, remark = ?, options_json = ?, status = ?, last_test = ?
 			WHERE id = ?`,
-			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, ds.Password, ds.Database, ds.Remark, string(optionsJSON), ds.Status, ds.LastTest, id)
+			ds.Name, ds.Type, ds.Host, ds.Port, ds.Username, encryptedPassword, ds.Database, ds.Remark, string(optionsJSON), ds.Status, ds.LastTest, id)
 	}
 	if err != nil {
+		return model.DataSource{}, err
+	}
+	if !connectionOK {
+		upsertDataSourceHealthNotification(current, ds, connectionMessage)
+	} else {
+		resolveDataSourceHealthNotification(current, ds)
+	}
+	if _, err := current.ExecContext(ctx, `UPDATE dashboard_items SET name = ? WHERE source_id = ? AND name = ?`, ds.Name+" 大屏", id, existing.Name+" 大屏"); err != nil {
+		return model.DataSource{}, err
+	}
+	if _, err := current.ExecContext(ctx, `UPDATE hadoop_menu_items SET name = ? WHERE source_id = ? AND (name = '' OR name = ?)`, ds.Name, id, existing.Name); err != nil {
+		return model.DataSource{}, err
+	}
+	if _, err := current.ExecContext(ctx, `UPDATE ambari_menu_items SET name = ? WHERE source_id = ? AND (name = '' OR name = ?)`, ds.Name, id, existing.Name); err != nil {
 		return model.DataSource{}, err
 	}
 	updated, err := GetDataSourceByID(id)
@@ -316,10 +398,13 @@ func DeleteDataSource(id string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	resolveDeletedDataSourceNotifications(current, existing)
 	if !strings.EqualFold(existing.Type, "prometheus") {
 		_, _ = current.ExecContext(ctx, `DELETE FROM collection_rules WHERE source = ?`, existing.ID)
-		_, _ = current.ExecContext(ctx, `DELETE FROM alert_notifications WHERE source = ?`, existing.ID)
 	}
+	_, _ = current.ExecContext(ctx, `DELETE FROM hadoop_menu_items WHERE source_id = ?`, existing.ID)
+	_, _ = current.ExecContext(ctx, `DELETE FROM ambari_menu_items WHERE source_id = ?`, existing.ID)
+	_, _ = current.ExecContext(ctx, `DELETE FROM dashboard_items WHERE source_id = ?`, existing.ID)
 	result, err := current.ExecContext(ctx, `DELETE FROM data_sources WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -342,7 +427,10 @@ func getDataSourcePassword(id string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := current.QueryRowContext(ctx, `SELECT COALESCE(password, '') FROM data_sources WHERE id = ?`, id).Scan(&password)
-	return password, err
+	if err != nil {
+		return "", err
+	}
+	return decryptCredential(password)
 }
 
 func GetDataSourceByID(id string) (model.DataSource, error) {
@@ -379,14 +467,26 @@ func SetDataSourceEnabled(id string, enabled bool) (model.DataSource, error) {
 		return model.DataSource{}, errors.New("data source not found")
 	}
 	status := existing.Status
+	lastTest := existing.LastTest
 	if !enabled {
 		status = "停用"
-	} else if status == "停用" {
-		status = "待采集"
+		if err := resolveStoppedDataSourceNotifications(current, existing, "已停用，平台已停止检测"); err != nil {
+			return model.DataSource{}, fmt.Errorf("resolve stopped data source notifications: %w", err)
+		}
+	} else {
+		ok, message := TestDataSourceConnection(existing)
+		lastTest = time.Now().Format("2006-01-02 15:04")
+		if ok {
+			status = "健康"
+			resolveDataSourceHealthNotification(current, existing)
+		} else {
+			status = "异常"
+			upsertDataSourceHealthNotification(current, existing, message)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = current.ExecContext(ctx, `UPDATE data_sources SET enabled = ?, status = ? WHERE id = ?`, enabled, status, id)
+	_, err = current.ExecContext(ctx, `UPDATE data_sources SET enabled = ?, status = ?, last_test = ? WHERE id = ?`, enabled, status, lastTest, id)
 	if err != nil {
 		return model.DataSource{}, err
 	}
@@ -400,7 +500,7 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" {
 		_ = FillDataSourcePassword(&ds)
 	}
-	if ds.Host == "" || (ds.Port == "" && !strings.EqualFold(ds.Type, "hadoop")) {
+	if ds.Host == "" || (ds.Port == "" && !strings.EqualFold(ds.Type, "hadoop") && !strings.EqualFold(ds.Type, "ambari")) {
 		return false, "主机地址和端口不能为空"
 	}
 	switch {
@@ -437,13 +537,34 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 			return false, err.Error()
 		}
 		return true, fmt.Sprintf("Hadoop %s Web 接口连接成功", role)
+	case strings.EqualFold(ds.Type, "ambari"):
+		cluster, err := TestAmbariDataSource(ds)
+		if err != nil {
+			return false, err.Error()
+		}
+		return true, fmt.Sprintf("Ambari 集群 %s 接口连接成功", cluster)
+	case strings.EqualFold(ds.Type, "redis"):
+		if err := TestRedisDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "Redis PING 检测成功"
+	case strings.EqualFold(ds.Type, "clickhouse"):
+		if err := TestClickHouseDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "ClickHouse SELECT 1 检测成功"
+	case strings.EqualFold(ds.Type, "kafka"):
+		if err := TestKafkaDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "Kafka Broker 网络检测成功"
 	default:
-		return false, "目前仅支持 Prometheus、MySQL、SSH 和 Hadoop 数据源"
+		return false, "目前仅支持 Prometheus、MySQL、SSH、Hadoop 和 Ambari 数据源"
 	}
 }
 
 func isSupportedDataSourceType(sourceType string) bool {
-	return strings.EqualFold(sourceType, "prometheus") || strings.EqualFold(sourceType, "mysql") || strings.EqualFold(sourceType, "ssh") || strings.EqualFold(sourceType, "hadoop")
+	return strings.EqualFold(sourceType, "prometheus") || strings.EqualFold(sourceType, "mysql") || strings.EqualFold(sourceType, "ssh") || strings.EqualFold(sourceType, "hadoop") || strings.EqualFold(sourceType, "ambari") || strings.EqualFold(sourceType, "redis") || strings.EqualFold(sourceType, "clickhouse") || strings.EqualFold(sourceType, "kafka")
 }
 
 func FillDataSourcePassword(ds *model.DataSource) error {
@@ -472,10 +593,20 @@ func ListDataSourceDatabases(ds model.DataSource) ([]string, error) {
 }
 
 func startDataSourceHealthChecker() {
-	checkAllDataSourceConnections()
-	ticker := time.NewTicker(60 * time.Second)
-	for range ticker.C {
+	for {
 		checkAllDataSourceConnections()
+		setting := GetRefreshSettings("datasource")
+		delay := time.Duration(setting.Value) * time.Minute
+		switch setting.Unit {
+		case "s":
+			delay = time.Duration(setting.Value) * time.Second
+		case "h":
+			delay = time.Duration(setting.Value) * time.Hour
+		}
+		if delay < time.Second {
+			delay = 2 * time.Minute
+		}
+		time.Sleep(delay)
 	}
 }
 
@@ -492,7 +623,7 @@ func checkAllDataSourceConnections() {
 		return
 	}
 
-	rows, err := current.Query(`SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(password, ''), COALESCE(database_name, ''), status FROM data_sources WHERE enabled = 1`)
+	rows, err := current.Query(`SELECT id, name, type, host, port, COALESCE(username, ''), COALESCE(password, ''), COALESCE(database_name, ''), COALESCE(options_json, '{}'), status FROM data_sources WHERE enabled = 1`)
 	if err != nil {
 		return
 	}
@@ -501,9 +632,16 @@ func checkAllDataSourceConnections() {
 	for rows.Next() {
 		var ds model.DataSource
 		var previousStatus string
-		if err := rows.Scan(&ds.ID, &ds.Name, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Password, &ds.Database, &previousStatus); err != nil {
+		var optionsRaw string
+		if err := rows.Scan(&ds.ID, &ds.Name, &ds.Type, &ds.Host, &ds.Port, &ds.Username, &ds.Password, &ds.Database, &optionsRaw, &previousStatus); err != nil {
 			continue
 		}
+		_ = json.Unmarshal([]byte(optionsRaw), &ds.Options)
+		password, decryptErr := decryptCredential(ds.Password)
+		if decryptErr != nil {
+			continue
+		}
+		ds.Password = password
 		ok, message := TestDataSourceConnection(ds)
 		status := "异常"
 		if ok {
@@ -528,7 +666,7 @@ func ListCollectionRules() []model.CollectionRule {
 		return res
 	}
 	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, condition_text,
-		COALESCE(threshold, ''), time_window, frequency, COALESCE(remark, ''), last_run, COALESCE(result_details, ''), status FROM collection_rules ORDER BY created_at DESC`)
+		COALESCE(threshold, ''), time_window, frequency, COALESCE(remark, ''), last_run, last_evaluated_at, COALESCE(result_details, ''), status FROM collection_rules ORDER BY created_at DESC`)
 	if err != nil {
 		return []model.CollectionRule{}
 	}
@@ -536,8 +674,13 @@ func ListCollectionRules() []model.CollectionRule {
 	items := []model.CollectionRule{}
 	for rows.Next() {
 		var rule model.CollectionRule
-		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition, &rule.Threshold, &rule.TimeWindow, &rule.Frequency, &rule.Remark, &rule.LastRun, &rule.ResultDetails, &rule.Status); err != nil {
+		var lastEvaluatedAt sql.NullTime
+		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition, &rule.Threshold, &rule.TimeWindow, &rule.Frequency, &rule.Remark, &rule.LastRun, &lastEvaluatedAt, &rule.ResultDetails, &rule.Status); err != nil {
 			continue
+		}
+		if lastEvaluatedAt.Valid {
+			value := lastEvaluatedAt.Time
+			rule.LastEvaluatedAt = &value
 		}
 		items = append(items, rule)
 	}
@@ -643,12 +786,19 @@ func ListAlertNotifications(status string, unread string, start string, end stri
 		conditions = append(conditions, "unread = 1 AND muted = 0")
 	}
 	if startDate, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(start), time.Local); err == nil && strings.TrimSpace(start) != "" {
-		conditions = append(conditions, "last_seen_at >= ? AND last_seen_at < ?")
 		endDate, endErr := time.ParseInLocation("2006-01-02", strings.TrimSpace(end), time.Local)
 		if endErr != nil || strings.TrimSpace(end) == "" || endDate.Before(startDate) {
 			endDate = startDate
 		}
-		args = append(args, startDate, endDate.AddDate(0, 0, 1))
+		queryEnd := endDate.AddDate(0, 0, 1)
+		// An active alert represents one continuous incident. It must appear in
+		// every queried day after its first trigger, while a recovered event is
+		// only a notification on the day it was recovered.
+		conditions = append(conditions, `(
+			(status IN ('active', 'alert') AND first_seen_at < ? AND (status = 'active' OR last_seen_at >= ?))
+			OR (status = 'resolved' AND last_seen_at >= ? AND last_seen_at < ?)
+		)`)
+		args = append(args, queryEnd, startDate, startDate, queryEnd)
 	}
 	args = append(args, limit)
 	rows, err := current.Query(`SELECT id, rule_id, rule_name, source, database_name, table_name, field_name,
@@ -798,7 +948,52 @@ func initCollectionRuleStore(appDB *sql.DB) error {
 	if err := backfillLegacyDataSourceHealthAlerts(appDB); err != nil {
 		return err
 	}
-	return backfillResolvedAlertHistory(appDB)
+	if err := backfillResolvedAlertHistory(appDB); err != nil {
+		return err
+	}
+	return deduplicateActiveAlertNotifications(appDB)
+}
+
+// A single rule represents one ongoing incident. Older releases could leave
+// multiple active rows for it when notification IDs changed across upgrades.
+func deduplicateActiveAlertNotifications(appDB *sql.DB) error {
+	rows, err := appDB.Query(`SELECT rule_id FROM alert_notifications
+		WHERE status = 'active' GROUP BY rule_id HAVING COUNT(*) > 1`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	ruleIDs := make([]string, 0)
+	for rows.Next() {
+		var ruleID string
+		if err := rows.Scan(&ruleID); err == nil {
+			ruleIDs = append(ruleIDs, ruleID)
+		}
+	}
+	for _, ruleID := range ruleIDs {
+		var keepID string
+		var firstSeen time.Time
+		err := appDB.QueryRow(`SELECT id, first_seen_at FROM alert_notifications
+			WHERE rule_id = ? AND status = 'active'
+			ORDER BY last_seen_at DESC, first_seen_at DESC, id DESC LIMIT 1`, ruleID).Scan(&keepID, &firstSeen)
+		if err != nil {
+			return err
+		}
+		var earliest time.Time
+		if err := appDB.QueryRow(`SELECT MIN(first_seen_at) FROM alert_notifications
+			WHERE rule_id = ? AND status = 'active'`, ruleID).Scan(&earliest); err != nil {
+			return err
+		}
+		if earliest.Before(firstSeen) {
+			if _, err := appDB.Exec(`UPDATE alert_notifications SET first_seen_at = ? WHERE id = ?`, earliest, keepID); err != nil {
+				return err
+			}
+		}
+		if _, err := appDB.Exec(`DELETE FROM alert_notifications WHERE rule_id = ? AND status = 'active' AND id <> ?`, ruleID, keepID); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // Older data-source health notifications were overwritten in place when they
@@ -1224,6 +1419,59 @@ func dataSourceHealthNotificationID(sourceID string) string {
 	return "datasource-health-" + sourceID
 }
 
+// Deleting a source must stop its active notifications without erasing the
+// audit trail. A recovery event makes the reason explicit and prevents the
+// notification center from retaining a stale active alert indefinitely.
+func resolveDeletedDataSourceNotifications(appDB *sql.DB, ds model.DataSource) {
+	_ = resolveStoppedDataSourceNotifications(appDB, ds, "已删除，平台已停止检测")
+}
+
+// Stopping a source ends every active notification produced by that source.
+// The historical alert remains available and a single unread recovery event
+// explains why the platform will no longer evaluate it.
+func resolveStoppedDataSourceNotifications(appDB *sql.DB, ds model.DataSource, reason string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := appDB.QueryContext(ctx, `SELECT id, rule_id, rule_name, source, database_name, table_name, field_name, severity, first_seen_at
+		FROM alert_notifications
+		WHERE status = 'active' AND (source = ? OR FIND_IN_SET(?, source) > 0)`, ds.ID, ds.ID)
+	if err != nil {
+		return err
+	}
+	type activeNotification struct {
+		id, ruleID, ruleName, source, databaseName, tableName, fieldName, severity string
+		firstSeenAt                                                                time.Time
+	}
+	var activeNotifications []activeNotification
+	for rows.Next() {
+		var notification activeNotification
+		if err := rows.Scan(&notification.id, &notification.ruleID, &notification.ruleName, &notification.source, &notification.databaseName, &notification.tableName, &notification.fieldName, &notification.severity, &notification.firstSeenAt); err != nil {
+			continue
+		}
+		activeNotifications = append(activeNotifications, notification)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	for _, notification := range activeNotifications {
+		// The prior event remains as history. It has already been notified, so
+		// only the newly created recovery is left unread.
+		if _, err := appDB.ExecContext(ctx, `UPDATE alert_notifications SET status = 'alert', unread = 0, last_seen_at = ? WHERE id = ?`, now, notification.id); err != nil {
+			return err
+		}
+		if _, err := appDB.ExecContext(ctx, `INSERT INTO alert_notifications
+			(id, rule_id, rule_name, source, database_name, table_name, field_name, severity, status, message, unread, first_seen_at, last_seen_at, resolved_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'resolved', ?, 1, ?, ?, ?)`,
+			fmt.Sprintf("source-stop-%d", now.UnixNano()), notification.ruleID, notification.ruleName, notification.source, notification.databaseName, notification.tableName, notification.fieldName, notification.severity,
+			fmt.Sprintf("数据源 %s %s", ds.Name, reason), notification.firstSeenAt, now, now); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 func hasActiveDataSourceHealthNotification(appDB *sql.DB, sourceID string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1382,16 +1630,23 @@ func evaluateScriptMonitorRule(rule model.CollectionRule) (string, bool, string)
 		return fmt.Sprintf("执行失败 %s：%s", checkedAt, err.Error()), false, err.Error()
 	}
 	expectedCode, _ := strconv.Atoi(rule.Threshold)
-	details := "判断方式：退出码等于 " + strconv.Itoa(expectedCode) + "\n"
+	configuredDirectory := strings.TrimSpace(rule.Field)
+	if configuredDirectory == "" {
+		configuredDirectory = "SSH 默认目录"
+	}
+	details := "检测时间：" + now.Format("2006-01-02 15:04:05") + "\n判断方式：退出码等于 " + strconv.Itoa(expectedCode) + "\n"
 	failed := make([]string, 0)
 	for _, ds := range sources {
-		output, exitCode, commandErr := executeSSHCommandWithExitStatus(ds, rule.Table)
-		details += "\n[" + ds.Name + "]\n"
+		command := scriptMonitorCommand(rule.Table, rule.Field)
+		output, exitCode, commandErr := executeSSHCommandWithExitStatus(ds, command)
+		actualDirectory, output := scriptMonitorOutputDirectory(output, configuredDirectory)
+		details += "\n========== " + ds.Name + " ==========\n"
+		details += "执行目录：" + actualDirectory + "\n执行命令：\n" + rule.Table + "\n退出码："
 		if commandErr != nil {
-			details += "执行失败：" + commandErr.Error() + "\n"
+			details += "未获取\n执行失败：" + commandErr.Error() + "\n"
 			return fmt.Sprintf("执行失败 %s：%s 脚本执行失败：%s", checkedAt, ds.Name, commandErr.Error()), false, details
 		}
-		details += "退出码：" + strconv.Itoa(exitCode) + "\n输出：\n" + truncateRuleResult(output, 4000) + "\n"
+		details += strconv.Itoa(exitCode) + "\n执行结果：\n" + truncateRuleResult(output, 4000) + "\n"
 		if exitCode != expectedCode {
 			failed = append(failed, ds.Name+"("+strconv.Itoa(exitCode)+")")
 		}
@@ -1400,6 +1655,34 @@ func evaluateScriptMonitorRule(rule model.CollectionRule) (string, bool, string)
 		return fmt.Sprintf("正常 %s：所有节点脚本退出码符合预期", checkedAt), false, details
 	}
 	return fmt.Sprintf("告警 %s：%s 脚本退出码不符合预期 %d", checkedAt, strings.Join(failed, "、"), expectedCode), false, details
+}
+
+const scriptMonitorDirectoryMarker = "__OPSGUARD_WORKDIR__="
+
+func scriptMonitorCommand(script string, directory string) string {
+	var command strings.Builder
+	if directory = strings.TrimSpace(directory); directory != "" {
+		command.WriteString("cd -- ")
+		command.WriteString(shellQuote(directory))
+		command.WriteString(" || exit 125\n")
+	}
+	command.WriteString("printf '")
+	command.WriteString(scriptMonitorDirectoryMarker)
+	command.WriteString("%s\\n' \"$PWD\"\n")
+	command.WriteString(script)
+	return command.String()
+}
+
+func scriptMonitorOutputDirectory(output string, fallback string) (string, string) {
+	if strings.HasPrefix(output, scriptMonitorDirectoryMarker) {
+		line, remainder, found := strings.Cut(output, "\n")
+		if found {
+			if directory := strings.TrimSpace(strings.TrimPrefix(line, scriptMonitorDirectoryMarker)); directory != "" {
+				return directory, remainder
+			}
+		}
+	}
+	return fallback, output
 }
 
 func truncateRuleResult(value string, limit int) string {
@@ -1488,6 +1771,11 @@ func getRuleDataSourceWithSecret(source string) (model.DataSource, error) {
 		return model.DataSource{}, errors.New("数据源不存在")
 	}
 	_ = json.Unmarshal([]byte(optionsRaw), &ds.Options)
+	password, err := decryptCredential(ds.Password)
+	if err != nil {
+		return model.DataSource{}, err
+	}
+	ds.Password = password
 	return ds, nil
 }
 
@@ -1581,6 +1869,9 @@ func validateCollectionRule(rule model.CollectionRule) error {
 		}
 		if strings.TrimSpace(rule.Table) == "" || len(rule.Table) > 8000 || strings.Contains(rule.Table, "\x00") {
 			return errors.New("检测脚本不能为空，且长度不能超过 8000 个字符")
+		}
+		if directory := strings.TrimSpace(rule.Field); directory != "" && (!strings.HasPrefix(directory, "/") || strings.ContainsAny(directory, "\r\n\x00")) {
+			return errors.New("脚本执行目录必须是有效的 Linux 绝对路径")
 		}
 		if rule.Condition != "退出码等于" {
 			return errors.New("脚本检测暂只支持退出码等于")
@@ -1835,4 +2126,56 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// migrateStoredCredentials upgrades legacy plaintext rows in place at startup.
+// Data-source credentials remain decryptable by the backend; user passwords do not.
+func migrateStoredCredentials(ctx context.Context, current *sql.DB) error {
+	rows, err := current.QueryContext(ctx, `SELECT id, COALESCE(password, '') FROM data_sources`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, password string
+		if err := rows.Scan(&id, &password); err != nil {
+			return err
+		}
+		if password == "" || strings.HasPrefix(password, encryptedCredentialPrefix) {
+			continue
+		}
+		encrypted, err := encryptCredential(password)
+		if err != nil {
+			return err
+		}
+		if _, err := current.ExecContext(ctx, `UPDATE data_sources SET password = ? WHERE id = ?`, encrypted, id); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	users, err := current.QueryContext(ctx, `SELECT username, password FROM users`)
+	if err != nil {
+		return err
+	}
+	defer users.Close()
+	for users.Next() {
+		var username, password string
+		if err := users.Scan(&username, &password); err != nil {
+			return err
+		}
+		if strings.HasPrefix(password, "$2") {
+			continue
+		}
+		hash, err := hashUserPassword(password)
+		if err != nil {
+			return err
+		}
+		if _, err := current.ExecContext(ctx, `UPDATE users SET password = ? WHERE username = ?`, hash, username); err != nil {
+			return err
+		}
+	}
+	return users.Err()
 }

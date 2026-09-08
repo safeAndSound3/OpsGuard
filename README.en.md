@@ -40,7 +40,7 @@ Prometheus, Hadoop, SSH, and external MySQL are optional integrations. Productio
 
 ## Configuration
 
-Copy `backend/.env.example` to `backend/.env` and configure the platform MySQL connection:
+Copy `backend/config/opsguard.conf.example` to `backend/config/opsguard.conf` and configure the platform MySQL connection:
 
 ```ini
 HOST=127.0.0.1
@@ -52,9 +52,19 @@ MYSQL_PORT=3306
 MYSQL_DATABASE=opsguard
 MYSQL_USER=opsguard_app
 MYSQL_PASSWORD=change-me
+
+# Used only when creating the admin account; remove after initialization
+OPSGUARD_ADMIN_PASSWORD=change-this-initial-password
+# Set to true when serving through HTTPS
+SESSION_COOKIE_SECURE=false
+SESSION_TTL=12h
+
+# Verify SSH host keys in production
+SSH_HOST_KEY_POLICY=strict
+SSH_KNOWN_HOSTS_FILE=C:/opsguard/ssh_known_hosts
 ```
 
-The backend initializes its tables on startup. `backend/.env` is ignored by Git and must not contain committed credentials.
+The backend initializes its tables on startup. An existing `admin` account is never overwritten by the bootstrap password; legacy plaintext user passwords are migrated to bcrypt hashes. Data-source credentials are encrypted with `OPSGUARD_ENCRYPTION_KEY`. `backend/config/opsguard.conf` is ignored by Git and must not contain committed credentials. Container and service deployments can point `OPSGUARD_CONFIG` at any absolute configuration-file path; environment variables take precedence over file values. For a cross-origin frontend, configure complete allowed origins with `CORS_ALLOWED_ORIGINS`; same-origin deployments need no CORS setting.
 
 ## Local Development
 

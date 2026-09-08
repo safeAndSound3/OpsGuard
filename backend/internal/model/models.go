@@ -20,6 +20,83 @@ type DataSource struct {
 	Tags        []string          `json:"tags,omitempty"`
 }
 
+type HadoopHealth struct {
+	SourceID        string `json:"sourceId"`
+	ResourceManager string `json:"resourceManager"`
+	NodeManager     string `json:"nodeManager"`
+	JobHistory      string `json:"jobHistory"`
+	Details         string `json:"details"`
+	CheckedAt       string `json:"checkedAt"`
+}
+
+type PlatformLink struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+type HadoopMenuItem struct {
+	SourceID string `json:"sourceId"`
+	Name     string `json:"name"`
+}
+
+type AmbariMenuItem struct {
+	SourceID string `json:"sourceId"`
+	Name     string `json:"name"`
+}
+
+type AmbariOverview struct {
+	ClusterName string            `json:"clusterName"`
+	Version     string            `json:"version"`
+	Stack       string            `json:"stack"`
+	Services    []AmbariService   `json:"services"`
+	Hosts       []AmbariHost      `json:"hosts"`
+	Alerts      []AmbariAlert     `json:"alerts"`
+	Requests    []AmbariRequest   `json:"requests"`
+	Configs     map[string]string `json:"configs"`
+}
+
+type AmbariService struct {
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	Maintenance string `json:"maintenance"`
+}
+type AmbariHost struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Maintenance string `json:"maintenance"`
+}
+type AmbariAlert struct {
+	Label   string `json:"label"`
+	State   string `json:"state"`
+	Text    string `json:"text"`
+	Host    string `json:"host"`
+	Service string `json:"service"`
+	Time    int64  `json:"time"`
+}
+type AmbariRequest struct {
+	ID        int64  `json:"id"`
+	Context   string `json:"context"`
+	Status    string `json:"status"`
+	StartTime int64  `json:"startTime"`
+	EndTime   int64  `json:"endTime"`
+}
+
+type DashboardItem struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	SourceID   string    `json:"sourceId"`
+	SourceName string    `json:"sourceName"`
+	SourceType string    `json:"sourceType"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type RefreshSettings struct {
+	Value      int    `json:"value"`
+	Unit       string `json:"unit"`
+	Configured bool   `json:"configured"`
+}
+
 type HadoopApplication struct {
 	ID           string  `json:"id"`
 	Name         string  `json:"name"`
@@ -44,23 +121,25 @@ type HadoopContainer struct {
 	NodeHTTPAddress string `json:"nodeHttpAddress"`
 	State           string `json:"state"`
 	LogURL          string `json:"logUrl"`
+	Priority        string `json:"priority,omitempty"`
 }
 
 type CollectionRule struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Source        string `json:"source"`
-	Database      string `json:"database"`
-	Table         string `json:"table"`
-	Field         string `json:"field"`
-	Condition     string `json:"condition"`
-	Threshold     string `json:"threshold,omitempty"`
-	TimeWindow    string `json:"timeWindow"`
-	Frequency     string `json:"frequency"`
-	Remark        string `json:"remark,omitempty"`
-	LastRun       string `json:"lastRun"`
-	ResultDetails string `json:"resultDetails,omitempty"`
-	Status        string `json:"status"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Source          string     `json:"source"`
+	Database        string     `json:"database"`
+	Table           string     `json:"table"`
+	Field           string     `json:"field"`
+	Condition       string     `json:"condition"`
+	Threshold       string     `json:"threshold,omitempty"`
+	TimeWindow      string     `json:"timeWindow"`
+	Frequency       string     `json:"frequency"`
+	Remark          string     `json:"remark,omitempty"`
+	LastRun         string     `json:"lastRun"`
+	LastEvaluatedAt *time.Time `json:"lastEvaluatedAt,omitempty"`
+	ResultDetails   string     `json:"resultDetails,omitempty"`
+	Status          string     `json:"status"`
 }
 
 type OverviewMetric struct {

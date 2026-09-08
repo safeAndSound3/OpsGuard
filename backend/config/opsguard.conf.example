@@ -1,0 +1,39 @@
+# OpsGuard 部署配置文件
+#
+# 将本文件复制为 opsguard.conf 后填写实际配置，再从 backend 目录启动后端。
+# 也可以通过 OPSGUARD_CONFIG 指向任意绝对配置文件路径。
+# 环境变量优先级高于本文件中的配置。
+
+# HTTP API 监听地址。使用反向代理时建议填写 127.0.0.1；需要直接对外提供
+# 服务时填写 0.0.0.0。
+HOST=127.0.0.1
+PORT=8030
+ENV=production
+
+# 首次启动且 users 表中没有 admin 时必须填写，至少 12 位。创建后请删除本项，
+# 后续密码以数据库中的 bcrypt 哈希为准。
+OPSGUARD_ADMIN_PASSWORD=replace-with-a-strong-initial-password
+
+# 登录会话。通过 HTTPS 部署时必须将 Cookie 安全模式改为 true。
+SESSION_TTL=12h
+SESSION_COOKIE_SECURE=true
+
+# 默认同源访问，无需配置。只有前后端跨域部署时才填写允许的完整来源，逗号分隔。
+# CORS_ALLOWED_ORIGINS=https://opsguard.example.com
+
+# OpsGuard 平台数据库。保存平台用户、数据源定义、告警通知、规则和采样数据。
+# 该数据库不同于平台接入并监控的 MySQL 数据源。
+MYSQL_HOST=mysql.example.com
+MYSQL_PORT=3306
+MYSQL_DATABASE=opsguard
+MYSQL_USER=opsguard_app
+MYSQL_PASSWORD=replace-with-a-strong-password
+
+# Base64 encoded 32-byte key used to encrypt stored data-source credentials.
+# Generate it once with a cryptographically secure random generator and keep it private.
+OPSGUARD_ENCRYPTION_KEY=replace-with-a-base64-encoded-32-byte-key
+
+# SSH 主机密钥校验。生产环境保持 strict，并提供 OpenSSH known_hosts 文件。
+# 临时测试环境可显式设为 insecure，但会降低中间人攻击防护能力。
+SSH_HOST_KEY_POLICY=strict
+SSH_KNOWN_HOSTS_FILE=/etc/opsguard/ssh_known_hosts

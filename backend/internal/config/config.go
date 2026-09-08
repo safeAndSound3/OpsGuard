@@ -7,18 +7,41 @@ import (
 )
 
 type AppConfig struct {
-	Host string
-	Port string
-	Env  string
+	Host                string
+	Port                string
+	Env                 string
+	CORSAllowedOrigins  []string
+	SessionCookieSecure bool
+	SessionTTL          string
 }
 
 func Load() AppConfig {
+	// A deployment can point to an explicit file, while the default location
+	// keeps configuration next to the backend instead of in source code.
+	if path := strings.TrimSpace(os.Getenv("OPSGUARD_CONFIG")); path != "" {
+		loadEnvFile(path)
+	}
+	loadEnvFile("config/opsguard.conf")
+	// Keep existing local installations working during the config-file migration.
 	loadEnvFile(".env")
 	return AppConfig{
-		Host: getEnv("HOST", "0.0.0.0"),
-		Port: getEnv("PORT", "8030"),
-		Env:  getEnv("ENV", "development"),
+		Host:                getEnv("HOST", "0.0.0.0"),
+		Port:                getEnv("PORT", "8030"),
+		Env:                 getEnv("ENV", "development"),
+		CORSAllowedOrigins:  splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		SessionCookieSecure: strings.EqualFold(getEnv("SESSION_COOKIE_SECURE", "false"), "true"),
+		SessionTTL:          getEnv("SESSION_TTL", "12h"),
 	}
+}
+
+func splitCSV(value string) []string {
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func loadEnvFile(path string) {

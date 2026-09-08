@@ -15,6 +15,7 @@ import (
 
 func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
+	sessions := newSessionManager(cfg)
 	if err := service.InitDataSourceStore(); err != nil {
 		return nil, fmt.Errorf("initialize MySQL store: %w", err)
 	}
@@ -44,7 +45,20 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "用户名或密码错误"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"token": "opsguard-admin", "user": map[string]string{"username": "admin", "name": "平台管理员"}})
+		if _, err := sessions.create(w, req.Username); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "创建登录会话失败"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"user": map[string]string{"username": req.Username, "name": "平台管理员"}})
+	})
+
+	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		username, _ := sessions.username(r)
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "user": map[string]string{"username": username, "name": "平台管理员"}})
 	})
 
 	mux.HandleFunc("/api/change-password", func(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +82,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 			return
 		}
+		sessions.destroy(w, r)
 		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 	})
 
@@ -76,6 +91,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
+		sessions.destroy(w, r)
 		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 	})
 
@@ -88,6 +104,163 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 
 	mux.HandleFunc("/api/inspection", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"tasks": service.GetInspectionTasks()})
+	})
+
+	mux.HandleFunc("/api/platform-links", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, map[string]any{"links": service.ListPlatformLinks()})
+		case http.MethodPut:
+			var request struct {
+				Links []model.PlatformLink `json:"links"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			links, err := service.ReplacePlatformLinks(request.Links)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"links": links})
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	})
+
+	mux.HandleFunc("/api/hadoop-menu", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, map[string]any{"items": service.ListHadoopMenuItems()})
+		case http.MethodPost:
+			var request model.HadoopMenuItem
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			item, err := service.AddHadoopMenuItem(request.SourceID, request.Name)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, item)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	})
+
+	mux.HandleFunc("/api/hadoop-menu/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		sourceID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/hadoop-menu/"), "/")
+		if sourceID == "" || strings.Contains(sourceID, "/") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		if err := service.DeleteHadoopMenuItem(sourceID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	})
+
+	mux.HandleFunc("/api/ambari-menu", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, map[string]any{"items": service.ListAmbariMenuItems()})
+		case http.MethodPost:
+			var item model.AmbariMenuItem
+			if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			saved, err := service.AddAmbariMenuItem(item.SourceID, item.Name)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, saved)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	})
+	mux.HandleFunc("/api/ambari-menu/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/ambari-menu/"), "/")
+		if id == "" || strings.Contains(id, "/") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		if err := service.DeleteAmbariMenuItem(id); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	})
+
+	mux.HandleFunc("/api/dashboards", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, map[string]any{"items": service.ListDashboardItems()})
+		case http.MethodPost:
+			var item model.DashboardItem
+			if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			added, err := service.AddDashboardItem(item)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, added)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	})
+
+	mux.HandleFunc("/api/dashboards/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/dashboards/"), "/")
+		if id == "" || strings.Contains(id, "/") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		if err := service.DeleteDashboardItem(id); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	})
+
+	mux.HandleFunc("/api/settings/refresh", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, service.GetRefreshSettings(r.URL.Query().Get("scope")))
+		case http.MethodPut:
+			var settings model.RefreshSettings
+			if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			saved, err := service.SaveRefreshSettings(settings, r.URL.Query().Get("scope"))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, saved)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
 	})
 
 	// list and add data sources
@@ -224,8 +397,10 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 				metrics, collectedAt, err = service.LatestMySQLDashboardMetrics(ds.ID)
 			} else if strings.EqualFold(ds.Type, "ssh") {
 				metrics, collectedAt, err = service.LatestSSHDashboardMetrics(ds.ID)
+			} else if strings.EqualFold(ds.Type, "redis") || strings.EqualFold(ds.Type, "clickhouse") || strings.EqualFold(ds.Type, "kafka") {
+				metrics, collectedAt, err = service.LatestMiddlewareDashboardMetrics(ds.ID)
 			} else {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only MySQL and SSH support dashboards"})
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported dashboard data source"})
 				return
 			}
 			if err != nil {
@@ -233,6 +408,19 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"metrics": metrics, "collectedAt": collectedAt})
+			return
+		}
+		if len(parts) == 2 && parts[1] == "hadoop-health" {
+			if !strings.EqualFold(func() string { ds, _ := service.GetDataSourceByID(parts[0]); return ds.Type }(), "hadoop") {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "data source is not Hadoop"})
+				return
+			}
+			health, err := service.GetHadoopHealth(parts[0])
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"data": health})
 			return
 		}
 		if len(parts) == 2 && parts[1] == "dashboard-sql" {
@@ -351,6 +539,24 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		writeJSON(w, http.StatusOK, map[string]any{"data": payload})
 	})
 
+	mux.HandleFunc("/api/ambari/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/ambari/"), "/"), "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] != "overview" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		data, err := service.GetAmbariOverview(parts[0])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": data})
+	})
+
 	mux.HandleFunc("/api/collection-rules", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -458,14 +664,21 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "告警通道测试成功，告警消息已发送"})
 	})
 
-	return mux, nil
+	root := http.NewServeMux()
+	root.Handle("/health", mux)
+	root.Handle("/api/login", mux)
+	root.Handle("/api/", sessions.require(mux))
+	return wrapAsServeMux(corsMiddleware(limitRequestBody(root), cfg.CORSAllowedOrigins)), nil
+}
+
+func wrapAsServeMux(handler http.Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/", handler)
+	return mux
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }

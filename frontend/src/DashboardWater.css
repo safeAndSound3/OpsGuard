@@ -1,0 +1,33 @@
+/* A single highlight travels left to right; the fill itself never reverses direction. */
+.dashboard-water > i {
+  background-image: linear-gradient(90deg, #16a873 0%, #16a873 42%, #8be4bd 49%, #d1f7e5 52%, #8be4bd 55%, #16a873 62%, #16a873 100%);
+  background-size: 180% 100%;
+}
+
+.dashboard-metric.danger .dashboard-water > i {
+  background-image: linear-gradient(90deg, #df4c60 0%, #df4c60 42%, #ffb0b8 49%, #ffe0e3 52%, #ffb0b8 55%, #df4c60 62%, #df4c60 100%);
+}
+
+@keyframes dashboard-water-flow {
+  from { background-position: 100% 0; }
+  to { background-position: -80% 0; }
+}
+
+/* Absolute metrics share the same card backdrop, without implying a percentage fill. */
+.dashboard-metric.neutral::after {
+  position: absolute;
+  right: -24px;
+  bottom: -30px;
+  width: 88px;
+  height: 88px;
+  content: '';
+  border-radius: 50%;
+  opacity: .08;
+  background: #17a673;
+  animation: dashboard-neutral-breathe 2.8s ease-in-out infinite;
+}
+
+@keyframes dashboard-neutral-breathe {
+  0%, 100% { opacity: .05; transform: scale(.9); }
+  50% { opacity: .14; transform: scale(1.08); }
+}

@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"monitor-platform/internal/model"
@@ -14,7 +16,10 @@ import (
 	"time"
 )
 
-var hadoopLogPreBlocks = regexp.MustCompile(`(?is)<pre[^>]*>(.*?)</pre>`)
+var (
+	hadoopLogPreBlocks = regexp.MustCompile(`(?is)<pre[^>]*>(.*?)</pre>`)
+	hadoopLogLinks     = regexp.MustCompile(`(?is)<a[^>]+href\s*=\s*["']([^"']+)["'][^>]*>`)
+)
 
 type HadoopApplicationQuery struct {
 	Page        int
@@ -43,36 +48,30 @@ func ListHadoopApplications(sourceID string, query HadoopApplicationQuery) (mode
 			App []model.HadoopApplication `json:"app"`
 		} `json:"apps"`
 	}
-	if err := hadoopGetJSON(base+"/ws/v1/cluster/apps", &payload); err != nil {
-		return model.HadoopApplicationPage{}, err
-	}
-	applications := make(map[string]model.HadoopApplication, len(payload.Apps.App))
+	rmErr := hadoopGetJSON(base+"/ws/v1/cluster/apps", &payload)
+	applications := make(map[string]struct{}, len(payload.Apps.App))
+	all := make([]model.HadoopApplication, 0, len(payload.Apps.App))
 	for _, app := range payload.Apps.App {
-		applications[app.ID] = app
+		applications[app.ID] = struct{}{}
+		all = append(all, app)
 	}
 	for _, app := range listHadoopHistoryApplications(ds) {
 		if _, exists := applications[app.ID]; !exists {
-			applications[app.ID] = app
+			applications[app.ID] = struct{}{}
+			all = append(all, app)
 		}
 	}
-	all := make([]model.HadoopApplication, 0, len(applications))
-	for _, app := range applications {
-		all = append(all, app)
+	// Persist every observation and use the snapshot as the durable source for
+	// historical tasks when ResourceManager or JobHistory is temporarily down.
+	_ = upsertHadoopApplicationSnapshots(sourceID, all)
+	if snapshots, err := listHadoopApplicationSnapshots(sourceID); err == nil {
+		all = snapshots
 	}
-	sort.Slice(all, func(i, j int) bool {
-		leftActive, rightActive := hadoopApplicationActive(all[i]), hadoopApplicationActive(all[j])
-		if leftActive != rightActive {
-			return leftActive
-		}
-		leftTime, rightTime := all[i].FinishedTime, all[j].FinishedTime
-		if leftTime == 0 {
-			leftTime = all[i].StartedTime
-		}
-		if rightTime == 0 {
-			rightTime = all[j].StartedTime
-		}
-		return leftTime > rightTime
-	})
+	if rmErr != nil && len(all) == 0 {
+		return model.HadoopApplicationPage{}, rmErr
+	}
+	// ResourceManager and JobHistory use independent return orders after merging.
+	sort.SliceStable(all, func(i, j int) bool { return all[i].ID > all[j].ID })
 	facets := map[string][]string{"user": {}, "applicationType": {}, "state": {}, "finalStatus": {}}
 	seenFacets := map[string]map[string]bool{"user": {}, "applicationType": {}, "state": {}, "finalStatus": {}}
 	filtered := make([]model.HadoopApplication, 0, len(all))
@@ -108,6 +107,50 @@ func ListHadoopApplications(sourceID string, query HadoopApplicationQuery) (mode
 		items = filtered[start:end]
 	}
 	return model.HadoopApplicationPage{Items: items, Total: len(filtered), Facets: facets}, nil
+}
+
+func upsertHadoopApplicationSnapshots(sourceID string, apps []model.HadoopApplication) error {
+	current := currentStore()
+	if current == nil {
+		return errors.New("Hadoop snapshot store is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	for _, app := range apps {
+		if strings.TrimSpace(app.ID) == "" {
+			continue
+		}
+		raw, err := json.Marshal(app)
+		if err != nil {
+			continue
+		}
+		if _, err := current.ExecContext(ctx, `INSERT INTO hadoop_application_snapshots (source_id, application_id, application_json) VALUES (?, ?, ?)
+			ON DUPLICATE KEY UPDATE application_json = VALUES(application_json), last_seen_at = CURRENT_TIMESTAMP`, sourceID, app.ID, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func listHadoopApplicationSnapshots(sourceID string) ([]model.HadoopApplication, error) {
+	current := currentStore()
+	if current == nil {
+		return nil, errors.New("Hadoop snapshot store is not initialized")
+	}
+	rows, err := current.Query(`SELECT application_json FROM hadoop_application_snapshots WHERE source_id = ? ORDER BY application_id DESC`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.HadoopApplication, 0)
+	for rows.Next() {
+		var raw []byte
+		var app model.HadoopApplication
+		if rows.Scan(&raw) == nil && json.Unmarshal(raw, &app) == nil {
+			items = append(items, app)
+		}
+	}
+	return items, rows.Err()
 }
 
 func hadoopApplicationActive(app model.HadoopApplication) bool {
@@ -186,8 +229,21 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 	}
 	var payload struct {
 		Containers struct {
-			Container []model.HadoopContainer `json:"container"`
+			Container []struct {
+				ID              string `json:"containerId"`
+				NodeHTTPAddress string `json:"nodeHttpAddress"`
+				State           string `json:"containerState"`
+				LogURL          string `json:"logUrl"`
+				Priority        string `json:"priority"`
+			} `json:"container"`
 		} `json:"containers"`
+		Container []struct {
+			ID              string `json:"containerId"`
+			NodeHTTPAddress string `json:"nodeHttpAddress"`
+			State           string `json:"containerState"`
+			LogURL          string `json:"logUrl"`
+			Priority        string `json:"priority"`
+		} `json:"container"`
 	}
 	latest := attempts.AppAttempts.AppAttempt[len(attempts.AppAttempts.AppAttempt)-1]
 	id := strings.TrimSpace(latest.AppAttemptID)
@@ -200,7 +256,11 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 	if err := hadoopGetJSON(base+"/ws/v1/cluster/apps/"+appID+"/appattempts/"+id+"/containers", &payload); err != nil {
 		return nil, err
 	}
-	if len(payload.Containers.Container) == 0 && latest.ContainerID != "" {
+	containers := payload.Containers.Container
+	if len(containers) == 0 {
+		containers = payload.Container
+	}
+	if len(containers) == 0 && latest.ContainerID != "" {
 		return []model.HadoopContainer{{
 			ID:              latest.ContainerID,
 			NodeHTTPAddress: latest.NodeHTTPAddress,
@@ -208,7 +268,17 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 			LogURL:          latest.LogsLink,
 		}}, nil
 	}
-	return payload.Containers.Container, nil
+	items := make([]model.HadoopContainer, 0, len(containers))
+	for _, container := range containers {
+		items = append(items, model.HadoopContainer{
+			ID:              container.ID,
+			NodeHTTPAddress: container.NodeHTTPAddress,
+			State:           container.State,
+			LogURL:          container.LogURL,
+			Priority:        container.Priority,
+		})
+	}
+	return items, nil
 }
 
 // YARN implementations differ: appAttempt IDs may be JSON strings or numbers.
@@ -241,9 +311,9 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 	}
 	requestURL := hadoopNodeManagerLogURL(ds, logURL)
 	client := &http.Client{Timeout: 12 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Get(requestURL)
+	resp, err := hadoopLogGet(client, requestURL)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("日志服务不可用：%w", err)
 	}
 	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
 		location, locationErr := resp.Location()
@@ -255,9 +325,10 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 		if !hadoopLogURLBelongsToSource(ds, base, redirectURL) {
 			return "", errors.New("重定向日志地址不属于当前 Hadoop 数据源")
 		}
-		resp, err = client.Get(redirectURL)
+		requestURL = redirectURL
+		resp, err = hadoopLogGet(client, redirectURL)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("JobHistory 日志服务不可用：%w", err)
 		}
 	}
 	defer resp.Body.Close()
@@ -268,7 +339,24 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return readableHadoopLog(body), nil
+	return readableHadoopLogFromDirectory(client, ds, base, requestURL, body)
+}
+
+// hadoopLogGet retries a transient connection reset once. Hadoop's embedded
+// Jetty service can briefly reject a request while a container log is rotated.
+func hadoopLogGet(client *http.Client, requestURL string) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err := client.Get(requestURL)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt == 0 {
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	return nil, lastErr
 }
 
 // hadoopLogURLBelongsToSource prevents a log URL returned by one cluster from
@@ -316,6 +404,92 @@ func readableHadoopLog(body []byte) string {
 		return text
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+// A running container's NodeManager URL returns an HTML index of files rather
+// than log text. Follow the relevant file links and present their content.
+func readableHadoopLogFromDirectory(client *http.Client, hadoop model.DataSource, base, pageURL string, body []byte) (string, error) {
+	text := string(body)
+	page, err := url.Parse(pageURL)
+	if err != nil || !strings.HasPrefix(page.Path, "/node/containerlogs/") || !strings.Contains(strings.ToLower(text), "<html") {
+		return readableHadoopLog(body), nil
+	}
+	files := hadoopContainerLogFileURLs(page, text)
+	if len(files) == 0 {
+		return readableHadoopLog(body), nil
+	}
+	sections := make([]string, 0, len(files))
+	for _, fileURL := range files {
+		if !hadoopLogURLBelongsToSource(hadoop, base, fileURL) {
+			continue
+		}
+		resp, getErr := hadoopLogGet(client, hadoopNodeManagerLogURL(hadoop, fileURL))
+		if getErr != nil {
+			continue
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			_ = resp.Body.Close()
+			continue
+		}
+		content, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			continue
+		}
+		value := readableHadoopLog(content)
+		if strings.Contains(strings.ToLower(string(content)), "<pre") && len(hadoopLogPreBlocks.FindAllStringSubmatch(string(content), -1)) > 0 && strings.Contains(strings.ToLower(value), "<html") {
+			value = ""
+		}
+		if strings.Contains(strings.ToLower(value), "<html") {
+			continue
+		}
+		name := hadoopContainerLogFileName(fileURL)
+		if value == "" {
+			value = "（空文件）"
+		}
+		sections = append(sections, "===== "+name+" =====\n"+value)
+	}
+	if len(sections) == 0 {
+		return "容器日志目录存在，但暂未生成可读取的 stdout、stderr 或 syslog。", nil
+	}
+	return strings.Join(sections, "\n\n"), nil
+}
+
+func hadoopContainerLogFileURLs(page *url.URL, body string) []string {
+	seen := make(map[string]struct{})
+	urls := make([]string, 0, 3)
+	for _, match := range hadoopLogLinks.FindAllStringSubmatch(body, -1) {
+		reference, err := url.Parse(html.UnescapeString(match[1]))
+		if err != nil {
+			continue
+		}
+		endpoint := page.ResolveReference(reference)
+		if !strings.HasPrefix(endpoint.Path, "/node/containerlogs/") {
+			continue
+		}
+		query := endpoint.Query()
+		query.Set("start", "0")
+		endpoint.RawQuery = query.Encode()
+		value := endpoint.String()
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		urls = append(urls, value)
+	}
+	return urls
+}
+
+func hadoopContainerLogFileName(logURL string) string {
+	endpoint, err := url.Parse(logURL)
+	if err != nil {
+		return "container.log"
+	}
+	path := strings.Trim(strings.TrimSpace(endpoint.Path), "/")
+	if path == "" {
+		return "container.log"
+	}
+	return path[strings.LastIndex(path, "/")+1:]
 }
 
 func hadoopNodeManagerLogURL(hadoop model.DataSource, logURL string) string {

@@ -40,7 +40,7 @@ Browser
 
 ## 配置
 
-复制 `backend/.env.example` 为 `backend/.env`，填写平台 MySQL 连接：
+复制 `backend/config/opsguard.conf.example` 为 `backend/config/opsguard.conf`，填写平台 MySQL 连接：
 
 ```ini
 HOST=127.0.0.1
@@ -52,9 +52,19 @@ MYSQL_PORT=3306
 MYSQL_DATABASE=opsguard
 MYSQL_USER=opsguard_app
 MYSQL_PASSWORD=change-me
+
+# 仅首次创建 admin 账号时使用，至少 12 位；初始化后删除
+OPSGUARD_ADMIN_PASSWORD=change-this-initial-password
+# 通过 HTTPS 发布时设为 true
+SESSION_COOKIE_SECURE=false
+SESSION_TTL=12h
+
+# 生产环境校验 SSH 主机密钥
+SSH_HOST_KEY_POLICY=strict
+SSH_KNOWN_HOSTS_FILE=C:/opsguard/ssh_known_hosts
 ```
 
-启动时后端会自动初始化平台所需表结构。`backend/.env` 已被 Git 忽略，不应提交真实密码。
+启动时后端会自动初始化平台所需表结构。已有 `admin` 账号不会被初始密码配置覆盖；旧版明文账号密码会在启动后迁移为 bcrypt 哈希。数据源凭据使用 `OPSGUARD_ENCRYPTION_KEY` 加密保存。`backend/config/opsguard.conf` 已被 Git 忽略，不应提交真实密码。容器或系统服务部署时，也可以通过 `OPSGUARD_CONFIG` 指向任意绝对配置文件路径；环境变量优先级高于配置文件。前后端跨域部署时，通过 `CORS_ALLOWED_ORIGINS` 配置允许的完整来源；同源部署无需配置。
 
 ## 本地运行
 
