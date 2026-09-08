@@ -203,17 +203,17 @@ func listHadoopHistoryApplications(ds model.DataSource) []model.HadoopApplicatio
 	return items
 }
 
-func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, error) {
+func ListHadoopContainers(sourceID, appID string) (model.HadoopContainerSet, error) {
 	ds, err := GetDataSourceByID(sourceID)
 	if err != nil {
-		return nil, err
+		return model.HadoopContainerSet{}, err
 	}
 	if !strings.EqualFold(ds.Type, "hadoop") {
-		return nil, errors.New("数据源不是 Hadoop 类型")
+		return model.HadoopContainerSet{}, errors.New("数据源不是 Hadoop 类型")
 	}
 	base, err := hadoopBaseURL(ds)
 	if err != nil {
-		return nil, err
+		return model.HadoopContainerSet{}, err
 	}
 	var attempts struct {
 		AppAttempts struct {
@@ -227,11 +227,32 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 		} `json:"appAttempts"`
 	}
 	if err := hadoopGetJSON(base+"/ws/v1/cluster/apps/"+appID+"/appattempts", &attempts); err != nil {
-		return nil, err
+		return model.HadoopContainerSet{}, err
 	}
 	if len(attempts.AppAttempts.AppAttempt) == 0 {
-		return []model.HadoopContainer{}, nil
+		return model.HadoopContainerSet{Attempts: []model.HadoopApplicationAttempt{}, Containers: []model.HadoopContainer{}}, nil
 	}
+	result := model.HadoopContainerSet{Attempts: make([]model.HadoopApplicationAttempt, 0, len(attempts.AppAttempts.AppAttempt)), Containers: []model.HadoopContainer{}}
+	for _, attempt := range attempts.AppAttempts.AppAttempt {
+		attemptID := strings.TrimSpace(attempt.AppAttemptID)
+		if attemptID == "" {
+			attemptID, err = hadoopJSONIdentifier(attempt.ID)
+		}
+		if err != nil {
+			continue
+		}
+		metadata := model.HadoopApplicationAttempt{ID: attemptID, ContainerID: attempt.ContainerID, NodeHTTPAddress: attempt.NodeHTTPAddress, LogURL: attempt.LogsLink}
+		result.Attempts = append(result.Attempts, metadata)
+		containers, listErr := listHadoopAttemptContainers(base, appID, metadata)
+		if listErr != nil {
+			continue
+		}
+		result.Containers = append(result.Containers, containers...)
+	}
+	return result, nil
+}
+
+func listHadoopAttemptContainers(base, appID string, attempt model.HadoopApplicationAttempt) ([]model.HadoopContainer, error) {
 	var payload struct {
 		Containers struct {
 			Container []struct {
@@ -250,37 +271,33 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 			Priority        string `json:"priority"`
 		} `json:"container"`
 	}
-	latest := attempts.AppAttempts.AppAttempt[len(attempts.AppAttempts.AppAttempt)-1]
-	id := strings.TrimSpace(latest.AppAttemptID)
-	if id == "" {
-		id, err = hadoopJSONIdentifier(latest.ID)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := hadoopGetJSON(base+"/ws/v1/cluster/apps/"+appID+"/appattempts/"+id+"/containers", &payload); err != nil {
+	if err := hadoopGetJSON(base+"/ws/v1/cluster/apps/"+appID+"/appattempts/"+attempt.ID+"/containers", &payload); err != nil {
 		return nil, err
 	}
 	containers := payload.Containers.Container
 	if len(containers) == 0 {
 		containers = payload.Container
 	}
-	if len(containers) == 0 && latest.ContainerID != "" {
+	if len(containers) == 0 && attempt.ContainerID != "" {
 		return []model.HadoopContainer{{
-			ID:              latest.ContainerID,
-			NodeHTTPAddress: latest.NodeHTTPAddress,
+			ID:              attempt.ContainerID,
+			AttemptID:       attempt.ID,
+			NodeHTTPAddress: attempt.NodeHTTPAddress,
 			State:           "COMPLETED",
-			LogURL:          latest.LogsLink,
+			LogURL:          attempt.LogURL,
+			IsAM:            true,
 		}}, nil
 	}
 	items := make([]model.HadoopContainer, 0, len(containers))
 	for _, container := range containers {
 		items = append(items, model.HadoopContainer{
 			ID:              container.ID,
+			AttemptID:       attempt.ID,
 			NodeHTTPAddress: container.NodeHTTPAddress,
 			State:           container.State,
 			LogURL:          container.LogURL,
 			Priority:        container.Priority,
+			IsAM:            container.ID == attempt.ContainerID,
 		})
 	}
 	return items, nil
@@ -299,53 +316,62 @@ func hadoopJSONIdentifier(raw json.RawMessage) (string, error) {
 	return "", errors.New("YARN app attempt ID 无效")
 }
 
-func HadoopContainerLog(sourceID, logURL string) (string, error) {
+func HadoopContainerLog(sourceID, logURL string) (model.HadoopLogContent, error) {
 	ds, err := GetDataSourceByID(sourceID)
 	if err != nil {
-		return "", err
+		return model.HadoopLogContent{}, err
 	}
 	if !strings.EqualFold(ds.Type, "hadoop") {
-		return "", errors.New("数据源不是 Hadoop 类型")
+		return model.HadoopLogContent{}, errors.New("数据源不是 Hadoop 类型")
 	}
 	base, err := hadoopBaseURL(ds)
 	if err != nil {
-		return "", err
+		return model.HadoopLogContent{}, err
 	}
 	if !hadoopLogURLBelongsToSource(ds, base, logURL) {
-		return "", errors.New("日志地址不属于当前 Hadoop 数据源")
+		return model.HadoopLogContent{}, errors.New("日志地址不属于当前 Hadoop 数据源")
 	}
 	requestURL := hadoopNodeManagerLogURL(ds, logURL)
 	client := safeHTTPClient(12 * time.Second)
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := hadoopLogGet(client, requestURL)
 	if err != nil {
-		return "", fmt.Errorf("日志服务不可用：%w", err)
+		return model.HadoopLogContent{}, fmt.Errorf("日志服务不可用：%w", err)
 	}
 	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
 		location, locationErr := resp.Location()
 		_ = resp.Body.Close()
 		if locationErr != nil {
-			return "", locationErr
+			return model.HadoopLogContent{}, locationErr
 		}
 		redirectURL := hadoopJobHistoryLogURL(ds, location)
 		if !hadoopLogURLBelongsToSource(ds, base, redirectURL) {
-			return "", errors.New("重定向日志地址不属于当前 Hadoop 数据源")
+			return model.HadoopLogContent{}, errors.New("重定向日志地址不属于当前 Hadoop 数据源")
 		}
 		requestURL = redirectURL
 		resp, err = hadoopLogGet(client, redirectURL)
 		if err != nil {
-			return "", fmt.Errorf("JobHistory 日志服务不可用：%w", err)
+			return model.HadoopLogContent{}, fmt.Errorf("JobHistory 日志服务不可用：%w", err)
 		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", errors.New(resp.Status)
+		return model.HadoopLogContent{}, errors.New(resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	const maxContainerLogBytes = 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxContainerLogBytes+1))
 	if err != nil {
-		return "", err
+		return model.HadoopLogContent{}, err
 	}
-	return readableHadoopLogFromDirectory(client, ds, base, requestURL, body)
+	truncated := len(body) > maxContainerLogBytes
+	if truncated {
+		body = body[:maxContainerLogBytes]
+	}
+	content, err := readableHadoopLogFromDirectory(client, ds, base, requestURL, body)
+	if err != nil {
+		return model.HadoopLogContent{}, err
+	}
+	return model.HadoopLogContent{Content: content, Truncated: truncated}, nil
 }
 
 // hadoopLogGet retries a transient connection reset once. Hadoop's embedded
