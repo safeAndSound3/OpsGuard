@@ -41,6 +41,12 @@ func initNavigationStore(current *sql.DB) error {
 	)`); err != nil {
 		return err
 	}
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mysql_menu_items (source_id varchar(64) PRIMARY KEY, name varchar(120) NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		return err
+	}
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS consul_menu_items (source_id varchar(64) PRIMARY KEY, name varchar(120) NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		return err
+	}
 	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS hadoop_application_snapshots (
 		source_id varchar(64) NOT NULL,
 		application_id varchar(160) NOT NULL,
@@ -49,6 +55,17 @@ func initNavigationStore(current *sql.DB) error {
 		last_seen_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (source_id, application_id),
 		INDEX idx_hadoop_snapshot_last_seen (source_id, last_seen_at)
+	)`); err != nil {
+		return err
+	}
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS hadoop_container_snapshots (
+		source_id varchar(64) NOT NULL,
+		application_id varchar(160) NOT NULL,
+		container_json json NOT NULL,
+		first_seen_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_seen_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (source_id, application_id),
+		INDEX idx_hadoop_container_snapshot_last_seen (source_id, last_seen_at)
 	)`); err != nil {
 		return err
 	}
@@ -282,6 +299,93 @@ func DeleteAmbariMenuItem(sourceID string) error {
 	return err
 }
 
+func ListMySQLMenuItems() []model.MySQLMenuItem {
+	current := currentStore()
+	if current == nil {
+		return []model.MySQLMenuItem{}
+	}
+	rows, err := current.Query(`SELECT source_id, name FROM mysql_menu_items ORDER BY created_at, source_id`)
+	if err != nil {
+		return []model.MySQLMenuItem{}
+	}
+	defer rows.Close()
+	items := []model.MySQLMenuItem{}
+	for rows.Next() {
+		var item model.MySQLMenuItem
+		if rows.Scan(&item.SourceID, &item.Name) == nil {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+func AddMySQLMenuItem(sourceID, name string) (model.MySQLMenuItem, error) {
+	sourceID, name = strings.TrimSpace(sourceID), strings.TrimSpace(name)
+	source, err := GetDataSourceByID(sourceID)
+	if err != nil || !strings.EqualFold(source.Type, "mysql") {
+		return model.MySQLMenuItem{}, errors.New("MySQL data source not found")
+	}
+	if name == "" {
+		name = source.Name
+	}
+	if len(name) > 120 {
+		return model.MySQLMenuItem{}, errors.New("MySQL menu name must be at most 120 characters")
+	}
+	current := currentStore()
+	if current == nil {
+		return model.MySQLMenuItem{}, errors.New("MySQL menu store is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := current.ExecContext(ctx, `INSERT INTO mysql_menu_items (source_id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)`, sourceID, name); err != nil {
+		return model.MySQLMenuItem{}, err
+	}
+	return model.MySQLMenuItem{SourceID: sourceID, Name: name}, nil
+}
+
+func ListConsulMenuItems() []model.ConsulMenuItem {
+	current := currentStore()
+	if current == nil {
+		return []model.ConsulMenuItem{}
+	}
+	rows, err := current.Query(`SELECT source_id, name FROM consul_menu_items ORDER BY created_at, source_id`)
+	if err != nil {
+		return []model.ConsulMenuItem{}
+	}
+	defer rows.Close()
+	items := []model.ConsulMenuItem{}
+	for rows.Next() {
+		var item model.ConsulMenuItem
+		if rows.Scan(&item.SourceID, &item.Name) == nil {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func AddConsulMenuItem(sourceID, name string) (model.ConsulMenuItem, error) {
+	sourceID, name = strings.TrimSpace(sourceID), strings.TrimSpace(name)
+	source, err := GetDataSourceByID(sourceID)
+	if err != nil || !strings.EqualFold(source.Type, "consul") {
+		return model.ConsulMenuItem{}, errors.New("Consul data source not found")
+	}
+	if name == "" {
+		name = source.Name
+	}
+	if len(name) > 120 {
+		return model.ConsulMenuItem{}, errors.New("Consul menu name must be at most 120 characters")
+	}
+	current := currentStore()
+	if current == nil {
+		return model.ConsulMenuItem{}, errors.New("Consul menu store is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := current.ExecContext(ctx, `INSERT INTO consul_menu_items (source_id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)`, sourceID, name); err != nil {
+		return model.ConsulMenuItem{}, err
+	}
+	return model.ConsulMenuItem{SourceID: sourceID, Name: name}, nil
+}
+
 func ListDashboardItems() []model.DashboardItem {
 	current := currentStore()
 	if current == nil {
@@ -290,8 +394,8 @@ func ListDashboardItems() []model.DashboardItem {
 	rows, err := current.Query(`SELECT dashboard.id, dashboard.name, dashboard.source_id, source.name, source.type, dashboard.created_at
 		FROM dashboard_items dashboard
 		INNER JOIN data_sources source ON source.id = dashboard.source_id
-		WHERE source.type IN ('MySQL', 'SSH', 'Redis', 'ClickHouse', 'Kafka')
-		ORDER BY CASE source.type WHEN 'SSH' THEN 0 WHEN 'MySQL' THEN 1 WHEN 'Redis' THEN 2 WHEN 'ClickHouse' THEN 3 WHEN 'Kafka' THEN 4 ELSE 9 END, source.name ASC, dashboard.name ASC, dashboard.id ASC`)
+		WHERE source.type IN ('MySQL', 'SSH', 'Agent', 'Redis', 'ClickHouse', 'Kafka')
+		ORDER BY CASE source.type WHEN 'SSH' THEN 0 WHEN 'Agent' THEN 0 WHEN 'MySQL' THEN 1 WHEN 'Redis' THEN 2 WHEN 'ClickHouse' THEN 3 WHEN 'Kafka' THEN 4 ELSE 9 END, source.name ASC, dashboard.name ASC, dashboard.id ASC`)
 	if err != nil {
 		return []model.DashboardItem{}
 	}
@@ -316,7 +420,7 @@ func AddDashboardItem(item model.DashboardItem) (model.DashboardItem, error) {
 	if err != nil {
 		return model.DashboardItem{}, errors.New("dashboard data source not found")
 	}
-	if !strings.EqualFold(source.Type, "mysql") && !strings.EqualFold(source.Type, "ssh") && !strings.EqualFold(source.Type, "redis") && !strings.EqualFold(source.Type, "clickhouse") && !strings.EqualFold(source.Type, "kafka") {
+	if !strings.EqualFold(source.Type, "mysql") && !strings.EqualFold(source.Type, "ssh") && !strings.EqualFold(source.Type, "agent") && !strings.EqualFold(source.Type, "redis") && !strings.EqualFold(source.Type, "clickhouse") && !strings.EqualFold(source.Type, "kafka") {
 		return model.DashboardItem{}, errors.New("only MySQL, SSH, Redis, ClickHouse and Kafka data sources support dashboards")
 	}
 	if item.ID == "" {
@@ -365,6 +469,8 @@ func refreshSettingDefinition(scope string) (string, model.RefreshSettings) {
 		return "hadoop_task_list_interval", model.RefreshSettings{Value: 5, Unit: "m"}
 	case "dashboard":
 		return "dashboard_refresh_interval", model.RefreshSettings{Value: 1, Unit: "m"}
+	case "consul":
+		return "consul_kv_sync_interval", model.RefreshSettings{Value: 1, Unit: "m"}
 	default:
 		return "refresh_interval", model.RefreshSettings{Value: 15, Unit: "s"}
 	}
@@ -423,4 +529,125 @@ func SaveRefreshSettings(settings model.RefreshSettings, scopes ...string) (mode
 	}
 	settings.Configured = true
 	return settings, nil
+}
+
+func GetPlatformName() string {
+	const fallback = "OpsGuard"
+	current := currentStore()
+	if current == nil {
+		return fallback
+	}
+	var value string
+	if err := current.QueryRow(`SELECT setting_value FROM system_settings WHERE setting_key = 'platform_name'`).Scan(&value); err != nil {
+		return fallback
+	}
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func SavePlatformName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > 40 {
+		return "", errors.New("平台名称长度应为 1–40 个字符")
+	}
+	current := currentStore()
+	if current == nil {
+		return "", errors.New("system settings store is not initialized")
+	}
+	_, err := current.Exec(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('platform_name', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = CURRENT_TIMESTAMP`, value)
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+// GetOperationConfirmations returns the platform-wide confirmation policy for
+// destructive database operations. It defaults to enabled for new installs.
+func GetOperationConfirmations() bool {
+	current := currentStore()
+	if current == nil {
+		return true
+	}
+	var value string
+	if err := current.QueryRow(`SELECT setting_value FROM system_settings WHERE setting_key = 'require_write_confirmation'`).Scan(&value); err != nil {
+		return true
+	}
+	return value != "false"
+}
+
+func SaveOperationConfirmations(required bool) error {
+	current := currentStore()
+	if current == nil {
+		return errors.New("系统设置数据库未初始化")
+	}
+	_, err := current.Exec(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('require_write_confirmation', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_at=CURRENT_TIMESTAMP`, strconv.FormatBool(required))
+	return err
+}
+
+// GetMySQLQueryResultLimit returns the maximum number of rows returned by an
+// interactive SQL query.
+func GetMySQLQueryResultLimit() int {
+	current := currentStore()
+	if current == nil {
+		return 500
+	}
+	var value string
+	if err := current.QueryRow(`SELECT setting_value FROM system_settings WHERE setting_key = 'mysql_query_result_limit'`).Scan(&value); err != nil {
+		return 500
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit < 1 || limit > 10000 {
+		return 500
+	}
+	return limit
+}
+
+func SaveMySQLQueryResultLimit(limit int) error {
+	if limit < 1 || limit > 10000 {
+		return errors.New("SQL 查询结果行数必须在 1 到 10000 之间")
+	}
+	current := currentStore()
+	if current == nil {
+		return errors.New("系统设置数据库未初始化")
+	}
+	_, err := current.Exec(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('mysql_query_result_limit', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_at=CURRENT_TIMESTAMP`, strconv.Itoa(limit))
+	return err
+}
+
+const (
+	defaultMySQLQueryResultMaxBytes = 2 * 1024 * 1024
+	minMySQLQueryResultMaxBytes     = 1 * 1024 * 1024
+	maxMySQLQueryResultMaxBytes     = 100 * 1024 * 1024
+)
+
+// GetMySQLQueryResultMaxBytes returns the configured maximum serialized size
+// of a SQL result. It is applied together with the row limit.
+func GetMySQLQueryResultMaxBytes() int {
+	current := currentStore()
+	if current == nil {
+		return defaultMySQLQueryResultMaxBytes
+	}
+	var value string
+	if err := current.QueryRow(`SELECT setting_value FROM system_settings WHERE setting_key = 'mysql_query_result_max_bytes'`).Scan(&value); err != nil {
+		return defaultMySQLQueryResultMaxBytes
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit < minMySQLQueryResultMaxBytes || limit > maxMySQLQueryResultMaxBytes {
+		return defaultMySQLQueryResultMaxBytes
+	}
+	return limit
+}
+
+func SaveMySQLQueryResultMaxBytes(limit int) error {
+	if limit < minMySQLQueryResultMaxBytes || limit > maxMySQLQueryResultMaxBytes {
+		return errors.New("SQL 查询结果大小必须在 1 MB 到 100 MB 之间")
+	}
+	current := currentStore()
+	if current == nil {
+		return errors.New("系统设置数据库未初始化")
+	}
+	_, err := current.Exec(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('mysql_query_result_max_bytes', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_at=CURRENT_TIMESTAMP`, strconv.Itoa(limit))
+	return err
 }

@@ -21,7 +21,7 @@ func main() {
 		Addr:              fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      35 * time.Second,
 		IdleTimeout:       15 * time.Second,
 	}
 

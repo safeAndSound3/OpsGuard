@@ -138,7 +138,12 @@ func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 func limitRequestBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
-			r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+			limit := int64(2 << 20)
+			if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/") {
+				// MySQL import accepts a 20 MB file plus multipart framing.
+				limit = 21 << 20
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)
 	})

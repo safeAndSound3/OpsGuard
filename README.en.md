@@ -6,8 +6,8 @@ OpsGuard is a locally deployable operations inspection and alert-handling platfo
 
 ## Features
 
-- Data sources: Prometheus, MySQL, SSH, and Hadoop / YARN.
-- Alerting: synchronized Prometheus rules plus custom MySQL data, port, file, and SSH script checks.
+- Data sources: Prometheus, MySQL, SSH, SSH - Agent, and Hadoop / YARN.
+- Alerting: synchronized Prometheus rules plus custom MySQL data, port, host file, and script checks.
 - Notifications: separate active, alert, and recovery events, with unread state, duration, mark-all-read, and muted persistent alerts.
 - Hadoop: running applications from ResourceManager; completed MapReduce applications from JobHistory; server-side filters, pagination, container logs, and deep links.
 - Dashboards: collected MySQL and SSH metrics, plus MySQL slow-query and high-latency SQL details.
@@ -25,7 +25,8 @@ Browser
           ├─ MySQL: platform configuration, notifications, metric samples
           ├─ Prometheus: metrics, rules, alerts
           ├─ Hadoop: ResourceManager / NodeManager / JobHistory
-          └─ SSH: node metrics and custom check scripts
+          ├─ SSH: compatibility path for existing node metrics and custom checks
+          └─ SSH - Agent: platform-pulled host metrics and runtime file/script checks
 ```
 
 Platform data is isolated from monitored systems. Each Prometheus, Hadoop, SSH, and MySQL data source is queried within its own data-source ID boundary. Login sessions use HttpOnly cookies and are stored in the platform MySQL database for restart and multi-instance resilience; successful, failed, and rate-limited logins are recorded in the security audit log.
@@ -37,6 +38,10 @@ Platform data is isolated from monitored systems. Each Prometheus, Hadoop, SSH, 
 - MySQL 8+ for OpsGuard platform data
 
 Prometheus, Hadoop, SSH, and external MySQL are optional integrations. Production credentials are never exposed to browser code.
+
+## Linux Agent
+
+Production monitoring can use `SSH - Agent` instead of storing SSH passwords in the platform. The Agent listens on the monitored host (default port `4001`); the platform connects with its host, port, and token to pull metrics and send runtime file/script checks. Agent configuration uses a readable `.conf` file and contains no fixed file or script allowlist. See [agent/README.md](agent/README.md) for deployment.
 
 ## Configuration
 

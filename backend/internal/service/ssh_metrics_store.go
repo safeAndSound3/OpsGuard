@@ -37,7 +37,19 @@ func initSSHMetricStore() error {
 		return err
 	}
 	_, _ = current.Exec(`ALTER TABLE ssh_metric_samples ADD COLUMN load5 double NOT NULL DEFAULT 0 AFTER load1`)
-	return nil
+	_, err = current.Exec(`CREATE TABLE IF NOT EXISTS host_filesystem_samples (
+		id bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+		source_id varchar(64) NOT NULL,
+		filesystem varchar(512) NOT NULL,
+		mount_point varchar(512) NOT NULL,
+		total_bytes bigint NOT NULL,
+		used_bytes bigint NOT NULL,
+		used_percent double NOT NULL,
+		collected_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_host_filesystem_samples_source_time (source_id, collected_at),
+		INDEX idx_host_filesystem_samples_source_mount_time (source_id, mount_point, collected_at)
+	)`)
+	return err
 }
 
 func startSSHMetricCollector() {
@@ -59,19 +71,32 @@ func collectAndStoreSSHMetrics() {
 		return
 	}
 	for _, ds := range ListDataSources() {
-		if !ds.Enabled || !strings.EqualFold(ds.Type, "ssh") {
+		if !ds.Enabled || (!strings.EqualFold(ds.Type, "ssh") && !isAgentSSH(ds)) {
 			continue
 		}
 		_ = FillDataSourcePassword(&ds)
-		metrics, err := collectSSHDataSourceMetrics(ds)
+		metrics, err := collectHostDataSourceMetrics(ds)
 		if err != nil {
 			continue
 		}
-		_, _ = current.Exec(`INSERT INTO ssh_metric_samples (source_id, cpu_percent, load1, load5, memory_percent, disk_percent, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, ds.ID, metrics.cpu, metrics.load1, metrics.load5, metrics.memory, metrics.disk, time.Now())
+		collectedAt := time.Now()
+		_, _ = current.Exec(`INSERT INTO ssh_metric_samples (source_id, cpu_percent, load1, load5, memory_percent, disk_percent, collected_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, ds.ID, metrics.cpu, metrics.load1, metrics.load5, metrics.memory, metrics.disk, collectedAt)
+		_ = storeFilesystemMetrics(ds.ID, metrics.filesystems, collectedAt)
 	}
 }
 
-type sshMetrics struct{ cpu, load1, load5, memory, disk float64 }
+func collectHostDataSourceMetrics(ds model.DataSource) (sshMetrics, error) {
+	if isAgentSSH(ds) {
+		metrics, err := collectAgentDataSourceMetrics(ds)
+		return sshMetrics{cpu: metrics.cpu, load1: metrics.load1, load5: metrics.load5, memory: metrics.memory, disk: metrics.disk, filesystems: metrics.filesystems}, err
+	}
+	return collectSSHDataSourceMetrics(ds)
+}
+
+type sshMetrics struct {
+	cpu, load1, load5, memory, disk float64
+	filesystems                     []FilesystemMetric
+}
 
 func collectSSHDataSourceMetrics(ds model.DataSource) (sshMetrics, error) {
 	out, err := executeSSHCommand(ds, "LC_ALL=C sh -c 'awk \"/^cpu / {print \\\u00242,\\\u00244}\" /proc/stat; awk \"{print \\\u00241,\\\u00242}\" /proc/loadavg; free -b | awk \"/^Mem:/ {print \\\u00242,\\\u00243}\"; df -PB1 / | awk \"NR==2 {print \\\u00243,\\\u00242}\"'")
@@ -102,7 +127,11 @@ func collectSSHDataSourceMetrics(ds model.DataSource) (sshMetrics, error) {
 	if values[7] > 0 {
 		disk = (values[6] / values[7]) * 100
 	}
-	return sshMetrics{cpu: cpu, load1: values[2], load5: values[3], memory: memory, disk: disk}, nil
+	filesystemRaw, err := executeSSHCommand(ds, "LC_ALL=C df -P -B1")
+	if err != nil {
+		return sshMetrics{}, err
+	}
+	return sshMetrics{cpu: cpu, load1: values[2], load5: values[3], memory: memory, disk: disk, filesystems: parseFilesystemMetrics(filesystemRaw)}, nil
 }
 
 func executeSSHCommand(ds model.DataSource, command string) (string, error) {
@@ -153,11 +182,9 @@ func executeSSHCommandWithExitStatus(ds model.DataSource, command string) (strin
 func sshHostKeyCallback() (ssh.HostKeyCallback, error) {
 	policy := strings.ToLower(strings.TrimSpace(os.Getenv("SSH_HOST_KEY_POLICY")))
 	if policy == "" {
-		if strings.EqualFold(getEnv("ENV", "development"), "production") {
-			policy = "strict"
-		} else {
-			policy = "insecure"
-		}
+		// Strict verification is the secure default in every environment.
+		// Insecure mode must be explicitly opted into for local testing.
+		policy = "strict"
 	}
 	if policy == "insecure" {
 		insecureSSHWarningOnce.Do(func() {

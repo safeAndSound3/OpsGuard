@@ -106,3 +106,18 @@ func TestNormalizeCollectionRuleMigratesLegacyTodayCondition(t *testing.T) {
 		t.Fatalf("normalizeCollectionRule() condition = %q", rule.Condition)
 	}
 }
+
+func TestFileCheckDiagnosticNormalizesTransportErrors(t *testing.T) {
+	path := "/data/"
+	for _, raw := range []string{
+		"read directory failed: open /data/: no such file or directory",
+		"find: '/data/': No such file or directory",
+	} {
+		if got, want := fileCheckDiagnostic(path, raw), "目录不存在：/data/"; got != want {
+			t.Fatalf("fileCheckDiagnostic(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	if got, want := fileCheckDiagnostic(path, "matched 0 files"), "未发现匹配文件"; got != want {
+		t.Fatalf("no-match diagnostic = %q, want %q", got, want)
+	}
+}

@@ -1,19 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent, KeyboardEvent, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { createRoot } from 'react-dom/client'
 import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 import './DashboardWater.css'
+import ConsulWorkspace from './ConsulWorkspace'
 
 type Source = { id: string; name: string; type: string; host: string; port: string; enabled: boolean; status: string; lastTest: string; username?: string; password?: string; database?: string; remark?: string; options?: Record<string, string> }
 type PrometheusRule = { name: string; type: string; query: string; duration: number; frequency?: number; health: string; state?: string; severity?: string; summary?: string; description?: string; group: string; file?: string; labels?: Record<string, string>; annotations?: Record<string, string>; sourceId?: string; sourceName?: string }
-type NotificationItem = { id: string; ruleId?: string; ruleName: string; source?: string; database?: string; status: string; message: string; unread: boolean; muted?: boolean; firstSeenAt: string; lastSeenAt: string; resolvedAt?: string }
+type NotificationItem = { id: string; ruleId?: string; ruleName: string; source?: string; database?: string; table?: string; field?: string; status: string; message: string; unread: boolean; muted?: boolean; firstSeenAt: string; lastSeenAt: string; resolvedAt?: string }
+type MySQLAsyncJob = { id: string; sourceId: string; kind: string; status: string; progress: number; message: string; result?: any; fileName?: string; createdAt: string; finishedAt?: string }
+type SQLHistoryItem = { id: number; database: string; statement: string; status: string; resultRows: number; affected: number; durationMs: number; error?: string; username: string; createdAt: string }
 type NotificationGroup = { key: string; ruleName: string; status: string; unread: boolean; muted: boolean; message: string; alertMessage: string; firstSeenAt: string; lastSeenAt: string; latestAlertAt?: string; resolvedAt?: string; representative: NotificationItem }
 type CollectionRule = { id: string; name: string; source: string; database: string; table: string; field: string; condition: string; threshold?: string; timeWindow: string; frequency?: string; remark?: string; lastRun: string; lastEvaluatedAt?: string; resultDetails?: string; status: string }
 type DashboardItem = { id: string; name: string; sourceId: string; sourceName: string; sourceType: string; createdAt: string }
 type HadoopMenuItem = { sourceId: string; name?: string }
 type AmbariMenuItem = { sourceId: string; name?: string }
+type MySQLMenuItem = { sourceId: string; name?: string }
+type ConsulMenuItem = { sourceId: string; name?: string }
 type AmbariOverview = { clusterName: string; version: string; stack: string; services: Array<{ name: string; state: string; maintenance: string }>; hosts: Array<{ name: string; status: string; maintenance: string }>; alerts: Array<{ label: string; state: string; text: string; host: string; service: string; time: number }>; requests: Array<{ id: number; context: string; status: string; startTime: number; endTime: number }>; configs: Record<string, string> }
 type MySQLSQLSample = { schemaName?: string; digest?: string; queryText: string; count: number; totalLatencyMs: number; averageLatencyMs: number; maxLatencyMs: number; rowsExamined: number; rowsSent: number; firstSeen?: string; lastSeen?: string }
 type PrometheusMetric = { name: string }
@@ -21,7 +25,7 @@ type MetricCategory = { id: string; label: string; matches: (name: string) => bo
 type SelectOption = { value: string; label: string; disabled?: boolean }
 type PlatformLink = { id: string; name: string; url: string }
 type RefreshSetting = { value: number; unit: 's' | 'm' | 'h'; configured?: boolean }
-type UpdateFrequencyScope = 'general' | 'datasource' | 'hadoop' | 'dashboard'
+type UpdateFrequencyScope = 'general' | 'datasource' | 'hadoop' | 'dashboard' | 'consul'
 
 function DataSourceDeleteDialog({ sourceName, onClose, onConfirm }: { sourceName: string; onClose: () => void; onConfirm: () => void }) {
   return <div className="modal-backdrop source-delete-backdrop" role="presentation" onClick={onClose}><section className="surface source-delete-modal" role="dialog" aria-modal="true" aria-labelledby="source-delete-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="source-delete-title">删除数据源</h2><p>{sourceName}</p></div><button className="close-button" type="button" aria-label="关闭" onClick={onClose}>×</button></header><div className="source-delete-content"><b>删除后无法恢复</b><span>该数据源配置、关联告警规则和导入的大屏将一并删除。</span></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={onClose}>取消</button><button className="button danger-button" type="button" onClick={onConfirm}>确认删除</button></footer></section></div>
@@ -30,7 +34,29 @@ function DataSourceDeleteDialog({ sourceName, onClose, onConfirm }: { sourceName
 const api = '/api'
 const refreshIntervalEvent = 'opsguard-refresh-interval-change'
 const platformLinksEvent = 'opsguard-platform-links-change'
+const platformNameEvent = 'opsguard-platform-name-change'
 let refreshIntervalCache: RefreshSetting = { value: 15, unit: 's' }
+let platformNameCache = 'OpsGuard'
+
+async function loadPlatformName() {
+  try {
+    const response = await fetch(`${api}/platform-settings`)
+    const data = await response.json()
+    if (response.ok && String(data.platformName || '').trim()) platformNameCache = String(data.platformName).trim()
+  } catch { /* Keep the local default when the login page is offline. */ }
+  return platformNameCache
+}
+
+function usePlatformName() {
+  const [name, setName] = useState(platformNameCache)
+  useEffect(() => {
+    void loadPlatformName().then(setName)
+    const update = () => setName(platformNameCache)
+    window.addEventListener(platformNameEvent, update)
+    return () => window.removeEventListener(platformNameEvent, update)
+  }, [])
+  return name
+}
 
 async function loadPlatformLinks(): Promise<PlatformLink[]> {
   try {
@@ -51,15 +77,6 @@ async function savePlatformLinks(links: PlatformLink[]): Promise<PlatformLink[]>
 function readRefreshInterval() {
   const { value, unit } = refreshIntervalCache
   return { value, unit, milliseconds: value * (unit === 'h' ? 3600000 : unit === 'm' ? 60000 : 1000) }
-}
-
-async function saveRefreshSettings(setting: RefreshSetting): Promise<RefreshSetting> {
-  const response = await fetch(`${api}/settings/refresh`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(setting) })
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error || '保存刷新频率失败')
-  refreshIntervalCache = { value: Math.max(1, Number(data.value) || 15), unit: ['s', 'm', 'h'].includes(data.unit) ? data.unit : 's', configured: true }
-  window.dispatchEvent(new Event(refreshIntervalEvent))
-  return refreshIntervalCache
 }
 
 async function loadRefreshSettings(): Promise<RefreshSetting> {
@@ -89,6 +106,7 @@ const updateFrequencyDefaults: Record<Exclude<UpdateFrequencyScope, 'general'>, 
   datasource: { value: 2, unit: 'm' },
   hadoop: { value: 5, unit: 'm' },
   dashboard: { value: 1, unit: 'm' },
+  consul: { value: 1, unit: 'm' },
 }
 
 async function loadScopedRefreshSettings(scope: UpdateFrequencyScope): Promise<RefreshSetting> {
@@ -124,7 +142,7 @@ function useScopedRefreshInterval(scope: Exclude<UpdateFrequencyScope, 'general'
   }, [scope])
   return interval
 }
-const icons: Record<string, string> = { query: '◎', dashboard: '▦', data: '◫', alert: '◇', notify: '◉', settings: '⚙', plus: '+', arrow: '→', bell: '' }
+const icons: Record<string, string> = { query: '◎', dashboard: '▦', data: '◫', alert: '◇', notify: '◉', audit: '◷', settings: '⚙', plus: '+', arrow: '→', bell: '' }
 const metricCategories: MetricCategory[] = [
   { id: 'mysql', label: 'MySQL', matches: name => name.includes('mysql') },
   { id: 'node', label: '主机', matches: name => name.startsWith('node_') },
@@ -132,6 +150,20 @@ const metricCategories: MetricCategory[] = [
   { id: 'scrape', label: '采集', matches: name => name.startsWith('scrape_') || name === 'up' },
 ]
 function Icon({ name }: { name: string }) { return <span className={`icon icon-${name}`} aria-hidden="true">{icons[name]}</span> }
+
+function SidebarIcon({ name }: { name: string }) {
+  const paths: Record<string, ReactNode> = {
+    dashboard: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
+    query: <><path d="M4 19V5" /><path d="M4 19h17" /><path d="m7 15 4-4 3 2 5-6" /><circle cx="19" cy="7" r="1" fill="currentColor" stroke="none" /></>,
+    alert: <><path d="M12 4 3.7 19h16.6L12 4Z" /><path d="M12 9v4" /><path d="M12 16h.01" /></>,
+    notify: <><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 22h4" /></>,
+    data: <><rect x="3" y="4" width="18" height="6" rx="1.5" /><rect x="3" y="14" width="18" height="6" rx="1.5" /><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6" /></>,
+    audit: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3.5 2" /></>,
+    consul: <><path d="M6 4h12v16H6z" /><path d="M9 8h6M9 12h6M9 16h3" /></>,
+    settings: <><path d="M4 6h3m4 0h9M4 12h9m4 0h3M4 18h1m4 0h11" /><circle cx="9" cy="6" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="7" cy="18" r="2" /></>,
+  }
+  return <svg className="sidebar-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
+}
 
 function Tooltip({ content, children }: { content: string; children: ReactNode }) {
   return <span className="platform-tooltip" tabIndex={0}>{children}<span className="platform-tooltip-content" role="tooltip">{content}</span></span>
@@ -223,8 +255,40 @@ function timeoutSeconds(value?: string) {
   return matched?.[0] || '5'
 }
 
+function ModalScrollLock() {
+  useEffect(() => {
+    const body = document.body
+    const initialOverflow = body.style.overflow
+    const initialPaddingRight = body.style.paddingRight
+    let locked = false
+    const sync = () => {
+      const hasModal = Boolean(document.querySelector('.modal-backdrop'))
+      if (hasModal && !locked) {
+        const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth
+        body.style.overflow = 'hidden'
+        if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`
+        locked = true
+      } else if (!hasModal && locked) {
+        body.style.overflow = initialOverflow
+        body.style.paddingRight = initialPaddingRight
+        locked = false
+      }
+    }
+    const observer = new MutationObserver(sync)
+    observer.observe(document.body, { childList: true, subtree: true })
+    sync()
+    return () => {
+      observer.disconnect()
+      body.style.overflow = initialOverflow
+      body.style.paddingRight = initialPaddingRight
+    }
+  }, [])
+  return null
+}
+
 function App() {
 	const [authed, setAuthed] = useState<boolean | null>(null)
+	const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem('opsguard-sidebar-collapsed') === 'true')
 	useEffect(() => {
 		void fetch(`${api}/session`)
 			.then(response => setAuthed(response.ok))
@@ -236,12 +300,14 @@ function App() {
   }
 	if (authed === null) return <div className="login-page"><section className="surface login-panel"><p>正在验证登录状态...</p></section></div>
   if (!authed) return <Login onLogin={() => setAuthed(true)} />
-  return <BrowserRouter><div className="app-shell"><Sidebar /><main className="workspace"><TopNav onLogout={logout} /><Routes><Route path="/" element={<Dashboards />} /><Route path="/metrics" element={<MetricQuery />} /><Route path="/hadoop" element={<HadoopYarn />} /><Route path="/ambari" element={<Ambari />} /><Route path="/datasources" element={<DataSources />} /><Route path="/alerts" element={<Alerts />} /><Route path="/notifications" element={<Notifications />} /><Route path="/config" element={<Settings />} /></Routes></main></div></BrowserRouter>
+	const toggleSidebar = () => setSidebarCollapsed(current => { const next = !current; window.localStorage.setItem('opsguard-sidebar-collapsed', String(next)); return next })
+	return <BrowserRouter><ModalScrollLock /><div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}><Sidebar collapsed={sidebarCollapsed} onToggle={toggleSidebar} /><main className="workspace"><TopNav onLogout={logout} /><Routes><Route path="/" element={<Dashboards />} /><Route path="/metrics" element={<MetricQuery />} /><Route path="/hadoop" element={<HadoopYarn />} /><Route path="/ambari" element={<Ambari />} /><Route path="/mysql" element={<MySQLWorkspace />} /><Route path="/consul" element={<ConsulWorkspace />} /><Route path="/datasources" element={<DataSources />} /><Route path="/alerts" element={<Alerts />} /><Route path="/notifications" element={<Notifications />} /><Route path="/logs" element={<AuditLogs />} /><Route path="/config" element={<Settings />} /></Routes></main></div></BrowserRouter>
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const platformName = usePlatformName()
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setLoading(true)
@@ -249,7 +315,9 @@ function Login({ onLogin }: { onLogin: () => void }) {
     const form = new FormData(event.currentTarget)
     try {
       const response = await fetch(`${api}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: form.get('username'), password: form.get('password') }) })
-      const result = await response.json()
+      const text = await response.text()
+      let result: { error?: string } = {}
+      try { result = text ? JSON.parse(text) : {} } catch { throw new Error(response.ok ? '登录服务未返回有效数据，请稍后重试' : '登录服务暂不可用，请稍后重试') }
       if (!response.ok) throw new Error(result.error || '登录失败')
       onLogin()
     } catch (err) {
@@ -258,13 +326,13 @@ function Login({ onLogin }: { onLogin: () => void }) {
       setLoading(false)
     }
   }
-  return <div className="login-page"><div className="login-scene" aria-hidden="true"><i className="scene-orbit orbit-one" /><i className="scene-orbit orbit-two" /><i className="scene-scan" /><span className="scene-node node-one" /><span className="scene-node node-two" /><span className="scene-node node-three" /><span className="scene-node node-four" /></div><section className="surface login-panel"><div className="login-brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>OpsGuard</b><span>运维巡检平台</span></div></div><h1>登录平台</h1><p>请输入管理员账号继续。</p><form onSubmit={submit}><label>用户名<input name="username" defaultValue="admin" autoComplete="username" required /></label><label>密码<input name="password" type="password" autoComplete="current-password" required /></label>{error && <span className="login-error">{error}</span>}<button className="button" type="submit" disabled={loading}>{loading ? '登录中...' : '登录'}</button></form></section></div>
+  return <div className="login-page"><div className="login-scene" aria-hidden="true"><i className="scene-orbit orbit-one" /><i className="scene-orbit orbit-two" /><i className="scene-scan" /><span className="scene-node node-one" /><span className="scene-node node-two" /><span className="scene-node node-three" /><span className="scene-node node-four" /></div><div className="login-content"><section className="login-value"><span className="login-kicker">OPS INTELLIGENCE / 24×7</span><h2>让每一次巡检<br /><em>都可观测、可追溯</em></h2><p>统一接入 Agent、Hadoop、MySQL 与主机节点，实时发现风险，让复杂基础设施保持稳定运行。</p><div className="login-value-grid"><span><b>实时监控</b><small>指标持续采集</small></span><span><b>智能告警</b><small>异常快速定位</small></span><span><b>安全审计</b><small>操作全程留痕</small></span></div><div className="login-signal"><i /> PLATFORM ONLINE <b>SECURE CHANNEL</b></div></section><section className="surface login-panel"><div className="login-brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>{platformName}</b><span>运维巡检平台</span></div></div><h1>登录平台</h1><p>请输入管理员账号继续。</p><form onSubmit={submit}><label>用户名<input name="username" defaultValue="admin" autoComplete="username" required /></label><label>密码<input name="password" type="password" autoComplete="current-password" required /></label>{error && <span className="login-error">{error}</span>}<button className="button" type="submit" disabled={loading}>{loading ? '登录中...' : '登录'}</button></form></section></div></div>
 }
 
 function TopNav({ onLogout }: { onLogout: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
-  const titles: Record<string, string> = { '/': '监控大屏', '/metrics': '指标查询', '/hadoop': 'Hadoop / YARN', '/ambari': 'Ambari', '/datasources': '数据节点', '/alerts': '告警规则', '/notifications': '通知中心', '/config': '系统设置' }
+  const titles: Record<string, string> = { '/': '监控大屏', '/metrics': '指标查询', '/mysql': 'MySQL 工作台', '/consul': 'Consul KV 工作台', '/hadoop': 'Hadoop / YARN', '/ambari': 'Ambari', '/datasources': '数据节点', '/alerts': '告警规则', '/notifications': '通知中心', '/logs': '日志中心', '/config': '系统设置' }
   const [unread, setUnread] = useState(0)
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
@@ -313,17 +381,7 @@ function TopNav({ onLogout }: { onLogout: () => void }) {
     document.addEventListener('pointerdown', closeOnOutsideClick)
     return () => document.removeEventListener('pointerdown', closeOnOutsideClick)
   }, [notificationOpen])
-  useEffect(() => {
-    const host = document.querySelector<HTMLElement>('.page-nav .nav-tools')
-    if (!host) return
-    const mount = document.createElement('div')
-    mount.className = 'platform-menu-mount'
-    host.prepend(mount)
-    const root = createRoot(mount)
-    root.render(<PlatformMenu />)
-    return () => root.unmount()
-  }, [])
-  return <header className="page-nav"><div className="nav-path"><b>{titles[location.pathname] || '指标查询'}</b></div><div className="nav-tools">{location.pathname !== '/config' && <RefreshButton onClick={() => window.setTimeout(() => window.location.reload(), 360)} />}<div ref={notificationRoot} className="notification-menu"><button className={`bell-button ${notificationOpen ? 'active' : ''}`} type="button" aria-label="通知" aria-expanded={notificationOpen} onClick={toggleNotifications}><Icon name="bell" />{unread > 0 && <i>{unread > 99 ? '99+' : unread}</i>}</button>{notificationOpen && <section className="surface notification-popover"><header><b>未读消息</b><span>{unread > 0 ? `${unread} 条未读` : '已全部阅读'}</span></header><div className="notification-popover-list">{notificationsLoading ? <span className="notification-popover-empty">正在加载...</span> : notifications.length === 0 ? <span className="notification-popover-empty">暂无未读消息</span> : notifications.map(item => <button type="button" key={item.id} onClick={() => { setNotificationOpen(false); navigate('/notifications') }}><i className={`notification-dot ${item.status === 'resolved' ? 'success' : 'danger'}`} /><span><b>{item.ruleName}</b><small>{item.message}</small><time>{formatCollectedAt(item.lastSeenAt)}</time></span></button>)}</div><footer><button type="button" disabled={unread === 0 || notificationsLoading} onClick={() => void markAllRead()}>全部已读</button></footer></section>}</div><AccountMenu onLogout={onLogout} /></div></header>
+  return <header className="page-nav"><div className="nav-path"><b>{titles[location.pathname] || '指标查询'}</b></div><div className="nav-tools"><PlatformMenu />{location.pathname !== '/config' && location.pathname !== '/logs' && <RefreshButton onClick={() => window.setTimeout(() => window.location.reload(), 360)} />}<div ref={notificationRoot} className="notification-menu"><button className={`bell-button ${notificationOpen ? 'active' : ''}`} type="button" aria-label="通知" aria-expanded={notificationOpen} onClick={toggleNotifications}><Icon name="bell" />{unread > 0 && <i>{unread > 99 ? '99+' : unread}</i>}</button>{notificationOpen && <section className="surface notification-popover"><header><b>未读消息</b><span>{unread > 0 ? `${unread} 条未读` : '已全部阅读'}</span></header><div className="notification-popover-list">{notificationsLoading ? <span className="notification-popover-empty">正在加载...</span> : notifications.length === 0 ? <span className="notification-popover-empty">暂无未读消息</span> : notifications.map(item => <button type="button" key={item.id} onClick={() => { setNotificationOpen(false); navigate('/notifications') }}><i className={`notification-dot ${item.status === 'resolved' ? 'success' : 'danger'}`} /><span><b>{item.ruleName}</b><small>{item.message}</small><time>{formatCollectedAt(item.lastSeenAt)}</time></span></button>)}</div><footer><button type="button" disabled={unread === 0 || notificationsLoading} onClick={() => void markAllRead()}>全部已读</button></footer></section>}</div><AccountMenu onLogout={onLogout} /></div></header>
 }
 
 function PlatformMenu() {
@@ -343,6 +401,24 @@ function PlatformMenu() {
     return () => document.removeEventListener('pointerdown', close)
   }, [open])
   return <div ref={root} className="platform-menu"><button className={`platform-menu-trigger ${open ? 'active' : ''}`} type="button" onClick={() => setOpen(value => !value)}>常用平台</button>{open && <section className="surface platform-popover">{links.length === 0 ? <span>暂未配置常用平台</span> : links.map(link => <a key={link.id} href={link.url} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}><b>{link.name}</b><small>{link.url}</small></a>)}<a className="platform-manage" href="/config#platforms" onClick={() => setOpen(false)}>管理常用平台</a></section>}</div>
+}
+
+function PlatformNameSettings() {
+  const [name, setName] = useState(platformNameCache)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+  useEffect(() => { void loadPlatformName().then(setName) }, [])
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setSaving(true)
+    try {
+      const response = await fetch(`${api}/platform-settings`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ platformName: name.trim() }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '保存平台名称失败')
+      platformNameCache = String(data.platformName || name).trim() || 'OpsGuard'
+      setName(platformNameCache); window.dispatchEvent(new Event(platformNameEvent)); setMessage('平台名称已保存')
+    } catch (error) { setMessage(error instanceof Error ? error.message : '保存平台名称失败') } finally { setSaving(false) }
+  }
+  return <div className="form-section"><h3>平台名称</h3><form className="settings-form" onSubmit={save}><label>名称 <span className="required-mark">*</span><input value={name} maxLength={40} placeholder="例如：生产运维平台" onChange={event => setName(event.target.value)} required /><small>用于区分多套平台，会同步显示在左上角和登录页。</small></label><div className="settings-actions"><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存平台名称'}</button></div>{message && <span className="settings-inline-message">{message}</span>}</form></div>
 }
 
 function PlatformLinkSettings() {
@@ -373,32 +449,6 @@ function PlatformLinkSettings() {
   return <div className="platform-settings"><h3>常用平台</h3><p>配置后会显示在每个页面标题右侧，点击将在新标签页打开。</p><form onSubmit={add}><input value={name} maxLength={30} placeholder="平台名称，例如 Grafana" onChange={(event) => setName(event.target.value)} /><input value={url} placeholder="平台地址，例如 127.0.0.1:3000" onChange={(event) => setURL(event.target.value)} /><button className="button" type="submit">添加链接</button></form>{error && <span className="platform-link-error">{error}</span>}<div className="platform-settings-list">{links.length === 0 ? <span>暂未添加平台链接</span> : links.map(link => <div key={link.id}><div><b>{link.name}</b><small>{link.url}</small></div><button type="button" onClick={() => save(links.filter(item => item.id !== link.id))}>删除</button></div>)}</div></div>
 }
 
-function SystemSettingsContent() {
-  const [refreshValue, setRefreshValue] = useState(() => String(readRefreshInterval().value))
-  const [refreshUnit, setRefreshUnit] = useState(() => readRefreshInterval().unit)
-  const [message, setMessage] = useState('')
-  useEffect(() => { void loadRefreshSettings().then(setting => { setRefreshValue(String(setting.value)); setRefreshUnit(setting.unit) }) }, [])
-  const saveRefresh = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const value = Math.max(1, Number(refreshValue) || 15)
-    try {
-      const saved = await saveRefreshSettings({ value, unit: refreshUnit })
-      setRefreshValue(String(saved.value)); setRefreshUnit(saved.unit); setMessage('刷新频率已保存')
-    } catch (err) { setMessage(err instanceof Error ? err.message : '刷新频率保存失败') }
-  }
-  const changePassword = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const form = new FormData(event.currentTarget)
-    const newPassword = String(form.get('newPassword') || '')
-    if (newPassword !== String(form.get('confirmPassword') || '')) { setMessage('两次输入的新密码不一致'); return }
-    const response = await fetch(`${api}/change-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oldPassword: form.get('oldPassword'), newPassword }) })
-    const result = await response.json()
-    setMessage(response.ok ? '密码已修改' : result.error || '密码修改失败')
-    if (response.ok) event.currentTarget.reset()
-  }
-  return <div className="system-settings-content">{message && <span className="settings-inline-message">{message}</span>}<section id="refresh-settings" className="form-section"><h3>自动刷新</h3><form className="settings-form" onSubmit={saveRefresh}><label>刷新频率 <span className="required-mark">*</span><span className="frequency-input"><input value={refreshValue} type="number" min="1" step="1" onChange={(event) => setRefreshValue(event.target.value)} required /><AppSelect value={refreshUnit} onChange={(value) => setRefreshUnit(value as RefreshSetting['unit'])} options={[{ value: 's', label: '秒' }, { value: 'm', label: '分钟' }, { value: 'h', label: '小时' }]} /></span></label><div className="settings-actions"><button className="button" type="submit">保存刷新频率</button></div></form></section><section id="platforms" className="form-section"><PlatformLinkSettings /></section><section id="profile-settings" className="form-section"><h3>密码修改</h3><form className="settings-form" onSubmit={changePassword}><label>原密码 <span className="required-mark">*</span><input name="oldPassword" type="password" autoComplete="current-password" required /></label><label>新密码 <span className="required-mark">*</span><input name="newPassword" type="password" autoComplete="new-password" required /></label><label>确认新密码 <span className="required-mark">*</span><input name="confirmPassword" type="password" autoComplete="new-password" required /></label><div className="settings-actions"><button className="button" type="submit">保存密码</button></div></form></section></div>
-}
-
 function AccountMenu({ onLogout }: { onLogout: () => void }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
@@ -420,11 +470,14 @@ function AccountMenu({ onLogout }: { onLogout: () => void }) {
   return <div ref={root} className="account-menu"><button className="user-avatar" type="button" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(current => !current)}><span>管</span></button>{open && <div className="surface account-popover" role="menu"><button type="button" role="menuitem" onClick={() => setOpen(false)}>平台管理员</button><button className="danger" type="button" role="menuitem" onClick={onLogout}>退出登录</button></div>}</div>
 }
 
-function Sidebar() {
+function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const location = useLocation()
+  const platformName = usePlatformName()
   const [sources, setSources] = useState<Source[]>([])
   const [hadoopMenus, setHadoopMenus] = useState<HadoopMenuItem[]>([])
   const [ambariMenus, setAmbariMenus] = useState<AmbariMenuItem[]>([])
+  const [mysqlMenus, setMySQLMenus] = useState<MySQLMenuItem[]>([])
+  const [consulMenus, setConsulMenus] = useState<ConsulMenuItem[]>([])
   const refreshInterval = useRefreshInterval()
   const load = async () => {
     try {
@@ -436,32 +489,46 @@ function Sidebar() {
   useEffect(() => {
     const reloadHadoopMenus = () => { void loadHadoopMenus().then(setHadoopMenus) }
     const reloadAmbariMenus = () => { void loadAmbariMenus().then(setAmbariMenus) }
+    const reloadMySQLMenus = () => { void loadMySQLMenus().then(setMySQLMenus) }
+    const reloadConsulMenus = () => { void loadConsulMenus().then(setConsulMenus) }
     void load()
     reloadHadoopMenus()
     reloadAmbariMenus()
+    reloadMySQLMenus()
+    reloadConsulMenus()
     const timer = window.setInterval(load, refreshInterval)
     window.addEventListener('opsguard-data-sources-change', load)
     window.addEventListener('opsguard-hadoop-menus-change', reloadHadoopMenus)
     window.addEventListener('opsguard-ambari-menus-change', reloadAmbariMenus)
+    window.addEventListener('opsguard-mysql-menus-change', reloadMySQLMenus)
+    window.addEventListener('opsguard-consul-menus-change', reloadConsulMenus)
     return () => {
       window.clearInterval(timer)
       window.removeEventListener('opsguard-data-sources-change', load)
       window.removeEventListener('opsguard-hadoop-menus-change', reloadHadoopMenus)
       window.removeEventListener('opsguard-ambari-menus-change', reloadAmbariMenus)
+      window.removeEventListener('opsguard-mysql-menus-change', reloadMySQLMenus)
+      window.removeEventListener('opsguard-consul-menus-change', reloadConsulMenus)
     }
   }, [refreshInterval])
   const online = sources.filter(item => item.enabled && item.status === '健康').length
   const importedHadoopSources = hadoopMenus.map(item => ({ item, source: sources.find(source => source.id === item.sourceId && source.type === 'Hadoop' && source.enabled) })).filter((entry): entry is { item: HadoopMenuItem; source: Source } => Boolean(entry.source))
   const importedAmbariSources = ambariMenus.map(item => ({ item, source: sources.find(source => source.id === item.sourceId && source.type === 'Ambari' && source.enabled) })).filter((entry): entry is { item: AmbariMenuItem; source: Source } => Boolean(entry.source))
-  const items = [['dashboard', '监控大屏', '/'], ['query', '指标查询', '/metrics'], ...importedHadoopSources.map(({ item, source }) => ['hadoop', item.name || source.name, `/hadoop?source=${encodeURIComponent(source.id)}`]), ...importedAmbariSources.map(({ item, source }) => ['ambari', item.name || source.name, `/ambari?source=${encodeURIComponent(source.id)}`]), ['alert', '告警规则', '/alerts'], ['notify', '通知中心', '/notifications'], ['data', '数据节点', '/datasources'], ['settings', '系统设置', '/config']]
+  const importedMySQLSources = mysqlMenus.map(item => ({ item, source: sources.find(source => source.id === item.sourceId && source.type === 'MySQL' && source.enabled) })).filter((entry): entry is { item: MySQLMenuItem; source: Source } => Boolean(entry.source))
+  const importedConsulSources = consulMenus.map(item => ({ item, source: sources.find(source => source.id === item.sourceId && source.type === 'Consul' && source.enabled) })).filter((entry): entry is { item: ConsulMenuItem; source: Source } => Boolean(entry.source))
+  const items = [['dashboard', '监控大屏', '/'], ['query', '指标查询', '/metrics'], ...importedMySQLSources.map(({ item, source }) => ['mysql', item.name || source.name, `/mysql?source=${encodeURIComponent(source.id)}`]), ...importedConsulSources.map(({ item, source }) => ['consul', item.name || source.name, `/consul?source=${encodeURIComponent(source.id)}`]), ...importedHadoopSources.map(({ item, source }) => ['hadoop', item.name || source.name, `/hadoop?source=${encodeURIComponent(source.id)}`]), ...importedAmbariSources.map(({ item, source }) => ['ambari', item.name || source.name, `/ambari?source=${encodeURIComponent(source.id)}`]), ['alert', '告警规则', '/alerts'], ['notify', '通知中心', '/notifications'], ['audit', '日志中心', '/logs'], ['data', '数据节点', '/datasources'], ['settings', '系统设置', '/config']]
   const selectedHadoopSourceID = new URLSearchParams(location.search).get('source') || ''
   const selectedAmbariSourceID = new URLSearchParams(location.search).get('source') || ''
-  return <aside className="sidebar"><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>OpsGuard</b><small>巡检平台</small></div></div><nav>{items.map(([icon, label, path]) => <NavLink key={path} end={path === '/'} to={path} className={({ isActive }) => {
+  const selectedMySQLSourceID = new URLSearchParams(location.search).get('source') || ''
+  const selectedConsulSourceID = new URLSearchParams(location.search).get('source') || ''
+  return <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>{platformName}</b><small>巡检平台</small></div></div><nav>{items.map(([icon, label, path]) => <NavLink key={path} end={path === '/'} to={path} title={collapsed ? label : undefined} className={({ isActive }) => {
     const hadoopSourceID = path.startsWith('/hadoop?source=') ? new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('source') : ''
     const ambariSourceID = path.startsWith('/ambari?source=') ? new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('source') : ''
-    const active = hadoopSourceID ? location.pathname === '/hadoop' && selectedHadoopSourceID === hadoopSourceID : ambariSourceID ? location.pathname === '/ambari' && selectedAmbariSourceID === ambariSourceID : isActive
+    const mysqlSourceID = path.startsWith('/mysql?source=') ? new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('source') : ''
+    const consulSourceID = path.startsWith('/consul?source=') ? new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('source') : ''
+    const active = hadoopSourceID ? location.pathname === '/hadoop' && selectedHadoopSourceID === hadoopSourceID : ambariSourceID ? location.pathname === '/ambari' && selectedAmbariSourceID === ambariSourceID : mysqlSourceID ? location.pathname === '/mysql' && selectedMySQLSourceID === mysqlSourceID : consulSourceID ? location.pathname === '/consul' && selectedConsulSourceID === consulSourceID : isActive
     return `nav-link ${active ? 'active' : ''}`
-  }}>{icon === 'hadoop' ? <img className="hadoop-nav-icon" src="/hadoop.svg" alt="" aria-hidden="true" /> : <Icon name={icon} />}<span>{label}</span></NavLink>)}</nav><div className="sidebar-footer"><span className="online-dot" /><span>{online} / {sources.length} 数据源在线</span></div></aside>
+  }}>{icon === 'hadoop' ? <img className="hadoop-nav-icon" src="/hadoop.svg" alt="" aria-hidden="true" /> : icon === 'mysql' ? <img className="mysql-nav-icon" src="/mysql.svg" alt="" aria-hidden="true" /> : <SidebarIcon name={icon} />}<span>{label}</span></NavLink>)}</nav><div className="sidebar-bottom-actions"><div className="sidebar-footer"><span className="online-dot" /><span>{online} / {sources.length} 数据源在线</span></div><button className="sidebar-collapse" type="button" aria-label={collapsed ? '展开菜单' : '折叠菜单'} title={collapsed ? '展开菜单' : '折叠菜单'} onClick={onToggle}><span aria-hidden="true">{collapsed ? '›' : '‹'}</span></button></div></aside>
 }
 
 function PageHead({ action, onAction, actionNode }: { title: string; description: string; action?: string; onAction?: () => void; actionNode?: any }) {
@@ -527,6 +594,39 @@ function AppSelect({ value, options, onChange, name, placeholder = '请选择', 
   </span>
 }
 
+function MySQLPagination({ page, pageSize, total, totalPages, onPageChange, onPageSizeChange, ariaLabel, truncated = false }: { page: number; pageSize: number; total: number; totalPages: number; onPageChange: (page: number) => void; onPageSizeChange: (pageSize: number) => void; ariaLabel: string; truncated?: boolean }) {
+  const safeTotalPages = Math.max(1, totalPages)
+  return <footer className="mysql-pagination"><div><span>共 {total}{truncated ? '+' : ''} 条{truncated && <em>最多展示 {total} 条</em>}</span><span className="mysql-page-size">每页 <AppSelect className="mysql-page-size-select" value={String(pageSize)} onChange={value => onPageSizeChange(Number(value))} options={[50, 100, 200, 500].map(value => ({ value: String(value), label: String(value) }))} /> 条</span></div><nav aria-label={ariaLabel}><button type="button" disabled={page <= 1} onClick={() => onPageChange(1)}>首页</button><button type="button" disabled={page <= 1} onClick={() => onPageChange(Math.max(1, page - 1))}>上一页</button><span className="mysql-page-current">{page} / {safeTotalPages}</span><button type="button" disabled={page >= safeTotalPages} onClick={() => onPageChange(Math.min(safeTotalPages, page + 1))}>下一页</button><button type="button" disabled={page >= safeTotalPages} onClick={() => onPageChange(safeTotalPages)}>尾页</button></nav></footer>
+}
+
+function SQLResultView({ columns, rows, page, pageSize, total, totalPages, truncated, onPageChange, onPageSizeChange }: { columns: string[]; rows: any[][]; page: number; pageSize: number; total: number; totalPages: number; truncated: boolean; onPageChange: (page: number) => void; onPageSizeChange: (pageSize: number) => void }) {
+  const [fullscreen, setFullscreen] = useState(false)
+  const resultTable = <div className="mysql-sql-result"><table><thead><tr>{columns.map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={(page - 1) * pageSize + index}>{row.map((value, cell) => <td key={cell}>{value === null ? <i>NULL</i> : String(value)}</td>)}</tr>)}</tbody></table></div>
+  const pagination = <MySQLPagination page={page} pageSize={pageSize} total={total} totalPages={totalPages} truncated={truncated} onPageChange={onPageChange} onPageSizeChange={onPageSizeChange} ariaLabel="SQL 查询结果分页" />
+  return <><section className="mysql-sql-result-view"><header className="mysql-sql-result-head"><span>查询结果</span><button className="button secondary" type="button" onClick={() => setFullscreen(true)}>全屏查看</button></header>{resultTable}{pagination}</section>{fullscreen && <div className="sql-result-fullscreen" role="dialog" aria-modal="true"><header><div><b>SQL 查询结果</b><span>共 {total}{truncated ? '+' : ''} 条</span></div><button className="close-button" type="button" aria-label="关闭全屏结果" onClick={() => setFullscreen(false)}>×</button></header>{resultTable}{pagination}</div>}</>
+}
+
+function UnifiedPagination({ total, page, totalPages, onPageChange, ariaLabel, truncated = false }: { total: number; page: number; totalPages: number; onPageChange: (page: number) => void; ariaLabel: string; truncated?: boolean }) {
+  const pages = Math.max(1, totalPages)
+  const current = Math.min(Math.max(1, page), pages)
+  return <footer className="mysql-pagination platform-pagination"><div><span>共 {total}{truncated ? '+' : ''} 条</span></div><nav aria-label={ariaLabel}><button type="button" disabled={current <= 1} onClick={() => onPageChange(1)}>首页</button><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span className="mysql-page-current">{current} / {pages}</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button><button type="button" disabled={current >= pages} onClick={() => onPageChange(pages)}>尾页</button></nav></footer>
+}
+
+function downloadCSV(filename: string, columns: string[], rows: any[][]) {
+  const escapeCell = (value: any) => {
+    let text = value === null || value === undefined ? 'NULL' : String(value)
+    if (/^[=+\-@]/.test(text)) text = `'${text}`
+    return `"${text.replaceAll('"', '""')}"`
+  }
+  const content = '\uFEFF' + [columns, ...rows].map(row => row.map(escapeCell).join(',')).join('\r\n')
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename.replace(/[\\/:*?"<>|]+/g, '_')
+  anchor.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 function SSHSourceMultiSelect({ sources, value, onChange }: { sources: Source[]; value: string[]; onChange: (value: string[]) => void }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLSpanElement>(null)
@@ -534,7 +634,7 @@ function SSHSourceMultiSelect({ sources, value, onChange }: { sources: Source[];
   const [menuStyle, setMenuStyle] = useState<CSSProperties>({})
   const selectedIDs = value.filter(id => sources.some(source => source.id === id))
   const allSelected = sources.length > 0 && selectedIDs.length === sources.length
-  const label = sources.length === 0 ? '暂无可用 SSH 节点' : allSelected ? `全部节点（${sources.length}）` : selectedIDs.length > 0 ? `已选 ${selectedIDs.length} 个节点` : '请选择节点'
+  const label = sources.length === 0 ? '暂无可用主机节点' : allSelected ? `全部节点（${sources.length}）` : selectedIDs.length > 0 ? `已选 ${selectedIDs.length} 个节点` : '请选择节点'
   const updateMenuPosition = () => {
     if (!root.current) return
     const rect = root.current.getBoundingClientRect()
@@ -575,9 +675,8 @@ function RefreshButton({ loading, disabled, onClick }: { loading?: boolean; disa
 function ListPagination({ total, page, onPageChange }: { total: number; page: number; onPageChange: (page: number) => void }) {
   const pageSize = 20
   const pages = Math.max(1, Math.ceil(total / pageSize))
-  const current = Math.min(page, pages)
   if (total === 0) return null
-  return <footer className="list-pagination"><span>共 {total} 条，第 {current} / {pages} 页</span><div><button type="button" disabled={current === 1} onClick={() => onPageChange(1)}>首页</button><button type="button" disabled={current === 1} onClick={() => onPageChange(Math.max(1, current - 1))}>上一页</button><input type="number" min="1" max={pages} value={current} aria-label="页码" onChange={(event) => { const next = Number(event.target.value); if (Number.isInteger(next) && next >= 1 && next <= pages) onPageChange(next) }} /><span>/ {pages}</span><button type="button" disabled={current === pages} onClick={() => onPageChange(Math.min(pages, current + 1))}>下一页</button><button type="button" disabled={current === pages} onClick={() => onPageChange(pages)}>末页</button></div></footer>
+  return <UnifiedPagination total={total} page={page} totalPages={pages} onPageChange={onPageChange} ariaLabel="列表分页" />
 }
 
 async function loadDashboards(): Promise<DashboardItem[]> {
@@ -630,6 +729,7 @@ async function saveAmbariMenuItem(sourceID: string, name: string): Promise<Ambar
 }
 
 type DashboardMetricCard = { label: string; value: string; progress?: number; tone?: 'success' | 'danger' }
+type DashboardFilesystem = { filesystem: string; mountPoint: string; totalBytes: number; usedBytes: number; usedPercent: number }
 
 function dashboardPercent(value?: string) {
   const numeric = Number(value)
@@ -641,6 +741,8 @@ function dashboardPercent(value?: string) {
 function Dashboards() {
   const [items, setItems] = useState<DashboardItem[]>([])
   const [values, setValues] = useState<Record<string, Record<string, string>>>({})
+  const [filesystemValues, setFilesystemValues] = useState<Record<string, DashboardFilesystem[]>>({})
+  const [filesystemSource, setFilesystemSource] = useState<DashboardItem | null>(null)
   const [sources, setSources] = useState<Source[]>([])
   const [customRuleCount, setCustomRuleCount] = useState(0)
   const [prometheusRuleCount, setPrometheusRuleCount] = useState(0)
@@ -652,7 +754,7 @@ function Dashboards() {
   const [sqlLoading, setSQLLoading] = useState(false)
   const [sqlError, setSQLError] = useState('')
   const refreshInterval = useScopedRefreshInterval('dashboard')
-  const dashboards = items.filter(item => ['MySQL', 'SSH', 'Redis', 'ClickHouse', 'Kafka'].includes(item.sourceType))
+  const dashboards = items.filter(item => ['MySQL', 'SSH', 'Agent', 'Redis', 'ClickHouse', 'Kafka'].includes(item.sourceType))
   const refreshOverview = async () => {
     try {
       const sourceResponse = await fetch(`${api}/data-sources`)
@@ -672,14 +774,17 @@ function Dashboards() {
   const refresh = async () => {
     if (!dashboards.length) return
     const next: Record<string, Record<string, string>> = {}
+    const nextFilesystems: Record<string, DashboardFilesystem[]> = {}
     for (const item of dashboards) {
       try {
         const response = await fetch(`${api}/data-sources/${item.sourceId}/dashboard-metrics`)
         const data = await response.json()
         next[item.sourceId] = Object.fromEntries(Object.entries(data.metrics || {}).map(([key, value]) => [key, String(value)]))
-      } catch { next[item.sourceId] = {} }
+        nextFilesystems[item.sourceId] = Array.isArray(data.filesystems) ? data.filesystems : []
+      } catch { next[item.sourceId] = {}; nextFilesystems[item.sourceId] = [] }
     }
     setValues(next)
+    setFilesystemValues(nextFilesystems)
     window.requestAnimationFrame(() => {
       document.querySelectorAll<HTMLElement>('.dashboard-water > i').forEach((element) => {
         element.animate([{ transform: 'scaleX(0)', transformOrigin: 'left center' }, { transform: 'scaleX(1)', transformOrigin: 'left center' }], { duration: 760, easing: 'cubic-bezier(.2,.8,.25,1)', fill: 'both' })
@@ -727,13 +832,36 @@ function Dashboards() {
     })
     return () => frames.forEach(frame => cancelAnimationFrame(frame))
   }, [activeNotifications.length, totalRules, enabledSources.length, unreadNotifications, values])
-  return <div className="page"><section className="overview-stat-grid"><article className="overview-stat alert"><span>当前告警</span><b>{activeNotifications.length}</b><small>未恢复的告警事件</small></article><article className="overview-stat rule"><span>告警规则</span><b>{totalRules}</b><small>自定义 {customRuleCount} · Prometheus {prometheusRuleCount}</small></article><article className="overview-stat source"><span>启用数据源</span><b>{enabledSources.length}</b><small>接入 {sources.length} 个</small></article><article className="overview-stat notice"><span>未读通知</span><b>{unreadNotifications}</b><small>全部通知 {notifications.length} 条</small></article></section><section className="overview-section-title"><div><h2>数据源运行指标</h2><p>数据库与中间件采集指标</p></div><span>{dashboards.length} 个数据源</span></section>{dashboards.length === 0 ? <section className="surface empty-state"><b>暂无数据源运行指标</b><span>可在数据节点中将支持的数据源导入监控大屏。</span></section> : <section className="dashboard-list">{dashboards.map(item => { const v = values[item.sourceId] || {}; const cpu = dashboardPercent(v.cpu); const memory = dashboardPercent(v.memory); const disk = dashboardPercent(v.disk); const hit = dashboardPercent(v.hit); const redisMemory = dashboardPercent(v.memory_usage_ratio); const redisHit = dashboardPercent(v.hit_ratio); const clickHouseMemory = dashboardPercent(v.memory_usage_ratio); const sourceStatus = v.up === undefined ? '采集中' : v.up === '1' ? '正常' : '异常'; const statusTone = v.up === undefined ? undefined : v.up === '1' ? 'success' : 'danger'; const statusProgress = v.up === undefined ? undefined : 100; const sshCards: DashboardMetricCard[] = [{ label: '状态', value: sourceStatus, progress: statusProgress, tone: statusTone }, { label: 'CPU 使用率', value: formatPercent100(v.cpu), progress: cpu, tone: cpu !== undefined && cpu >= 80 ? 'danger' : 'success' }, { label: '内存使用率', value: formatPercent100(v.memory), progress: memory, tone: memory !== undefined && memory >= 80 ? 'danger' : 'success' }, { label: '磁盘使用率', value: formatPercent100(v.disk), progress: disk, tone: disk !== undefined && disk >= 80 ? 'danger' : 'success' }, { label: '1 分钟负载', value: v.load1 || '-', }, { label: '5 分钟负载', value: v.load5 || '-', }]; const mysqlCards: DashboardMetricCard[] = [{ label: '状态', value: sourceStatus, progress: statusProgress, tone: statusTone }, { label: 'Buffer 命中率', value: formatPercent(v.hit), progress: hit, tone: hit !== undefined && hit < 80 ? 'danger' : 'success' }, { label: '连接数', value: v.threads || '-' }, { label: '运行线程', value: v.running || '-' }, { label: '慢查询', value: v.slow || '-' }, { label: '查询总数', value: v.questions || '-' }]; const redisCards: DashboardMetricCard[] = [{ label: '状态', value: sourceStatus, progress: statusProgress, tone: statusTone }, redisMemory === undefined ? { label: '已用内存', value: formatBytes(v.used_memory_bytes) } : { label: '内存使用率', value: formatPercent(v.memory_usage_ratio), progress: redisMemory, tone: redisMemory >= 80 ? 'danger' : 'success' }, { label: '命中率', value: formatPercent(v.hit_ratio), progress: redisHit, tone: redisHit !== undefined && redisHit < 80 ? 'danger' : redisHit !== undefined ? 'success' : undefined }, { label: '连接客户端', value: formatInteger(v.connected_clients) }, { label: '键总数', value: formatInteger(v.keys) }, { label: 'OPS / 秒', value: formatInteger(v.operations_per_second) }]; const clickHouseCards: DashboardMetricCard[] = [{ label: '状态', value: sourceStatus, progress: statusProgress, tone: statusTone }, { label: '内存使用率', value: formatPercent(v.memory_usage_ratio), progress: clickHouseMemory, tone: clickHouseMemory !== undefined && clickHouseMemory >= 80 ? 'danger' : clickHouseMemory !== undefined ? 'success' : undefined }, { label: '活动查询', value: formatInteger(v.active_queries) }, { label: '连接数', value: formatInteger(v.connections) }, { label: '后台任务', value: formatInteger(v.background_tasks) }, { label: '数据分区', value: formatInteger(v.parts) }]; const kafkaCards: DashboardMetricCard[] = [{ label: '状态', value: sourceStatus, progress: statusProgress, tone: statusTone }, { label: 'Broker', value: formatInteger(v.brokers) }, { label: 'Topic', value: formatInteger(v.topics) }, { label: '分区', value: formatInteger(v.partitions) }]; const cards = item.sourceType === 'SSH' ? sshCards : item.sourceType === 'MySQL' ? mysqlCards : item.sourceType === 'Redis' ? redisCards : item.sourceType === 'ClickHouse' ? clickHouseCards : kafkaCards; return <section className="surface mysql-dashboard-card" key={item.id}><header><div><h3>{item.name}</h3><span>{item.sourceName} · {item.sourceType}</span></div><div className="dashboard-card-actions">{item.sourceType === 'MySQL' && <button className="text-button" type="button" onClick={() => void openSQL(item)}>更多</button>}<button className="text-button danger" type="button" onClick={() => remove(item.id)}>删除</button></div></header><div className="dashboard-metrics">{cards.map(metric => <div className={`dashboard-metric ${metric.tone || 'neutral'}`} key={metric.label}><span>{metric.label}</span><b>{metric.value}</b>{metric.progress !== undefined && <i className="dashboard-water"><i style={{ width: `${metric.progress}%` }} /></i>}</div>)}</div></section> })}</section>}{sqlSource && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setSQLSource(null) }}><section className="surface sql-insight-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{sqlMode === 'slow' ? '慢查询 SQL' : '耗时最高 SQL'}</h2><p>{sqlSource.sourceName} · 最多 50 条</p></div><button className="close-button" type="button" onClick={() => setSQLSource(null)}>×</button></header>{sqlLoading ? <div className="empty-state"><b>正在加载 SQL 明细</b></div> : sqlError ? <div className="empty-state"><b>加载失败</b><span>{sqlError}</span></div> : sqlItems.length === 0 ? <div className="empty-state"><b>暂无 SQL 明细</b><span>慢日志与 Performance Schema 均未返回可展示记录。</span></div> : <><div className="sql-insight-list">{pageItems.map((item, index) => <article key={`${item.digest || item.queryText}-${index}`}><header><span>{(sqlPage - 1) * 10 + index + 1}</span><b>{item.schemaName || '未指定库'}</b><small>{sqlMode === 'slow' ? `耗时 ${formatMilliseconds(item.maxLatencyMs)}` : `最长 ${formatMilliseconds(item.maxLatencyMs)}`}</small></header><code>{item.queryText}</code><footer><span>执行 {item.count} 次</span><span>平均 {formatMilliseconds(item.averageLatencyMs)}</span><span>扫描 {item.rowsExamined} 行</span></footer></article>)}</div><footer className="sql-pagination"><button type="button" disabled={sqlPage === 1} onClick={() => setSQLPage(current => current - 1)}>上一页</button><span>{sqlPage} / {pages}</span><button type="button" disabled={sqlPage === pages} onClick={() => setSQLPage(current => current + 1)}>下一页</button></footer></>}</section></div>}</div>
+  return <div className="page"><section className="overview-stat-grid"><article className="overview-stat alert"><span>当前告警</span><b>{activeNotifications.length}</b><small>未恢复的告警事件</small></article><article className="overview-stat rule"><span>告警规则</span><b>{totalRules}</b><small>自定义 {customRuleCount} · Prometheus {prometheusRuleCount}</small></article><article className="overview-stat source"><span>启用数据源</span><b>{enabledSources.length}</b><small>接入 {sources.length} 个</small></article><article className="overview-stat notice"><span>未读通知</span><b>{unreadNotifications}</b><small>全部通知 {notifications.length} 条</small></article></section><section className="overview-section-title"><div><h2>数据源运行指标</h2><p>数据库、中间件与主机采集指标</p></div><span>{dashboards.length} 个数据源</span></section>{dashboards.length === 0 ? <section className="surface empty-state"><b>暂无数据源运行指标</b><span>可在数据节点中将支持的数据源导入监控大屏。</span></section> : <section className="dashboard-list">{dashboards.map(item => { const v = values[item.sourceId] || {}; const isHost = item.sourceType === 'SSH' || item.sourceType === 'Agent'; const cards: DashboardMetricCard[] = isHost ? [{ label: '状态', value: v.up === '1' ? '正常' : '采集中' }, { label: 'CPU 使用率', value: formatPercent100(v.cpu), progress: dashboardPercent(v.cpu) }, { label: '内存使用率', value: formatPercent100(v.memory), progress: dashboardPercent(v.memory) }, { label: '根分区 / 使用率', value: formatPercent100(v.disk), progress: dashboardPercent(v.disk) }, { label: '1 分钟负载', value: v.load1 || '-' }, { label: '5 分钟负载', value: v.load5 || '-' }] : [{ label: '状态', value: v.up === '1' ? '正常' : '采集中' }, { label: '连接数', value: formatInteger(v.threads || v.connected_clients) }, { label: '内存使用率', value: formatPercent(v.memory_usage_ratio) }, { label: '命中率', value: formatPercent(v.hit_ratio || v.hit) }]; return <section className="surface mysql-dashboard-card" key={item.id}><header><div><h3>{item.name}</h3><span>{item.sourceName} · {item.sourceType === 'Agent' ? 'SSH - Agent' : item.sourceType}</span></div><div className="dashboard-card-actions">{item.sourceType === 'MySQL' && <button className="text-button" type="button" onClick={() => void openSQL(item)}>更多</button>}<button className="text-button danger" type="button" onClick={() => void remove(item.id)}>删除</button></div></header><div className="dashboard-metrics">{cards.map(card => <div className={`dashboard-metric ${card.tone || 'neutral'} ${card.label === '根分区 / 使用率' ? 'clickable' : ''}`} key={card.label} role={card.label === '根分区 / 使用率' ? 'button' : undefined} tabIndex={card.label === '根分区 / 使用率' ? 0 : undefined} onClick={card.label === '根分区 / 使用率' ? () => setFilesystemSource(item) : undefined} onKeyDown={card.label === '根分区 / 使用率' ? (event) => { if (event.key === 'Enter' || event.key === ' ') setFilesystemSource(item) } : undefined}><span>{card.label}</span><b>{card.value}</b>{card.progress !== undefined && <i className="dashboard-water"><i style={{ width: `${card.progress}%` }} /></i>}</div>)}</div></section> })}</section>}{sqlSource && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setSQLSource(null) }}><section className="surface sql-insight-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{sqlMode === 'slow' ? '慢查询 SQL' : '耗时最高 SQL'}</h2><p>{sqlSource.sourceName}</p></div><button className="close-button" type="button" onClick={() => setSQLSource(null)}>×</button></header>{sqlLoading ? <div className="empty-state"><b>正在加载 SQL 明细</b></div> : sqlError ? <div className="empty-state"><b>加载失败</b><span>{sqlError}</span></div> : <><div className="sql-insight-list">{pageItems.map((entry, index) => <article key={`${entry.digest || entry.queryText}-${index}`}><header><span>{(sqlPage - 1) * 10 + index + 1}</span><b>{entry.schemaName || '未指定库'}</b><small>{formatMilliseconds(entry.maxLatencyMs)}</small></header><code>{entry.queryText}</code></article>)}</div><footer className="sql-pagination"><button type="button" disabled={sqlPage === 1} onClick={() => setSQLPage(current => current - 1)}>上一页</button><span>{sqlPage} / {pages}</span><button type="button" disabled={sqlPage === pages} onClick={() => setSQLPage(current => current + 1)}>下一页</button></footer></>}</section></div>}{filesystemSource && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setFilesystemSource(null) }}><section className="surface filesystem-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>分区使用率</h2><p>{filesystemSource.name} · 已排除 Docker、Kubernetes kubelet 及临时文件系统</p></div><button className="close-button" type="button" onClick={() => setFilesystemSource(null)}>×</button></header><div className="filesystem-modal-list">{(filesystemValues[filesystemSource.sourceId] || []).length === 0 ? <div className="empty-state"><b>暂未采集到可展示的挂载分区</b><span>采集完成后将自动显示。</span></div> : (filesystemValues[filesystemSource.sourceId] || []).map(fs => <article className="filesystem-modal-row" key={`${fs.filesystem}-${fs.mountPoint}`}><header><div><b title={fs.mountPoint}>{fs.mountPoint}</b><span>{formatBytes(fs.usedBytes)} / {formatBytes(fs.totalBytes)}</span></div><strong>{fs.usedPercent.toFixed(1)}%</strong></header><i className="dashboard-water"><i style={{ width: `${Math.max(0, Math.min(100, fs.usedPercent))}%` }} /></i></article>)}</div></section></div>}</div>
+}
+async function loadMySQLMenus(): Promise<MySQLMenuItem[]> { try { const response = await fetch(`${api}/mysql-menu`); const data = await response.json(); return response.ok && Array.isArray(data.items) ? data.items : [] } catch { return [] } }
+async function saveMySQLMenuItem(sourceID: string, name: string): Promise<MySQLMenuItem> { const response = await fetch(`${api}/mysql-menu`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: sourceID, name }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '导入 MySQL 工作台失败'); window.dispatchEvent(new Event('opsguard-mysql-menus-change')); return data as MySQLMenuItem }
+async function loadConsulMenus(): Promise<ConsulMenuItem[]> { try { const response = await fetch(`${api}/consul-menu`); const data = await response.json(); return response.ok && Array.isArray(data.items) ? data.items : [] } catch { return [] } }
+async function saveConsulMenuItem(sourceID: string, name: string): Promise<ConsulMenuItem> { const response = await fetch(`${api}/consul-menu`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: sourceID, name }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '导入 Consul 工作台失败'); window.dispatchEvent(new Event('opsguard-consul-menus-change')); return data as ConsulMenuItem }
+
+function AgentTokenDialog({ token, host, port, onClose }: { token: string; host: string; port: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false)
+  const config = `# OpsGuard Agent 配置\nLISTEN=0.0.0.0:${port || '4001'}\nTOKEN=${token}\n# 请填写平台实际来源 IP\nALLOWED_PLATFORM_IPS=填写平台来源IP/32\nCOMMAND_TIMEOUT_SECONDS=30\nMAX_OUTPUT_BYTES=65536`
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(config); setCopied(true) } catch { setCopied(false) }
+  }
+  return <div className="modal-backdrop" role="presentation" onClick={onClose}><section className="surface import-name-modal" role="dialog" aria-modal="true" aria-labelledby="agent-token-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="agent-token-title">Agent 配置</h2><p>{host}:{port || '4001'} 的令牌只生成一次，请保存下面配置。</p></div><button className="close-button" type="button" onClick={onClose}>×</button></header><label className="import-name-field">agent.conf 配置<textarea value={config} readOnly rows={8} onFocus={(event) => event.currentTarget.select()} /></label><footer className="modal-actions"><button className="button secondary" type="button" onClick={() => void copy()}>{copied ? '已复制配置' : '复制完整配置'}</button><button className="button" type="button" onClick={onClose}>确认</button></footer></section></div>
 }
 
 function formatPercent(value?: string) {
   const n = Number(value)
   if (!Number.isFinite(n)) return '-'
   return `${(n * 100).toFixed(2)}%`
+}
+
+function formatBytes(value?: number) {
+  const bytes = Number(value)
+  if (!Number.isFinite(bytes) || bytes < 0) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  let current = bytes
+  let unit = 0
+  while (current >= 1024 && unit < units.length - 1) { current /= 1024; unit++ }
+  return `${current >= 100 || unit === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[unit]}`
 }
 
 function MetricQuery() {
@@ -876,7 +1004,6 @@ function MetricQuery() {
 }
 function formatPercent100(value?: string) { const n = Number(value); return Number.isFinite(n) ? `${n.toFixed(2)}%` : '-' }
 function formatInteger(value?: string) { const n = Number(value); return Number.isFinite(n) ? Math.round(n).toLocaleString('zh-CN') : '-' }
-function formatBytes(value?: string) { const n = Number(value); if (!Number.isFinite(n)) return '-'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; let index = 0; let size = Math.max(0, n); while (size >= 1024 && index < units.length - 1) { size /= 1024; index++ }; return `${size.toFixed(size >= 100 || index === 0 ? 0 : 1)} ${units[index]}` }
 function formatMilliseconds(value?: number) { const n = Number(value); return Number.isFinite(n) ? n >= 1000 ? `${(n / 1000).toFixed(2)}s` : `${n.toFixed(2)}ms` : '-' }
 function formatHadoopTime(value?: number) {
   const date = new Date(Number(value))
@@ -928,7 +1055,11 @@ function splitHadoopLogSections(content: string) {
 }
 
 function HadoopLogPager({ content }: { content: string }) {
-  const sections = splitHadoopLogSections(content)
+  const parsedSections = splitHadoopLogSections(content)
+  // NodeManager may return one raw file instead of its directory index. Keep
+  // the file selector visible in that case, rather than making the control
+  // disappear for terminal applications.
+  const sections = parsedSections.length > 0 ? parsedSections : [{ name: '当前日志', content }]
   const [selectedFile, setSelectedFile] = useState('__all__')
   const selectedSection = sections.find(section => section.name === selectedFile)
   const displayedContent = selectedSection ? `===== ${selectedSection.name} =====\n${selectedSection.content}` : content
@@ -940,27 +1071,51 @@ function HadoopLogPager({ content }: { content: string }) {
   const visibleLines = lines.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   useEffect(() => { setPage(1); setSelectedFile('__all__') }, [content])
   useEffect(() => setPage(1), [selectedFile])
-  return <div className="hadoop-log-pager"><div className="hadoop-log-toolbar">{sections.length > 0 && <div className="hadoop-log-view-controls"><span>日志文件</span><AppSelect className="hadoop-log-file-select" value={selectedFile} placeholder="全部日志" onChange={setSelectedFile} options={[{ value: '__all__', label: '全部日志' }, ...sections.map(section => ({ value: section.name, label: section.name }))]} /></div>}<span className="hadoop-log-summary">共 {lines.length} 行 <i /> 每页 {pageSize} 行</span><span className="hadoop-log-pagination"><button type="button" disabled={currentPage === 1} onClick={() => setPage(1)}>首页</button><button type="button" disabled={currentPage === 1} onClick={() => setPage(value => Math.max(1, value - 1))}>上一页</button><input type="number" min="1" max={totalPages} value={currentPage} aria-label="日志页码" onChange={(event) => { const next = Number(event.target.value); if (Number.isInteger(next) && next >= 1 && next <= totalPages) setPage(next) }} /><span>/ {totalPages}</span><button type="button" disabled={currentPage === totalPages} onClick={() => setPage(value => Math.min(totalPages, value + 1))}>下一页</button><button type="button" disabled={currentPage === totalPages} onClick={() => setPage(totalPages)}>末页</button></span></div><pre className="hadoop-log-content">{visibleLines.join('\n')}</pre></div>
+  return <div className="hadoop-log-pager"><div className="hadoop-log-toolbar"><div className="hadoop-log-view-controls"><span>日志文件</span><AppSelect className="hadoop-log-file-select" value={selectedFile} placeholder="全部日志" onChange={setSelectedFile} options={[{ value: '__all__', label: '全部日志' }, ...sections.map(section => ({ value: section.name, label: section.name }))]} /></div><span className="hadoop-log-summary">共 {lines.length} 行 <i /> 每页 {pageSize} 行</span><span className="hadoop-log-pagination"><button type="button" disabled={currentPage === 1} onClick={() => setPage(1)}>首页</button><button type="button" disabled={currentPage === 1} onClick={() => setPage(value => Math.max(1, value - 1))}>上一页</button><input type="number" min="1" max={totalPages} value={currentPage} aria-label="日志页码" onChange={(event) => { const next = Number(event.target.value); if (Number.isInteger(next) && next >= 1 && next <= totalPages) setPage(next) }} /><span>/ {totalPages}</span><button type="button" disabled={currentPage === totalPages} onClick={() => setPage(value => Math.min(totalPages, value + 1))}>下一页</button><button type="button" disabled={currentPage === totalPages} onClick={() => setPage(totalPages)}>末页</button></span></div><pre className="hadoop-log-content">{visibleLines.join('\n')}</pre></div>
 }
 
-function hadoopContainerLabel(container: { id: string; priority?: string }, applicationType?: string) {
+function hadoopContainerLabel(container: { id: string; priority?: string; isAM?: boolean }, applicationType?: string) {
   const sequence = container.id.match(/_(\d{6})$/)?.[1] || container.id
+  const isAM = container.isAM === true || (container.isAM === undefined && String(container.priority) === '0')
   if (String(applicationType || '').toUpperCase() === 'APACHE FLINK') {
-    return String(container.priority) === '0' ? `JobManager（主容器） · ${sequence}` : `TaskManager（工作容器） · ${sequence}`
+    return isAM ? `JobManager（主容器） · ${sequence}` : `TaskManager（工作容器） · ${sequence}`
   }
-  return String(container.priority) === '0' ? `主容器 · ${sequence}` : `工作容器 · ${sequence}`
+  return isAM ? `ApplicationMaster · ${sequence}` : `工作容器 · ${sequence}`
+}
+
+function normalizeFileMonitorResultDetails(value: string) {
+  return value
+    .replace(/-\s+find:\s+['"]?([^'"\n:]+)['"]?:\s+No such file or directory/gi, '- 目录不存在：$1')
+    .replace(/-\s+read directory failed:\s+open\s+([^\n:]+):\s+no such file or directory/gi, '- 目录不存在：$1')
+}
+
+function sortHadoopContainers(containers: any[]) {
+  return [...containers].sort((left, right) => {
+    const leftAM = left.isAM === true || (left.isAM === undefined && String(left.priority) === '0')
+    const rightAM = right.isAM === true || (right.isAM === undefined && String(right.priority) === '0')
+    if (leftAM !== rightAM) return leftAM ? -1 : 1
+    return String(left.id || '').localeCompare(String(right.id || ''), undefined, { numeric: true })
+  })
 }
 
 function HadoopYarn() {
   const location = useLocation()
   const requestedSourceID = new URLSearchParams(location.search).get('source') || ''
-  const [sources, setSources] = useState<Source[]>([]); const [sourceID, setSourceID] = useState(''); const [apps, setApps] = useState<any[]>([]); const [appTotal, setAppTotal] = useState(0); const [appFacets, setAppFacets] = useState<Record<string, string[]>>({}); const [containers, setContainers] = useState<any[]>([]); const [containerPage, setContainerPage] = useState(1); const [selectedContainerID, setSelectedContainerID] = useState(''); const [log, setLog] = useState<ReactNode>(''); const [logModalOpen, setLogModalOpen] = useState(false); const [logFullscreen, setLogFullscreen] = useState(false); const [selectedAppID, setSelectedAppID] = useState(''); const [message, setMessage] = useState(''); const [downloadingLog, setDownloadingLog] = useState(false); const [, setLoading] = useState(false)
+  const [sources, setSources] = useState<Source[]>([]); const [sourceID, setSourceID] = useState(''); const [apps, setApps] = useState<any[]>([]); const [appTotal, setAppTotal] = useState(0); const [appFacets, setAppFacets] = useState<Record<string, string[]>>({}); const [containers, setContainers] = useState<any[]>([]); const [selectedContainerID, setSelectedContainerID] = useState(''); const [log, setLog] = useState<ReactNode>(''); const [logModalOpen, setLogModalOpen] = useState(false); const [logFullscreen, setLogFullscreen] = useState(false); const [selectedAppID, setSelectedAppID] = useState(''); const [message, setMessage] = useState(''); const [downloadingLog, setDownloadingLog] = useState(false); const [, setLoading] = useState(false); const appLoadSequence = useRef(0)
   const [keyword, setKeyword] = useState(''); const [userFilter, setUserFilter] = useState(''); const [typeFilter, setTypeFilter] = useState(''); const [stateFilter, setStateFilter] = useState(''); const [finalStatusFilter, setFinalStatusFilter] = useState(''); const [appPage, setAppPage] = useState(1)
+  const [appContainers, setAppContainers] = useState<Record<string, any[]>>({})
   const taskRefreshInterval = useScopedRefreshInterval('hadoop')
+  const containerSummaryCache = useRef<Record<string, { at: number; items: any[] }>>({})
+  useEffect(() => {
+    if (!sourceID || apps.length === 0) return
+    let cancelled = false
+    void Promise.all(apps.map(async (app: any) => { const cached = containerSummaryCache.current[app.id]; if (cached && Date.now() - cached.at < 30000) return [app.id, cached.items] as const; try { const response = await fetch(`${api}/hadoop/${sourceID}/apps/${app.id}`); const data = await response.json(); const items = sortHadoopContainers(Array.isArray(data.data) ? data.data : []); containerSummaryCache.current[app.id] = { at: Date.now(), items }; return [app.id, items] as const } catch { return [app.id, cached?.items || []] as const } })).then(items => { if (!cancelled) setAppContainers(Object.fromEntries(items)) })
+    return () => { cancelled = true }
+  }, [sourceID, apps])
   useEffect(() => { void (async () => { try { const data = await (await fetch(`${api}/data-sources`)).json(); const next = (data.dataSources || []).filter((item: Source) => item.type === 'Hadoop'); setSources(next); setSourceID(next.some((item: Source) => item.id === requestedSourceID) ? requestedSourceID : next[0]?.id || '') } catch { setSources([]); setSourceID('') } })() }, [requestedSourceID])
-  const loadApps = async () => { if (!sourceID) return; setLoading(true); try { const params = new URLSearchParams({ page: String(appPage), pageSize: '20', keyword, user: userFilter, type: typeFilter, state: stateFilter, finalStatus: finalStatusFilter }); const response = await fetch(`${api}/hadoop/${sourceID}/apps?${params.toString()}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); setApps(Array.isArray(data.data?.items) ? data.data.items : []); setAppTotal(Number(data.data?.total) || 0); setAppFacets(data.data?.facets || {}); setMessage('') } catch (err) { setMessage(err instanceof Error ? err.message : 'YARN 应用加载失败') } finally { setLoading(false) } }
-  const loadContainers = async (appID: string) => { try { setSelectedAppID(appID); setContainerPage(1); setLog('正在加载日志...'); const response = await fetch(`${api}/hadoop/${sourceID}/apps/${appID}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); const next = Array.isArray(data.data) ? data.data : []; setContainers(next); if (next.length === 0) { setLog('该任务没有可读取的容器日志。'); return }; setSelectedContainerID(next[0].id); setLogModalOpen(true); if (next[0].logUrl) void loadLog(next[0].logUrl, next[0].id); else setLog('该容器未提供日志地址。') } catch (err) { setLogModalOpen(false); setMessage(err instanceof Error ? err.message : '容器加载失败') } }
-  const loadLog = async (url: string, containerID?: string) => { try { if (containerID) setSelectedContainerID(containerID); setLog('正在加载日志...'); const response = await fetch(`${api}/hadoop/${sourceID}/log?url=${encodeURIComponent(url)}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); setLog(<HadoopLogPager content={data.data || '日志为空。'} />) } catch (err) { setLog(`日志加载失败：${err instanceof Error ? err.message : '未知错误'}`) } }
+  const loadApps = async () => { if (!sourceID) return; const sequence = ++appLoadSequence.current; setLoading(true); try { const params = new URLSearchParams({ page: String(appPage), pageSize: '20', keyword, user: userFilter, type: typeFilter, state: stateFilter, finalStatus: finalStatusFilter }); const response = await fetch(`${api}/hadoop/${sourceID}/apps?${params.toString()}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); if (sequence !== appLoadSequence.current) return; const payload = data.data || data; const next = Array.isArray(payload.items) ? payload.items : []; const total = Number(payload.total); setApps(next); setAppTotal(Number.isFinite(total) ? total : next.length); setAppFacets(payload.facets || {}); if (appPage > 1 && next.length === 0 && total > 0) setAppPage(Math.max(1, Math.ceil(total / 20))); setMessage('') } catch (err) { if (sequence === appLoadSequence.current) setMessage(err instanceof Error ? err.message : 'YARN 应用加载失败') } finally { if (sequence === appLoadSequence.current) setLoading(false) } }
+  const loadContainers = async (appID: string) => { try { setSelectedAppID(appID); setLog('正在加载日志...'); const response = await fetch(`${api}/hadoop/${sourceID}/apps/${appID}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); const next = sortHadoopContainers(Array.isArray(data.data) ? data.data : []); setContainers(next); if (next.length === 0) { setLog('该任务没有可读取的容器日志。'); return }; setSelectedContainerID(next[0].id); setLogModalOpen(true); if (next[0].logUrl) void loadLog(next[0].logUrl, next[0].id); else setLog('该容器未提供日志地址。') } catch (err) { setLogModalOpen(false); setMessage(err instanceof Error ? err.message : '容器加载失败') } }
+  const loadLog = async (url: string, containerID?: string) => { try { if (containerID) setSelectedContainerID(containerID); setLog('正在加载日志...'); const response = await fetch(`${api}/hadoop/${sourceID}/log?url=${encodeURIComponent(url)}`); const data = await response.json(); if (!response.ok) throw new Error(data.error || '节点日志服务不可用'); const content = String(data.data || ''); setLog(<HadoopLogPager content={content || '该容器暂无可用日志，可能尚未产生日志或日志已被 YARN 清理。'} />) } catch (err) { setLog(`日志读取失败：${err instanceof Error ? err.message : '节点日志服务不可用'}。请检查 NodeManager 或 JobHistory 地址。`) } }
   const downloadAllLogs = async () => {
     const available = containers.filter(container => container.logUrl)
     if (available.length === 0) { setMessage('当前任务没有可下载的容器日志'); return }
@@ -986,41 +1141,12 @@ function HadoopYarn() {
   useEffect(() => {
     if (!logModalOpen && logFullscreen) setLogFullscreen(false)
   }, [logModalOpen, logFullscreen])
-  useEffect(() => {
-    const modal = document.querySelector<HTMLElement>('.hadoop-log-modal')
-    const backdrop = modal?.closest<HTMLElement>('.modal-backdrop')
-    modal?.classList.toggle('fullscreen', logFullscreen)
-    backdrop?.classList.toggle('hadoop-log-fullscreen-backdrop', logFullscreen)
-    if (!logModalOpen) return
-    const closeButton = document.querySelector<HTMLButtonElement>('.hadoop-log-modal .close-button')
-    if (!closeButton || closeButton.parentElement?.querySelector('.hadoop-log-download')) return
-    const downloadButton = document.createElement('button')
-    downloadButton.type = 'button'
-    downloadButton.className = 'button secondary hadoop-log-download'
-    downloadButton.textContent = downloadingLog ? '下载中...' : '下载全部'
-    downloadButton.disabled = downloadingLog
-    downloadButton.addEventListener('click', () => void downloadAllLogs())
-    const fullscreenButton = document.createElement('button')
-    fullscreenButton.type = 'button'
-    fullscreenButton.className = 'button secondary hadoop-log-fullscreen'
-    fullscreenButton.textContent = logFullscreen ? '退出全屏' : '全屏'
-    fullscreenButton.addEventListener('click', () => setLogFullscreen(value => !value))
-    closeButton.before(downloadButton, fullscreenButton)
-    return () => {
-      downloadButton.remove()
-      fullscreenButton.remove()
-    }
-  }, [logModalOpen, logFullscreen, containers, downloadingLog, selectedAppID, sourceID])
   const valuesFor = (field: string) => appFacets[field] || []
   const filteredApps = apps
   const totalAppPages = Math.max(1, Math.ceil(appTotal / 20))
   const currentAppPage = Math.min(appPage, totalAppPages)
   const visibleApps = filteredApps
-  const totalContainerPages = Math.max(1, Math.ceil(containers.length / 10))
-  const currentContainerPage = Math.min(containerPage, totalContainerPages)
-  const visibleContainers = containers.slice((currentContainerPage - 1) * 10, currentContainerPage * 10)
-  void visibleContainers
-  const appPagination = <footer className="hadoop-pagination"><span>共 {appTotal} 条，第 {currentAppPage} / {totalAppPages} 页</span><div><button type="button" disabled={currentAppPage === 1} onClick={() => setAppPage(1)}>首页</button><button type="button" disabled={currentAppPage === 1} onClick={() => setAppPage(current => Math.max(1, current - 1))}>上一页</button><input type="number" min="1" max={totalAppPages} value={currentAppPage} aria-label="页码" onChange={(event) => { const next = Number(event.target.value); if (Number.isInteger(next) && next >= 1 && next <= totalAppPages) setAppPage(next) }} /><span>/ {totalAppPages}</span><button type="button" disabled={currentAppPage === totalAppPages} onClick={() => setAppPage(current => Math.min(totalAppPages, current + 1))}>下一页</button><button type="button" disabled={currentAppPage === totalAppPages} onClick={() => setAppPage(totalAppPages)}>末页</button></div></footer>
+  const appPagination = <UnifiedPagination total={appTotal} page={currentAppPage} totalPages={totalAppPages} onPageChange={setAppPage} ariaLabel="Hadoop 任务分页" />
   const actions = null
   useEffect(() => { if (!sourceID) return; void loadApps(); const timer = window.setInterval(() => void loadApps(), taskRefreshInterval); return () => window.clearInterval(timer) }, [sourceID, appPage, keyword, userFilter, typeFilter, stateFilter, finalStatusFilter, taskRefreshInterval])
   const resetFilters = () => { setKeyword(''); setUserFilter(''); setTypeFilter(''); setStateFilter(''); setFinalStatusFilter(''); setAppPage(1) }
@@ -1032,7 +1158,259 @@ function HadoopYarn() {
     detailWindow.opener = null
   }
   const selectedApplication = apps.find(app => app.id === selectedAppID)
-  return <div className="page"><PageHead title="Hadoop / YARN" description="应用运行状态与容器日志" actionNode={actions} />{sources.length === 0 ? <section className="surface empty-state"><b>暂无 Hadoop 数据源</b><span>请先在数据节点新增 Hadoop Web 地址。</span></section> : <section className="surface">{message && <div className="form-error">{message}</div>}<div className="hadoop-filter-bar"><input value={keyword} onChange={(event) => { setKeyword(event.target.value); setAppPage(1) }} placeholder="搜索名称、ID、用户或状态" /><AppSelect value={userFilter} placeholder="全部用户" onChange={(value) => { setUserFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部用户' }, ...valuesFor('user').map(value => ({ value, label: value }))]} /><AppSelect value={typeFilter} placeholder="全部类型" onChange={(value) => { setTypeFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部类型' }, ...valuesFor('applicationType').map(value => ({ value, label: value }))]} /><AppSelect value={stateFilter} placeholder="全部状态" onChange={(value) => { setStateFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部状态' }, ...valuesFor('state').map(value => ({ value, label: value }))]} /><AppSelect value={finalStatusFilter} placeholder="全部最终状态" onChange={(value) => { setFinalStatusFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部最终状态' }, ...valuesFor('finalStatus').map(value => ({ value, label: value }))]} /><button className="hadoop-filter-reset" type="button" onClick={resetFilters}>重置</button></div><div className="prometheus-rule-list">{visibleApps.map(app => <article className="prometheus-rule-row compact hadoop-app-row" key={app.id}><i className="rule-icon">Y</i><div><header><b>{formatHadoopApplicationName(app.name, app.id)}<code className="hadoop-application-id">{app.id}</code></b><div className="hadoop-app-actions"><button className="text-button" type="button" onClick={() => void loadContainers(app.id)}>查看日志</button><button className="text-button hadoop-app-detail" type="button" onClick={() => openApplicationDetails(app)}>任务详情</button></div></header><div className="hadoop-app-meta"><span>{app.user || '-'}</span><span>{app.queue || 'default'}</span><span>{app.applicationType || '-'}</span><span>进度 {Number(app.progress || 0).toFixed(0)}%</span><span>{formatHadoopTimeRange(app)}</span><span className={`hadoop-status ${hadoopStatusTone(app.state)}`}>状态 {app.state || '-'}</span><span className={`hadoop-status ${hadoopStatusTone(app.finalStatus)}`}>最终状态 {app.finalStatus || '-'}</span></div></div></article>)}</div>{appPagination}{filteredApps.length > 0 && visibleApps.length === 0 && <div className="hadoop-filter-empty">没有匹配的应用</div>}</section>}{logModalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setLogModalOpen(false) }}><section className="surface hadoop-log-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>容器日志</h2><p>{selectedAppID}</p></div><button className="close-button" type="button" onClick={() => setLogModalOpen(false)}>×</button></header>{containers.length > 1 && <div className="hadoop-container-tabs">{containers.map(container => <button className={container.id === selectedContainerID ? 'active' : ''} type="button" key={container.id} onClick={() => container.logUrl && void loadLog(container.logUrl, container.id)}>{hadoopContainerLabel(container, selectedApplication?.applicationType)}</button>)}</div>}<div className="hadoop-log">{log}</div></section></div>}</div>
+  const selectedContainer = containers.find(container => container.id === selectedContainerID)
+	const containerPerformanceNote = (appID: string) => {
+		const details = appContainers[appID] || (appID === selectedAppID && selectedContainer ? [selectedContainer] : [])
+		if (!details.length) return ''
+		const nodes = Array.from(new Set(details.map((container: any) => String(container.nodeHttpAddress || '').trim()).filter(Boolean)))
+		const memory = details.reduce((total: number, container: any) => total + (Number(container.allocatedMB) || 0), 0)
+		const vcores = details.reduce((total: number, container: any) => total + (Number(container.allocatedVCores) || 0), 0)
+		return `节点 ${nodes.length ? nodes.join('、') : '-'} · 内存 ${memory || '-'} MB · CPU ${vcores || '-'} vCores`
+	}
+  return <div className="page"><PageHead title="Hadoop / YARN" description="应用运行状态与容器日志" actionNode={actions} />{sources.length === 0 ? <section className="surface empty-state"><b>暂无 Hadoop 数据源</b><span>请先在数据节点新增 Hadoop Web 地址。</span></section> : <section className="surface">{message && <div className="form-error">{message}</div>}<div className="hadoop-filter-bar"><input value={keyword} onChange={(event) => { setKeyword(event.target.value); setAppPage(1) }} placeholder="搜索名称、ID、用户或状态" /><AppSelect value={userFilter} placeholder="全部用户" onChange={(value) => { setUserFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部用户' }, ...valuesFor('user').map(value => ({ value, label: value }))]} /><AppSelect value={typeFilter} placeholder="全部类型" onChange={(value) => { setTypeFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部类型' }, ...valuesFor('applicationType').map(value => ({ value, label: value }))]} /><AppSelect value={stateFilter} placeholder="全部状态" onChange={(value) => { setStateFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部状态' }, ...valuesFor('state').map(value => ({ value, label: value }))]} /><AppSelect value={finalStatusFilter} placeholder="全部最终状态" onChange={(value) => { setFinalStatusFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部最终状态' }, ...valuesFor('finalStatus').map(value => ({ value, label: value }))]} /><button className="hadoop-filter-reset" type="button" onClick={resetFilters}>重置</button></div><div className="prometheus-rule-list">{visibleApps.map(app => { const note = containerPerformanceNote(app.id); return <article className="prometheus-rule-row compact hadoop-app-row" key={app.id}><i className="rule-icon">Y</i><div><header><b>{formatHadoopApplicationName(app.name, app.id)}<code className="hadoop-application-id">{app.id}</code></b><div className="hadoop-app-actions"><button className="text-button" type="button" onClick={() => void loadContainers(app.id)}>查看日志</button><button className="text-button hadoop-app-detail" type="button" onClick={() => openApplicationDetails(app)}>任务详情</button></div></header><div className="hadoop-app-meta"><span>{app.user || '-'}</span><span>{app.queue || 'default'}</span><span>{app.applicationType || '-'}</span><span>进度 {Number(app.progress || 0).toFixed(0)}%</span>{note && <span className="hadoop-container-progress-note">{note}</span>}<span>{formatHadoopTimeRange(app)}</span><span className={`hadoop-status ${hadoopStatusTone(app.state)}`}>状态 {app.state || '-'}</span><span className={`hadoop-status ${hadoopStatusTone(app.finalStatus)}`}>最终状态 {app.finalStatus || '-'}</span></div></div></article> })}</div>{appPagination}{filteredApps.length > 0 && visibleApps.length === 0 && <div className="hadoop-filter-empty">没有匹配的应用</div>}</section>}{logModalOpen && <div className={`modal-backdrop ${logFullscreen ? 'hadoop-log-fullscreen-backdrop' : ''}`} role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setLogModalOpen(false) }}><section className={`surface hadoop-log-modal ${logFullscreen ? 'fullscreen' : ''}`} role="dialog" aria-modal="true"><header className="modal-head"><div><h2>容器日志</h2><p>{selectedAppID}</p></div><button className="button secondary hadoop-log-download" type="button" disabled={downloadingLog} onClick={() => void downloadAllLogs()}>{downloadingLog ? '下载中...' : '下载全部'}</button><button className="button secondary hadoop-log-fullscreen" type="button" aria-label={logFullscreen ? '退出全屏' : '全屏查看'} title={logFullscreen ? '退出全屏' : '全屏查看'} onClick={() => setLogFullscreen(value => !value)}><span aria-hidden="true">{logFullscreen ? '↙' : '↗'}</span><em>{logFullscreen ? '退出全屏' : '全屏'}</em></button><button className="close-button" type="button" aria-label="关闭" onClick={() => setLogModalOpen(false)}>×</button></header>{containers.length > 1 && <div className="hadoop-container-tabs">{containers.map(container => <button className={container.id === selectedContainerID ? 'active' : ''} type="button" key={container.id} onClick={() => container.logUrl && void loadLog(container.logUrl, container.id)}>{hadoopContainerLabel(container, selectedApplication?.applicationType)}</button>)}</div>}{selectedContainer && <div className="hadoop-container-resource">Attempt：{selectedContainer.attemptId || '-'} · 节点：{selectedContainer.nodeHttpAddress || '-'} · 内存：{selectedContainer.allocatedMB || '-'} MB · vCores：{selectedContainer.allocatedVCores || '-'}</div>}<div className="hadoop-log">{log}</div></section></div>}</div>
+}
+
+function MySQLWorkspace() {
+  const sourceID = new URLSearchParams(useLocation().search).get('source') || ''
+  type ColumnDetail = { name: string; type: string; collation: string | null; nullable: boolean; key: string; default: string | null; extra: string; privileges: string; comment: string }
+  type RowEditor = { mode: 'insert' | 'edit'; rowIndex: number; values: Record<string, string>; nulls: Record<string, boolean> }
+  const [databases, setDatabases] = useState<string[]>([])
+  const [tablesByDatabase, setTablesByDatabase] = useState<Record<string, string[]>>({})
+  const [expandedDatabases, setExpandedDatabases] = useState<string[]>([])
+  const [database, setDatabase] = useState('')
+  const [table, setTable] = useState('')
+  const [filter, setFilter] = useState('')
+  const [treeCollapsed, setTreeCollapsed] = useState(false)
+  const [activeView, setActiveView] = useState<'data' | 'structure' | 'sql'>('data')
+  const [structure, setStructure] = useState<ColumnDetail[]>([])
+  const [preview, setPreview] = useState<{ columns: string[]; rows: any[][]; page: number; pageSize: number; total: number; totalPages: number; totalExact: boolean }>({ columns: [], rows: [], page: 1, pageSize: 50, total: 0, totalPages: 1, totalExact: true })
+  const [tablePage, setTablePage] = useState(1)
+  const [tablePageSize, setTablePageSize] = useState(50)
+  const [tableFilterColumn, setTableFilterColumn] = useState('')
+  const [tableFilterDraft, setTableFilterDraft] = useState('')
+  const [tableFilterValue, setTableFilterValue] = useState('')
+  const [tableSortColumn, setTableSortColumn] = useState('')
+  const [tableSortDirection, setTableSortDirection] = useState('asc')
+  const [loading, setLoading] = useState(false)
+  const [loadingDatabase, setLoadingDatabase] = useState('')
+  const [loadingTable, setLoadingTable] = useState(false)
+  const [error, setError] = useState('')
+  const [reloadSequence, setReloadSequence] = useState(0)
+  const [rowEditor, setRowEditor] = useState<RowEditor | null>(null)
+  const [deleteRowIndex, setDeleteRowIndex] = useState<number | null>(null)
+  const [mutating, setMutating] = useState(false)
+  const [mutationMessage, setMutationMessage] = useState('')
+  const [transferMode, setTransferMode] = useState<'export' | 'import' | null>(null)
+  const [sqlDatabase, setSQLDatabase] = useState('')
+  const [sqlText, setSQLText] = useState('')
+  const [sqlRunning, setSQLRunning] = useState(false)
+  const [sqlNeedsConfirm, setSQLNeedsConfirm] = useState(false)
+  const [sqlError, setSQLError] = useState('')
+  const [sqlResult, setSQLResult] = useState<{ columns: string[]; rows: any[][]; affected: number; message: string; truncated: boolean } | null>(null)
+  const [sqlResultPage, setSQLResultPage] = useState(1)
+  const [sqlResultPageSize, setSQLResultPageSize] = useState(50)
+  const [sqlHistory, setSQLHistory] = useState<SQLHistoryItem[]>([])
+  const [sqlHistoryLoading, setSQLHistoryLoading] = useState(false)
+  const [sqlHistoryPage, setSQLHistoryPage] = useState(1)
+  const [sqlHistoryTotal, setSQLHistoryTotal] = useState(0)
+  useEffect(() => {
+    if (!sourceID) return
+    setLoading(true)
+    fetch(`${api}/data-sources/${sourceID}/schema`).then(r => r.json().then(data => ({ r, data }))).then(({ r, data }) => {
+      if (!r.ok) throw new Error(data.error)
+      setDatabases(Object.keys(data.schema || {}))
+      setTablesByDatabase({}); setExpandedDatabases([]); setDatabase(''); setTable(''); setStructure([]); setPreview({ columns: [], rows: [], page: 1, pageSize: 50, total: 0, totalPages: 1, totalExact: true }); setTablePage(1); setError('')
+    }).catch(err => setError(err.message || '读取数据库失败')).finally(() => setLoading(false))
+  }, [sourceID])
+  const toggleDatabase = async (name: string) => {
+    if (expandedDatabases.includes(name)) { setExpandedDatabases(current => current.filter(item => item !== name)); return }
+    setExpandedDatabases(current => [...current, name])
+    if (tablesByDatabase[name]) return
+    setLoadingDatabase(name)
+    try {
+      const response = await fetch(`${api}/data-sources/${sourceID}/schema?database=${encodeURIComponent(name)}`)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '读取数据表失败')
+      setTablesByDatabase(current => ({ ...current, [name]: Object.keys(data.schema?.[name] || {}) }))
+      setError('')
+    } catch (err) { setError(err instanceof Error ? err.message : '读取数据表失败') } finally { setLoadingDatabase('') }
+  }
+  const selectTable = (databaseName: string, tableName: string) => { setDatabase(databaseName); setTable(tableName); setTablePage(1); setTableFilterColumn(''); setTableFilterDraft(''); setTableFilterValue(''); setTableSortColumn(''); setTableSortDirection('asc'); setActiveView('data'); setRowEditor(null); setDeleteRowIndex(null) }
+  useEffect(() => {
+    if (!sourceID || !database || !table) return
+    setLoadingTable(true)
+    const query = `database=${encodeURIComponent(database)}&table=${encodeURIComponent(table)}`
+    const previewParams = new URLSearchParams({ database, table, page: String(tablePage), pageSize: String(tablePageSize) })
+    if (tableFilterColumn && tableFilterValue) { previewParams.set('filterColumn', tableFilterColumn); previewParams.set('filterValue', tableFilterValue) }
+    if (tableSortColumn) { previewParams.set('sortColumn', tableSortColumn); previewParams.set('sortDirection', tableSortDirection) }
+    const previewQuery = previewParams.toString()
+    Promise.all([fetch(`${api}/data-sources/${sourceID}/preview?${previewQuery}`), fetch(`${api}/data-sources/${sourceID}/structure?${query}`)]).then(async ([previewResponse, structureResponse]) => {
+      const [previewData, structureData] = await Promise.all([previewResponse.json(), structureResponse.json()])
+      if (!previewResponse.ok) throw new Error(previewData.error || '读取表数据失败')
+      if (!structureResponse.ok) throw new Error(structureData.error || '读取表结构失败')
+      const nextPage = Number(previewData.page || 1)
+      setPreview({ columns: previewData.columns || [], rows: previewData.rows || [], page: nextPage, pageSize: Number(previewData.pageSize || tablePageSize), total: Number(previewData.total || 0), totalPages: Number(previewData.totalPages || 1), totalExact: previewData.totalExact !== false }); setStructure(structureData.columns || []); setError('')
+      if (nextPage !== tablePage) setTablePage(nextPage)
+    }).catch(err => { setPreview({ columns: [], rows: [], page: tablePage, pageSize: tablePageSize, total: 0, totalPages: 1, totalExact: true }); setStructure([]); setError(err.message || '读取数据失败') }).finally(() => setLoadingTable(false))
+  }, [sourceID, database, table, tablePage, tablePageSize, tableFilterColumn, tableFilterValue, tableSortColumn, tableSortDirection, reloadSequence])
+  const primaryKeys = structure.filter(column => column.key === 'PRI').map(column => column.name)
+  const editableColumns = structure.filter(column => !column.extra.toLowerCase().includes('generated'))
+  const rowKeys = (rowIndex: number) => {
+    const row = preview.rows[rowIndex] || []
+    return Object.fromEntries(primaryKeys.map(name => [name, row[preview.columns.indexOf(name)]]))
+  }
+  const openInsert = () => setRowEditor({ mode: 'insert', rowIndex: -1, values: Object.fromEntries(editableColumns.map(column => [column.name, column.default ?? ''])), nulls: {} })
+  const openEdit = (rowIndex: number) => {
+    const row = preview.rows[rowIndex] || []
+    const values: Record<string, string> = {}; const nulls: Record<string, boolean> = {}
+    editableColumns.forEach(column => { const value = row[preview.columns.indexOf(column.name)]; values[column.name] = value === null || value === undefined ? '' : String(value); nulls[column.name] = value === null })
+    setRowEditor({ mode: 'edit', rowIndex, values, nulls })
+  }
+  const showMutationMessage = (message: string) => { setMutationMessage(message); window.setTimeout(() => setMutationMessage(''), 3000) }
+  const saveRow = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!rowEditor) return
+    const values: Record<string, any> = {}
+    editableColumns.forEach(column => {
+      const value = rowEditor.values[column.name] ?? ''
+      if (rowEditor.mode === 'insert' && column.extra.toLowerCase().includes('auto_increment') && value === '') return
+      values[column.name] = rowEditor.nulls[column.name] ? null : value
+    })
+    setMutating(true)
+    try {
+      const response = await fetch(`${api}/data-sources/${sourceID}/rows`, { method: rowEditor.mode === 'insert' ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ database, table, keys: rowEditor.mode === 'edit' ? rowKeys(rowEditor.rowIndex) : {}, values }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '保存失败')
+      setRowEditor(null); setReloadSequence(current => current + 1); showMutationMessage(rowEditor.mode === 'insert' ? '记录已新增' : '记录已更新')
+    } catch (err) { setError(err instanceof Error ? err.message : '保存失败') } finally { setMutating(false) }
+  }
+  const deleteRow = async () => {
+    if (deleteRowIndex === null) return
+    setMutating(true)
+    try {
+      const response = await fetch(`${api}/data-sources/${sourceID}/rows`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ database, table, keys: rowKeys(deleteRowIndex) }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '删除失败')
+      setDeleteRowIndex(null); setReloadSequence(current => current + 1); showMutationMessage('记录已删除')
+    } catch (err) { setError(err instanceof Error ? err.message : '删除失败') } finally { setMutating(false) }
+  }
+  const loadSQLHistory = async (page = sqlHistoryPage) => {
+    setSQLHistoryLoading(true)
+    try {
+      const response = await fetch(`${api}/data-sources/${sourceID}/sql-history?page=${page}&pageSize=10`)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'SQL 历史加载失败')
+      setSQLHistory(Array.isArray(data.items) ? data.items : []); setSQLHistoryTotal(Number(data.total || (Array.isArray(data.items) ? data.items.length : 0))); setSQLHistoryPage(Number(data.page || page))
+    } catch { setSQLHistory([]) } finally { setSQLHistoryLoading(false) }
+  }
+  const openSQL = () => { setActiveView('sql'); setSQLDatabase(current => current || database); setSQLNeedsConfirm(false); setSQLError(''); setSQLResultPage(1) }
+  const isReadOnlySQL = (statement: string) => {
+    const first = statement.trim().match(/^([a-z]+)/i)?.[1]?.toLowerCase() || ''
+    if (['select', 'show', 'describe', 'desc', 'explain'].includes(first)) return true
+    if (first !== 'with') return false
+    const commands = Array.from(statement.matchAll(/\)\s*(select|insert|update|delete|replace)\b/gi))
+    return commands.length > 0 && commands[commands.length - 1][1].toLowerCase() === 'select'
+  }
+  const canExplainSQL = (statement: string) => /^(select|with|explain|update|delete)\b/i.test(statement.trim())
+  const executeSQL = async (confirmed = false, explain = false) => {
+    const enteredStatement = sqlText.trim()
+    if (!enteredStatement) { setSQLError('请输入 SQL 语句'); return }
+    if (explain && !canExplainSQL(enteredStatement)) { setSQLError('影响预览仅支持 SELECT、UPDATE 或 DELETE'); return }
+    const statement = explain ? `EXPLAIN ${enteredStatement.replace(/^EXPLAIN\s+/i, '')}` : enteredStatement
+    const readOnly = isReadOnlySQL(statement)
+    if (!readOnly && !confirmed) { setSQLNeedsConfirm(true); setSQLError(''); return }
+    setSQLRunning(true); setSQLNeedsConfirm(false); setSQLError('')
+    try {
+      const response = await fetch(`${api}/data-sources/${sourceID}/execute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql: statement, confirmed }) })
+      const responseText = await response.text()
+      let data: { columns?: string[]; rows?: any[][]; affected?: number; message?: string; truncated?: boolean; error?: string } = {}
+      try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(`服务端返回了无效响应（HTTP ${response.status}）。请缩小查询范围或稍后重试。`) }
+      if (!responseText && response.ok) throw new Error('服务端未返回查询结果。请缩小查询范围或稍后重试。')
+      if (!response.ok) throw new Error(data.error || 'SQL 执行失败')
+      setSQLResult({ columns: data.columns || [], rows: data.rows || [], affected: Number(data.affected || 0), message: data.message || '', truncated: data.truncated === true })
+      setSQLResultPage(1)
+      if (!readOnly && table) setReloadSequence(current => current + 1)
+    } catch (err) { setSQLResult(null); setSQLError(err instanceof Error ? err.message : 'SQL 执行失败') } finally { setSQLRunning(false); void loadSQLHistory() }
+  }
+  const applyTableFilter = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); setTableFilterValue(tableFilterDraft.trim()); setTablePage(1) }
+  const clearTableFilter = () => { setTableFilterDraft(''); setTableFilterValue(''); setTablePage(1) }
+  const query = filter.trim().toLowerCase()
+  const visibleDatabases = databases.filter(name => !query || name.toLowerCase().includes(query) || (tablesByDatabase[name] || []).some(item => item.toLowerCase().includes(query)))
+  const sqlResultTotal = sqlResult?.rows.length || 0
+  const sqlResultTotalPages = Math.max(1, Math.ceil(sqlResultTotal / sqlResultPageSize))
+  const visibleSQLRows = sqlResult?.rows.slice((sqlResultPage - 1) * sqlResultPageSize, sqlResultPage * sqlResultPageSize) || []
+  const sqlWorkspace = <div className="mysql-sql-panel"><div className="mysql-sql-layout"><aside className="mysql-sql-history"><header><b>最近执行</b><span>最近 10 条</span></header><div>{sqlHistoryLoading ? <span className="mysql-sql-history-empty">正在加载...</span> : sqlHistory.length === 0 ? <span className="mysql-sql-history-empty">暂无执行记录</span> : sqlHistory.map(item => <button type="button" key={item.id} onClick={() => { setSQLText(item.statement); setSQLDatabase(item.database); setSQLNeedsConfirm(false); setSQLError(''); setSQLResult(null); setSQLResultPage(1) }}><span><i className={item.status === 'success' ? 'success' : 'failed'} />{item.database || '默认数据库'}<time>{item.createdAt}</time></span><code>{item.statement}</code><small>{item.status === 'success' ? `${item.resultRows > 0 ? `${item.resultRows} 行结果` : `影响 ${item.affected} 行`}` : item.error || '执行失败'} · {item.durationMs}ms</small></button>)}</div></aside><section className="mysql-sql-workspace"><div className="mysql-sql-database"><span>执行数据库</span><AppSelect className="mysql-sql-database-select" value={sqlDatabase} onChange={setSQLDatabase} options={[{ value: '', label: '数据源默认数据库' }, ...databases.map(item => ({ value: item, label: item }))]} /></div><textarea className="mysql-sql-editor" value={sqlText} spellCheck={false} placeholder="SELECT * FROM table_name LIMIT 100" onChange={event => { setSQLText(event.target.value); setSQLNeedsConfirm(false); setSQLError('') }} />{sqlError && <div className="form-error">{sqlError}</div>}{sqlNeedsConfirm && <div className="mysql-sql-warning"><b>确认执行写操作？</b><span>该语句可能修改数据库结构或数据，执行前可先使用“影响预览”查看执行计划。</span><button type="button" disabled={sqlRunning} onClick={() => void executeSQL(true)}>确认执行</button></div>}<div className="mysql-sql-actions"><span>{sqlResult && (sqlResult.columns.length > 0 ? `${sqlResult.rows.length}${sqlResult.truncated ? '+' : ''} 行结果` : `已影响 ${sqlResult.affected} 行`)}</span><div><button className="button secondary" type="button" disabled={sqlRunning || !canExplainSQL(sqlText)} onClick={() => void executeSQL(false, true)}>影响预览</button>{sqlResult?.columns.length ? <button className="button secondary" type="button" onClick={() => downloadCSV(`sql-result-${Date.now()}.csv`, sqlResult.columns, sqlResult.rows)}>下载 CSV</button> : null}<button className="button" type="button" disabled={sqlRunning || !sqlText.trim()} onClick={() => void executeSQL(false)}>{sqlRunning ? '执行中...' : '执行'}</button><MySQLBackgroundQuery sourceID={sourceID} database="" sql={sqlText} confirmed={sqlNeedsConfirm} /><SQLHistoryControl items={sqlHistory} loading={sqlHistoryLoading} total={sqlHistoryTotal} page={sqlHistoryPage} onOpen={() => void loadSQLHistory(sqlHistoryPage)} onPageChange={value => void loadSQLHistory(value)} onCopy={sql => { void navigator.clipboard.writeText(sql) }} onSelect={item => { setSQLText(item.statement); setSQLDatabase(item.database) }} /></div></div>{sqlResult && (sqlResult.columns.length > 0 ? <SQLResultView columns={sqlResult.columns} rows={visibleSQLRows} page={sqlResultPage} pageSize={sqlResultPageSize} total={sqlResultTotal} totalPages={sqlResultTotalPages} truncated={sqlResult.truncated} onPageChange={setSQLResultPage} onPageSizeChange={value => { setSQLResultPageSize(value); setSQLResultPage(1) }} /> : <div className="mysql-sql-result mysql-sql-success">SQL 执行成功，影响 {sqlResult.affected} 行。</div>)}</section></div></div>
+  return <div className="page mysql-workspace">
+    <section className="overview-section-title"><div><h2>MySQL 工作台</h2><p>浏览数据库、查看并维护表数据</p></div></section>
+    {error && <div className="form-error">{error}</div>}{mutationMessage && <div className="toast">{mutationMessage}</div>}
+    <section className={`surface mysql-workspace-grid ${treeCollapsed ? 'tree-collapsed' : ''}`}>
+      <button className="mysql-tree-collapse-control" type="button" onClick={() => setTreeCollapsed(value => !value)} title={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'} aria-label={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'}>{treeCollapsed ? '›' : '‹'}</button>
+      <aside className="mysql-tree-panel"><header><b>数据库对象</b><span>{databases.length} 个库</span></header><input value={filter} placeholder="筛选数据库或表" onChange={event => setFilter(event.target.value)} /><div className="mysql-tree">{loading ? <span className="mysql-tree-status">正在加载...</span> : visibleDatabases.map(databaseName => { const expanded = expandedDatabases.includes(databaseName); const visibleTables = (tablesByDatabase[databaseName] || []).filter(name => !query || databaseName.toLowerCase().includes(query) || name.toLowerCase().includes(query)); return <div className="mysql-tree-database" key={databaseName}><button className={database === databaseName ? 'selected' : ''} type="button" onClick={() => void toggleDatabase(databaseName)}><span className={`mysql-tree-toggle ${expanded ? 'expanded' : ''}`} aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg></span><span className="mysql-tree-icon" aria-hidden="true" /><b>{databaseName}</b><small>{tablesByDatabase[databaseName]?.length ?? ''}</small></button>{expanded && <div className="mysql-tree-tables">{loadingDatabase === databaseName ? <span className="mysql-tree-status">正在读取表...</span> : visibleTables.length > 0 ? visibleTables.map(tableName => <button className={database === databaseName && table === tableName ? 'active' : ''} type="button" onClick={() => selectTable(databaseName, tableName)} key={tableName}><span aria-hidden="true" /><b>{tableName}</b></button>) : <span className="mysql-tree-status">暂无数据表</span>}</div>}</div>})}{!loading && visibleDatabases.length === 0 && <span className="mysql-tree-status">没有匹配的对象</span>}</div></aside>
+      <section className="mysql-table-workspace">
+        <header className="mysql-table-head"><div><b>{table || '请选择数据表'}</b>{table && <span>{database} / {table}</span>}</div><div className="mysql-table-actions"><small>{table ? `共 ${preview.totalExact ? '' : '约 '}${preview.total} 行 · ${structure.length} 个字段` : database || '默认数据库'}</small><button className="secondary" type="button" onClick={() => setTransferMode('import')}>导入</button><button className="secondary" type="button" onClick={() => setTransferMode('export')}>导出</button><button className="secondary" type="button" onClick={openSQL}>执行 SQL</button><MySQLTaskCenter sourceID={sourceID} />{table && <button type="button" onClick={openInsert}>新增行</button>}</div></header>
+        <nav className="mysql-view-tabs" aria-label="MySQL 工作区视图">{table && <button className={activeView === 'data' ? 'active' : ''} type="button" onClick={() => setActiveView('data')}>数据</button>}{table && <button className={activeView === 'structure' ? 'active' : ''} type="button" onClick={() => setActiveView('structure')}>表结构</button>}<button className={activeView === 'sql' ? 'active' : ''} type="button" onClick={openSQL}>SQL</button></nav>
+        {activeView === 'sql' ? sqlWorkspace : table ? loadingTable ? <div className="mysql-workspace-empty">正在读取 {database}.{table}...</div> : activeView === 'data' ? <div className="mysql-data-view"><form className="mysql-table-query-bar" onSubmit={applyTableFilter}><AppSelect value={tableFilterColumn} placeholder="选择筛选字段" onChange={value => { setTableFilterColumn(value); if (!value) clearTableFilter() }} options={[{ value: '', label: '选择筛选字段' }, ...preview.columns.map(column => ({ value: column, label: column }))]} /><input value={tableFilterDraft} disabled={!tableFilterColumn} placeholder="输入包含的内容" onChange={event => setTableFilterDraft(event.target.value)} /><button type="submit" disabled={!tableFilterColumn || !tableFilterDraft.trim()}>查询</button><button className="secondary" type="button" disabled={!tableFilterValue && !tableFilterDraft} onClick={clearTableFilter}>清除</button><span>排序</span><AppSelect value={tableSortColumn} placeholder="默认主键" onChange={value => { setTableSortColumn(value); setTablePage(1) }} options={[{ value: '', label: '默认主键' }, ...preview.columns.map(column => ({ value: column, label: column }))]} /><AppSelect className="mysql-sort-direction" value={tableSortDirection} onChange={value => { setTableSortDirection(value); setTablePage(1) }} disabled={!tableSortColumn} options={[{ value: 'asc', label: '升序' }, { value: 'desc', label: '降序' }]} /></form><div className="mysql-preview"><table><thead><tr><th className="mysql-row-actions-column">操作</th>{preview.columns.map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{preview.rows.map((row, index) => <tr key={index}><td className="mysql-row-actions"><button type="button" disabled={primaryKeys.length === 0} title={primaryKeys.length === 0 ? '该表没有主键，不能安全编辑' : '编辑记录'} onClick={() => openEdit(index)}>编辑</button><button className="danger" type="button" disabled={primaryKeys.length === 0} title={primaryKeys.length === 0 ? '该表没有主键，不能安全删除' : '删除记录'} onClick={() => setDeleteRowIndex(index)}>删除</button></td>{row.map((value, cell) => <td key={cell}>{value === null ? <i>NULL</i> : String(value)}</td>)}</tr>)}</tbody></table>{preview.rows.length === 0 && <div className="mysql-workspace-empty">该表暂无匹配数据</div>}{primaryKeys.length === 0 && preview.rows.length > 0 && <div className="mysql-readonly-notice">该表没有主键，记录编辑与删除已禁用。</div>}</div><MySQLPagination page={tablePage} pageSize={tablePageSize} total={preview.total} totalPages={preview.totalPages} onPageChange={setTablePage} onPageSizeChange={value => { setTablePageSize(value); setTablePage(1) }} ariaLabel="表数据分页" /></div> : <div className="mysql-preview mysql-structure"><table><thead><tr><th>#</th><th>字段</th><th>类型</th><th>允许空</th><th>键</th><th>默认值</th><th>Extra</th><th>注释</th></tr></thead><tbody>{structure.map((column, index) => <tr key={column.name}><td>{index + 1}</td><td><b>{column.name}</b></td><td><code>{column.type}</code></td><td>{column.nullable ? '是' : '否'}</td><td>{column.key || '-'}</td><td>{column.default === null ? <i>NULL</i> : column.default}</td><td>{column.extra || '-'}</td><td>{column.comment || '-'}</td></tr>)}</tbody></table></div> : <div className="mysql-workspace-empty"><b>从左侧数据库树选择一张表</b><span>也可以直接进入 SQL 标签执行查询</span></div>}
+      </section>
+    </section>
+    {rowEditor && <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget && !mutating) setRowEditor(null) }}><section className="surface mysql-row-editor" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{rowEditor.mode === 'insert' ? '新增记录' : '编辑记录'}</h2><p>{database}.{table}</p></div><button className="close-button" type="button" disabled={mutating} onClick={() => setRowEditor(null)}>×</button></header><form onSubmit={saveRow}><div className="mysql-row-fields">{editableColumns.map(column => { const longValue = /text|json|blob/i.test(column.type); const nullValue = Boolean(rowEditor.nulls[column.name]); return <label key={column.name}><span><b>{column.name}</b><code>{column.type}</code>{column.key === 'PRI' && <em>主键</em>}</span>{longValue ? <textarea disabled={nullValue} value={rowEditor.values[column.name] || ''} onChange={event => setRowEditor(current => current ? { ...current, values: { ...current.values, [column.name]: event.target.value } } : current)} /> : <input disabled={nullValue} value={rowEditor.values[column.name] || ''} onChange={event => setRowEditor(current => current ? { ...current, values: { ...current.values, [column.name]: event.target.value } } : current)} />}<small><input type="checkbox" checked={nullValue} disabled={!column.nullable} onChange={event => setRowEditor(current => current ? { ...current, nulls: { ...current.nulls, [column.name]: event.target.checked } } : current)} /> NULL</small></label>})}</div><footer className="modal-actions"><button className="button secondary" type="button" disabled={mutating} onClick={() => setRowEditor(null)}>取消</button><button className="button" type="submit" disabled={mutating}>{mutating ? '保存中...' : '保存'}</button></footer></form></section></div>}
+    {deleteRowIndex !== null && <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget && !mutating) setDeleteRowIndex(null) }}><section className="surface mysql-delete-confirm" role="alertdialog" aria-modal="true"><header><b>确认删除这条记录？</b><span>将按主键从 {database}.{table} 删除，操作不可撤销。</span></header><footer className="modal-actions"><button className="button secondary" type="button" disabled={mutating} onClick={() => setDeleteRowIndex(null)}>取消</button><button className="button danger" type="button" disabled={mutating} onClick={() => void deleteRow()}>{mutating ? '删除中...' : '确认删除'}</button></footer></section></div>}
+    {transferMode && <MySQLTransferDialog mode={transferMode} sourceID={sourceID} database={database} table={table} onClose={() => setTransferMode(null)} onImported={() => setReloadSequence(current => current + 1)} onQueued={() => showMutationMessage('导入任务已创建，可在“后台任务”中查看执行结果')} />}
+  </div>
+}
+
+function MySQLTransferDialog({ mode, sourceID, database, table, onClose, onImported, onQueued }: { mode: 'export' | 'import'; sourceID: string; database: string; table: string; onClose: () => void; onImported: () => void; onQueued: () => void }) {
+  const [format, setFormat] = useState('sql')
+  const [scope, setScope] = useState('data')
+  const [file, setFile] = useState<File | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
+  const [confirmationRequired, setConfirmationRequired] = useState(true)
+  const [running, setRunning] = useState(false)
+  const [message, setMessage] = useState('')
+	useEffect(() => { void fetch(`${api}/system-settings/confirmations`).then(response => response.json()).then(data => setConfirmationRequired(data.requireWriteConfirmation !== false)).catch(() => setConfirmationRequired(true)) }, [])
+	const [job, setJob] = useState<MySQLAsyncJob | null>(null)
+	const [importResult, setImportResult] = useState<{ affected: number; completed: boolean; results: Array<{ index: number; statement: string; status: string; affected: number; error?: string }> } | null>(null)
+  const jobID = job?.id
+  const jobStatus = job?.status
+  useEffect(() => { if (!jobID || !['queued', 'running'].includes(jobStatus || '')) return; let active = true; const poll = async () => { try { const response = await fetch(`${api}/mysql-jobs/${jobID}`); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取任务失败'); if (!active) return; setJob(data); setRunning(['queued', 'running'].includes(data.status)); if (data.status === 'succeeded' && mode === 'import') { setImportResult(data.result || null); onImported() } } catch (err) { if (active) { setMessage(err instanceof Error ? err.message : '读取任务失败'); setRunning(false) } } }; void poll(); const timer = window.setInterval(() => void poll(), 1000); return () => { active = false; window.clearInterval(timer) } }, [jobID, jobStatus, mode, onImported])
+  const exportFile = async () => { if (!database) { setMessage('请先选择一个数据库'); return }; if (!table && format !== 'sql') { setMessage('未选择表时仅支持导出 SQL；请选择表后再导出 CSV 或 JSON'); return }; if (format === 'csv' && scope !== 'data') { setMessage('CSV 仅支持导出库表数据'); return }; setRunning(true); setMessage(''); try { const response = await fetch(`${api}/data-sources/${sourceID}/export-jobs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ database, table, format, scope }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '创建导出任务失败'); setJob(data) } catch (err) { setMessage(err instanceof Error ? err.message : '创建导出任务失败'); setRunning(false) } }
+  const importFile = async () => { if (!file) { setMessage('请选择 SQL、CSV 或 JSON 文件'); return }; if (confirmationRequired && !confirmed) { setMessage('请确认导入会写入目标数据库'); return }; const resolvedFormat = file.name.split('.').pop()?.toLowerCase() || ''; if (!['sql', 'csv', 'json'].includes(resolvedFormat)) { setMessage('仅支持 SQL、CSV、JSON 文件'); return }; if (resolvedFormat !== 'sql' && (!database || !table)) { setMessage('CSV 和 JSON 导入前请先选择目标库和表'); return }; setRunning(true); setMessage(''); try { const body = new FormData(); body.append('file', file); body.append('format', resolvedFormat); body.append('database', database); body.append('table', table); body.append('confirmed', String(confirmed)); const response = await fetch(`${api}/data-sources/${sourceID}/import-jobs`, { method: 'POST', body }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '创建导入任务失败'); onQueued(); onClose() } catch (err) { setMessage(err instanceof Error ? err.message : '创建导入任务失败'); setRunning(false) } }
+  const cancelJob = async () => { if (!job) return; const response = await fetch(`${api}/mysql-jobs/${job.id}/cancel`, { method: 'POST' }); const data = await response.json(); if (!response.ok) { setMessage(data.error || '取消失败'); return }; setJob(current => current ? { ...current, message: '正在取消' } : current) }
+	useEffect(() => { if (jobStatus !== 'succeeded' || mode !== 'export' || !jobID) return; const link = document.createElement('a'); link.href = `${api}/mysql-jobs/${jobID}/download`; link.download = job?.fileName || `${database}_${table}.${format}`; document.body.append(link); link.click(); link.remove() }, [jobID, jobStatus, job?.fileName, mode, database, table, format])
+	// Cancellation is kept with the task state for the next dialog interaction update.
+	void cancelJob
+  const title = mode === 'export' ? '导出数据库对象' : '导入数据库文件'
+  return <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget && !running) onClose() }}><section className="surface mysql-transfer-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{title}</h2><p>{database && table ? `${database}.${table}` : database ? `${database}（整个数据库）` : '请先选择目标库'}</p></div><button className="close-button" type="button" disabled={running} onClick={onClose}>×</button></header>{mode === 'export' ? <div className="mysql-transfer-form"><label>导出格式<AppSelect value={format} onChange={setFormat} options={[{ value: 'sql', label: 'SQL' }, { value: 'csv', label: 'CSV' }, { value: 'json', label: 'JSON' }]} /></label><label>导出内容<AppSelect value={scope} onChange={setScope} options={[{ value: 'structure', label: '仅表结构' }, { value: 'schema', label: '库和表结构' }, { value: 'data', label: '库表数据' }]} /></label><p>{format === 'csv' ? 'CSV 导出包含所选表的全部数据和字段表头。' : scope === 'data' ? '导出建库、建表语句及表数据。' : scope === 'schema' ? '导出建库和建表语句。' : '仅导出所选表的建表语句。'}</p></div> : <div className="mysql-transfer-form"><label>选择文件<span className="mysql-transfer-file-picker"><input type="file" accept=".sql,.csv,.json,application/sql,text/csv,application/json" onChange={event => setFile(event.target.files?.[0] || null)} /><b>选择文件</b><em>{file?.name || '未选择任何文件'}</em></span></label><p>SQL 按文件中的语句执行；CSV 和 JSON 写入当前选择的 <strong className="mysql-transfer-target-name">{database && table ? `${database}.${table}` : '目标表'}</strong>。</p><label className="mysql-transfer-confirm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /> 我确认导入会修改目标数据库的数据或结构</label>{importResult && <div className="mysql-import-results"><b>{importResult.completed ? `导入完成，受影响 ${importResult.affected} 行` : '导入未完成，已执行的语句不会自动回滚'}</b>{importResult.results.map(item => <article key={item.index} className={item.status}><span>#{item.index}</span><code>{item.statement}</code><em>{item.status === 'success' ? `成功${item.affected ? `，${item.affected} 行` : ''}` : item.status === 'skipped' ? '未执行' : item.error || '失败'}</em></article>)}</div>}</div>}{message && <div className="form-error">{message}</div>}<footer className="modal-actions"><button className="button secondary" type="button" disabled={running} onClick={onClose}>{importResult ? '关闭' : '取消'}</button>{!importResult && <button className="button" type="button" disabled={running || (mode === 'export' && !database)} onClick={() => void (mode === 'export' ? exportFile() : importFile())}>{running ? (mode === 'export' ? '导出中...' : '导入中...') : mode === 'export' ? '开始导出' : '确认导入'}</button>}</footer></section></div>
+}
+
+function MySQLBackgroundQuery({ sourceID, database, sql, confirmed }: { sourceID: string; database: string; sql: string; confirmed: boolean }) {
+  const [job, setJob] = useState<MySQLAsyncJob | null>(null); const [message, setMessage] = useState('')
+  const jobID = job?.id
+  const jobRunning = Boolean(job && ['queued', 'running'].includes(job.status))
+  useEffect(() => { if (!jobID || !jobRunning) return; let active = true; const poll = async () => { try { const response = await fetch(`${api}/mysql-jobs/${jobID}`); const data = await response.json(); if (active && response.ok) setJob(data) } catch { /* Keep the last visible task state until the next poll. */ } }; void poll(); const timer = window.setInterval(() => void poll(), 1000); return () => { active = false; window.clearInterval(timer) } }, [jobID, jobRunning])
+  const start = async () => { if (!sql.trim()) { setMessage('请输入 SQL 语句'); return }; const readOnly = /^(select|show|describe|desc|explain|with)\b/i.test(sql.trim()); if (!readOnly && !confirmed) { setMessage('请先在“执行”流程确认写操作'); return }; setMessage(''); const response = await fetch(`${api}/data-sources/${sourceID}/query-jobs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ database, sql, confirmed: readOnly || confirmed }) }); const data = await response.json(); if (!response.ok) { setMessage(data.error || '创建后台任务失败'); return }; setJob(data) }
+  const cancel = async () => { if (!job) return; await fetch(`${api}/mysql-jobs/${job.id}/cancel`, { method: 'POST' }); setJob({ ...job, message: '正在取消' }) }
+  return <div className="mysql-background-query"><button className="button secondary" type="button" onClick={() => void start()} disabled={jobRunning}>后台执行</button>{job && <span>{job.message} · {job.progress}%</span>}{jobRunning && <button className="text-button" type="button" onClick={() => void cancel()}>取消</button>}{message && <em>{message}</em>}</div>
+}
+
+function SQLHistoryControl({ items, loading, total, page, onOpen, onPageChange, onCopy, onSelect }: { items: SQLHistoryItem[]; loading: boolean; total: number; page: number; onOpen: () => void; onPageChange: (page: number) => void; onCopy: (sql: string) => void; onSelect: (item: SQLHistoryItem) => void }) {
+  const [open, setOpen] = useState(false)
+  const pages = Math.max(1, Math.ceil(total / 10))
+  return <><button className="button secondary sql-history-trigger" type="button" onClick={() => { setOpen(true); onOpen() }}>历史记录</button>{open && <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget) setOpen(false) }}><section className="surface sql-history-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>SQL 历史记录</h2><p>共 {total} 条记录</p></div><button className="close-button" type="button" onClick={() => setOpen(false)}>×</button></header><div className="sql-history-modal-list">{loading ? <div className="empty-state"><b>正在加载历史记录</b></div> : items.length === 0 ? <div className="empty-state"><b>暂无执行记录</b></div> : items.map(item => <article key={item.id}><header><span className={item.status === 'success' ? 'success' : 'failed'} /> <b>{item.database || '默认数据库'}</b><time>{item.createdAt}</time></header><code>{item.statement}</code><footer><small>{item.status === 'success' ? `${item.resultRows > 0 ? `${item.resultRows} 行结果` : `影响 ${item.affected} 行`}` : item.error || '执行失败'} · {item.durationMs}ms</small><div><button className="text-button" type="button" onClick={() => onSelect(item)}>载入 SQL</button><button className="text-button" type="button" onClick={() => onCopy(item.statement)}>复制 SQL</button></div></footer></article>)}</div>{total > 0 && <UnifiedPagination total={total} page={page} totalPages={pages} onPageChange={onPageChange} ariaLabel="SQL 历史分页" />}</section></div>}</>
+}
+
+function MySQLTaskCenter({ sourceID }: { sourceID: string }) {
+  const [jobs, setJobs] = useState<MySQLAsyncJob[]>([])
+  const [expanded, setExpanded] = useState(false)
+  const [resultJob, setResultJob] = useState<MySQLAsyncJob | null>(null)
+  const root = useRef<HTMLElement>(null)
+  const load = async () => { const response = await fetch(`${api}/mysql-jobs?sourceId=${encodeURIComponent(sourceID)}`); if (response.ok) { const data = await response.json(); setJobs(Array.isArray(data.items) ? data.items : []) } }
+  useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 2000); return () => window.clearInterval(timer) }, [sourceID])
+  useEffect(() => { if (!expanded) return; const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setExpanded(false) }; document.addEventListener('pointerdown', close); return () => document.removeEventListener('pointerdown', close) }, [expanded])
+  const cancel = async (id: string) => { await fetch(`${api}/mysql-jobs/${id}/cancel`, { method: 'POST' }); void load() }
+  const viewResult = async (id: string) => { const response = await fetch(`${api}/mysql-jobs/${id}`); if (response.ok) setResultJob(await response.json()) }
+  if (jobs.length === 0) return null
+  const results = Array.isArray(resultJob?.result?.results) ? resultJob.result.results : []
+  return <><section ref={root} className={`surface mysql-task-center ${expanded ? 'expanded' : ''}`}><header><button className="mysql-task-toggle" type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded}><div><h3>后台任务</h3><span>最近 {jobs.length} 项</span></div></button></header>{expanded && <div className="mysql-task-list">{jobs.map(job => { const failed = job.status === 'failed'; const progress = failed ? 0 : Math.min(100, Math.max(0, job.progress)); const name = job.kind === 'query' ? 'SQL 查询' : job.kind === 'import' ? `导入任务 · ${job.fileName || '未记录上传文件名'}` : `导出任务 · ${job.fileName || '未命名文件'}`; return <article className={failed ? 'failed' : ''} key={job.id}><div><b title={name}>{name}</b><small title={job.id}>任务编号：{job.id} · {job.message} · {new Date(job.createdAt).toLocaleString('zh-CN')}</small><i className="mysql-task-progress"><em style={{ width: `${progress}%` }} /></i></div><strong>{progress}%</strong>{['queued', 'running'].includes(job.status) ? <button className="text-button danger" type="button" onClick={() => void cancel(job.id)}>取消</button> : job.kind === 'import' ? <button className="text-button" type="button" onClick={() => void viewResult(job.id)}>查看结果</button> : job.status === 'succeeded' ? <a className="text-button" href={`${api}/mysql-jobs/${job.id}/download`} download={job.fileName || 'mysql-result.csv'}>下载结果</a> : <span>失败</span>}</article>})}</div>}</section>{resultJob && <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget) setResultJob(null) }}><section className="surface mysql-import-results-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>导入结果</h2><p>{resultJob.message}</p></div><button className="close-button" type="button" onClick={() => setResultJob(null)}>×</button></header><div className="mysql-import-results">{results.length ? results.map((item: any) => <article key={item.index} className={item.status}><span>#{item.index}</span><code>{item.statement}</code><em>{item.status === 'success' ? `成功${item.affected ? `，${item.affected} 行` : ''}` : item.status === 'skipped' ? '未执行' : item.error || '失败'}</em></article>) : <p>暂无可展示的逐条执行结果。</p>}</div><footer className="modal-actions"><button className="button" type="button" onClick={() => setResultJob(null)}>关闭</button></footer></section></div>}</>
 }
 
 function Ambari() {
@@ -1051,38 +1429,20 @@ function Ambari() {
   return <div className="page ambari-page"><PageHead title="Ambari 集群" description="服务、主机、告警与后台操作由 Ambari Web API 读取。" actionNode={<button className="refresh-button" type="button" onClick={() => void load()} disabled={loading}>{loading ? '刷新中...' : '刷新'}</button>} />{message ? <section className="surface empty-state"><b>读取失败</b><span>{message}</span></section> : loading ? <section className="surface empty-state"><b>正在读取 Ambari 集群</b></section> : !overview ? <section className="surface empty-state"><b>未选择 Ambari 数据源</b><span>请在数据节点中导入 Ambari 菜单后再访问。</span></section> : <><section className="overview-stat-grid"><article className="overview-stat source"><span>集群名称</span><b className="ambari-cluster-name">{overview.clusterName}</b><small>{overview.stack || overview.version || 'Ambari'}</small></article><article className="overview-stat rule"><span>服务</span><b>{overview.services.length}</b><small>已接入的服务组件</small></article><article className="overview-stat health"><span>主机</span><b>{overview.hosts.length}</b><small>由 Ambari 管理</small></article><article className={`overview-stat ${badAlerts.length ? 'alert' : 'notice'}`}><span>活跃告警</span><b>{badAlerts.length}</b><small>Critical / Warning / Unknown</small></article></section><section className="ambari-grid"><article className="surface ambari-panel"><header><h2>服务状态</h2><span>{overview.services.length} 项</span></header><div className="ambari-list">{overview.services.map(item => <div key={item.name}><b>{item.name}</b><span className={item.state === 'STARTED' ? 'success' : 'danger'}>{item.state || '-'}</span><small>{item.maintenance || '正常维护状态'}</small></div>)}{overview.services.length === 0 && <p>Ambari 未返回服务清单。</p>}</div></article><article className="surface ambari-panel"><header><h2>主机状态</h2><span>{overview.hosts.length} 台</span></header><div className="ambari-list">{overview.hosts.map(item => <div key={item.name}><b>{item.name}</b><span className={item.status === 'HEALTHY' ? 'success' : 'danger'}>{item.status || '-'}</span><small>{item.maintenance || '正常维护状态'}</small></div>)}{overview.hosts.length === 0 && <p>Ambari 未返回主机清单。</p>}</div></article></section><section className="surface ambari-panel"><header><h2>Ambari 告警</h2><span>{overview.alerts.length} 条</span></header><div className="ambari-list wide-list">{overview.alerts.map((item, index) => <div key={`${item.label}-${index}`}><b>{item.label || '未命名告警'}</b><span className={['OK', 'NONE'].includes(item.state.toUpperCase()) ? 'success' : 'danger'}>{item.state || '-'}</span><small>{[item.service, item.host, item.text].filter(Boolean).join(' · ')}</small></div>)}{overview.alerts.length === 0 && <p>暂无 Ambari 告警。</p>}</div></section><section className="surface ambari-panel"><header><h2>最近后台操作</h2><span>最多 20 条</span></header><div className="ambari-list wide-list">{overview.requests.map(item => <div key={item.id}><b>{item.context || `请求 #${item.id}`}</b><span className={item.status === 'Completed' ? 'success' : 'danger'}>{item.status || '-'}</span><small>请求 ID：{item.id}</small></div>)}{overview.requests.length === 0 && <p>暂无可读取的后台操作。</p>}</div></section></>}</div>
 }
 
-function AmbariSourceDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState('')
-  const save = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setSaving(true)
-    const form = new FormData(event.currentTarget)
-    const payload: Source = { id: '', name: String(form.get('name') || '').trim(), type: 'Ambari', host: String(form.get('host') || '').trim(), port: '', username: String(form.get('username') || '').trim(), password: String(form.get('password') || ''), remark: String(form.get('remark') || '').trim(), enabled: true, status: '待检测', lastTest: '' }
-    try { const response = await fetch(`${api}/data-sources`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Ambari 数据源保存失败'); onSaved(); onClose() } catch (err) { setMessage(err instanceof Error ? err.message : 'Ambari 数据源保存失败') } finally { setSaving(false) }
-  }
-  return <div className="modal-backdrop" role="presentation" onClick={onClose}><section className="surface source-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2>新增 Ambari 数据源</h2><p>通过 Ambari REST API 读取集群信息</p></div><button className="close-button" type="button" onClick={onClose}>×</button></header><form onSubmit={save}><div className="modal-form"><label>名称 <span className="required-mark">*</span><input name="name" required placeholder="例如：生产 Ambari" /></label><label>Ambari Web 地址 <span className="required-mark">*</span><input name="host" required placeholder="例如：http://ambari-server:8080" /></label><label>用户名 <span className="required-mark">*</span><input name="username" required autoComplete="username" /></label><label>密码 <span className="required-mark">*</span><input name="password" type="password" required autoComplete="current-password" /></label><label className="wide">台账备注<textarea name="remark" placeholder="记录环境、集群名称、责任人或台账编号" /></label></div>{message && <div className="form-error">{message}</div>}<footer className="modal-actions"><button className="button secondary" type="button" onClick={onClose}>取消</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存并检测'}</button></footer></form></section></div>
-}
-
-function AmbariMenuDialog({ sources, onClose }: { sources: Source[]; onClose: () => void }) {
-  const available = sources.filter(source => source.type === 'Ambari' && source.enabled)
-  const [sourceID, setSourceID] = useState(available[0]?.id || '')
-  const [name, setName] = useState(available[0]?.name || '')
-  const [message, setMessage] = useState('')
-  const save = async () => { try { if (!sourceID || !name.trim()) throw new Error('请选择数据源并填写菜单名称'); await saveAmbariMenuItem(sourceID, name.trim()); onClose() } catch (err) { setMessage(err instanceof Error ? err.message : '导入菜单失败') } }
-  return <div className="modal-backdrop" role="presentation" onClick={onClose}><section className="surface import-name-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2>导入 Ambari 菜单</h2><p>菜单名称可自定义</p></div><button className="close-button" type="button" onClick={onClose}>×</button></header>{available.length === 0 ? <div className="empty-state"><b>暂无已启用的 Ambari 数据源</b></div> : <><label className="import-name-field">数据源<select value={sourceID} onChange={(event) => { const next = available.find(source => source.id === event.target.value); setSourceID(event.target.value); setName(next?.name || '') }}>{available.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label><label className="import-name-field">菜单名称 <span className="required-mark">*</span><input value={name} maxLength={120} onChange={(event) => setName(event.target.value)} /></label>{message && <div className="form-error">{message}</div>}<footer className="modal-actions"><button className="button secondary" type="button" onClick={onClose}>取消</button><button className="button" type="button" onClick={() => void save()}>确认导入</button></footer></>}</section></div>
-}
-
 function DataSources() {
   const [allSources, setSources] = useState<Source[]>([])
   const [sourcePage, setSourcePage] = useState(1)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Source | null>(null)
-  const [selectedType, setSelectedType] = useState<'Prometheus' | 'MySQL' | 'SSH' | 'Hadoop' | 'Ambari'>('Prometheus')
-  const [importTarget, setImportTarget] = useState<{ source: Source; kind: 'dashboard' | 'hadoop' | 'ambari' } | null>(null)
+  const [selectedType, setSelectedType] = useState<'Prometheus' | 'MySQL' | 'SSH' | 'Hadoop' | 'Ambari' | 'Consul'>('Prometheus')
+  const [sshAuthMode, setSSHAuthMode] = useState<'password' | 'agent'>('password')
+  const [importTarget, setImportTarget] = useState<{ source: Source; kind: 'dashboard' | 'hadoop' | 'ambari' | 'mysql' | 'consul' } | null>(null)
   const [importName, setImportName] = useState('')
   const [importing, setImporting] = useState(false)
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
+  const [agentToken, setAgentToken] = useState<{ token: string; host: string; port: string } | null>(null)
+  const [deletingSource, setDeletingSource] = useState<Source | null>(null)
   const [, setRefreshing] = useState(false)
   const refreshInterval = useRefreshInterval()
   const showMessage = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 3000) }
@@ -1090,60 +1450,19 @@ function DataSources() {
     try {
       const response = await fetch(`${api}/data-sources`)
       const data = await response.json()
-      setSources(Array.isArray(data.dataSources) ? data.dataSources.filter((item: Source) => ['Prometheus', 'MySQL', 'SSH', 'Hadoop', 'Ambari', 'Redis', 'ClickHouse', 'Kafka'].includes(item.type)) : [])
+      setSources(Array.isArray(data.dataSources) ? data.dataSources.filter((item: Source) => ['Prometheus', 'MySQL', 'SSH', 'Agent', 'Hadoop', 'Ambari', 'Consul', 'Redis', 'ClickHouse', 'Kafka'].includes(item.type)) : [])
     } catch { setSources([]) }
   }
   useEffect(() => { void loadSources(); const timer = window.setInterval(loadSources, refreshInterval); return () => window.clearInterval(timer) }, [refreshInterval])
-  useEffect(() => {
-    if (!modalOpen) return
-    const passwordInput = document.querySelector<HTMLInputElement>('.source-modal input[name="password"]')
-    if (!passwordInput) return
-    const required = (selectedType === 'MySQL' || selectedType === 'SSH' || selectedType === 'Ambari') && !editing
-    passwordInput.required = required
-    passwordInput.placeholder = editing ? '留空则不修改' : selectedType === 'SSH' ? 'SSH 登录密码' : selectedType === 'Ambari' ? 'Ambari 登录密码' : 'MySQL 密码'
-  }, [modalOpen, selectedType, editing])
-  useEffect(() => {
-    if (!modalOpen) return
-    const modal = document.querySelector<HTMLElement>('.source-modal')
-    if (!modal) return
-    const port = modal.querySelector<HTMLInputElement>('input[name="port"]')
-    const token = modal.querySelector<HTMLInputElement>('input[name="token"], input[name="password"]')
-    const portLabel = port?.closest('label') as HTMLLabelElement | null
-    const tokenLabel = token?.closest('label') as HTMLLabelElement | null
-    if (selectedType === 'Ambari') {
-      if (port) port.required = false
-      if (portLabel) portLabel.style.display = 'none'
-      if (token) { token.name = 'password'; token.required = !editing; token.placeholder = editing ? '留空则不修改' : 'Ambari 登录密码' }
-      if (tokenLabel) tokenLabel.childNodes[0].textContent = '密码'
-    } else {
-      if (port) port.required = selectedType !== 'Hadoop'
-      if (portLabel) portLabel.style.display = ''
-      if (token?.name === 'password' && selectedType !== 'MySQL' && selectedType !== 'SSH') token.name = 'token'
-    }
-  }, [modalOpen, selectedType, editing])
-  const openModal = (source?: Source) => { setEditing(source || null); setSelectedType((source?.type || 'Prometheus') as 'Prometheus' | 'MySQL' | 'SSH' | 'Hadoop' | 'Ambari'); setModalOpen(true); setMessage('') }
-  const sourceLogo = (source: Source) => source.type === 'MySQL' ? 'M' : source.type === 'SSH' ? 'S' : source.type === 'Hadoop' ? 'H' : source.type === 'Ambari' ? 'A' : source.type === 'Redis' ? 'R' : source.type === 'ClickHouse' ? 'C' : source.type === 'Kafka' ? 'K' : 'P'
-  const sourceSubtitle = (source: Source) => (source.type === 'Hadoop' || source.type === 'Ambari') && /^https?:\/\//i.test(source.host) ? `${source.type} · ${source.host}` : `${source.type} · ${source.host}:${source.port}`
+  const openModal = (source?: Source) => { setEditing(source || null); setSelectedType(source?.type === 'Agent' ? 'SSH' : (source?.type || 'Prometheus') as 'Prometheus' | 'MySQL' | 'SSH' | 'Hadoop' | 'Ambari'); setSSHAuthMode(source?.type === 'Agent' || source?.options?.authMode === 'agent' ? 'agent' : 'password'); setModalOpen(true); setMessage('') }
+  const sourceLogo = (source: Source) => source.type === 'MySQL' ? 'M' : source.type === 'SSH' ? 'S' : source.type === 'Agent' ? 'A' : source.type === 'Hadoop' ? 'H' : source.type === 'Ambari' ? 'A' : source.type === 'Redis' ? 'R' : source.type === 'ClickHouse' ? 'C' : source.type === 'Kafka' ? 'K' : 'P'
+  const sourceSubtitle = (source: Source) => (source.type === 'Hadoop' || source.type === 'Ambari') && /^https?:\/\//i.test(source.host) ? `${source.type} · ${source.host}` : `${source.type === 'Agent' ? 'SSH - Agent' : source.type} · ${source.host}:${source.port}`
   const sourcePages = Math.max(1, Math.ceil(allSources.length / 20))
   const currentSourcePage = Math.min(sourcePage, sourcePages)
   const sources = allSources.slice((currentSourcePage - 1) * 20, currentSourcePage * 20)
   useEffect(() => { setSourcePage(current => Math.min(current, sourcePages)) }, [sourcePages])
-  useEffect(() => {
-    const buttons: HTMLButtonElement[] = []
-    const rows = Array.from(document.querySelectorAll<HTMLElement>('.source-list .source-row'))
-    sources.forEach((source, index) => {
-      if (source.type !== 'Ambari') return
-      const actions = rows[index]?.querySelector<HTMLElement>('.source-actions')
-      if (!actions || actions.querySelector('[data-ambari-menu-import]')) return
-      const button = document.createElement('button')
-      button.type = 'button'; button.textContent = '导入菜单'; button.dataset.ambariMenuImport = 'true'
-      const open = () => { setImportName(source.name); setImportTarget({ source, kind: 'ambari' }) }
-      button.addEventListener('click', open); actions.prepend(button); buttons.push(button)
-    })
-    return () => buttons.forEach(button => button.remove())
-  }, [sources])
   const importDashboard = (source: Source) => {
-    if (!['MySQL', 'SSH', 'Redis', 'ClickHouse', 'Kafka'].includes(source.type)) { showMessage('该数据源类型暂不支持导入大屏'); return }
+    if (!['MySQL', 'SSH', 'Agent', 'Redis', 'ClickHouse', 'Kafka'].includes(source.type)) { showMessage('该数据源类型暂不支持导入大屏'); return }
     setImportName(`${source.name} 大屏`)
     setImportTarget({ source, kind: 'dashboard' })
   }
@@ -1151,6 +1470,16 @@ function DataSources() {
     if (source.type !== 'Hadoop') return
     setImportName(source.name)
     setImportTarget({ source, kind: 'hadoop' })
+  }
+  const importMySQLMenu = (source: Source) => { if (source.type === 'MySQL') { setImportName(`${source.name} 工作台`); setImportTarget({ source, kind: 'mysql' }) } }
+  const importConsulMenu = (source: Source) => { if (source.type === 'Consul') { setImportName(`${source.name} KV 工作台`); setImportTarget({ source, kind: 'consul' }) } }
+  const checkAgentStatus = async (source: Source) => {
+    try {
+      const response = await fetch(`${api}/data-sources/${source.id}/agent-status`)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '读取状态失败')
+      showMessage(`Agent 在线 · 版本 ${data.version || '未上报'} · 白名单 ${data.ipWhitelistConfigured === true ? '已配置' : data.ipWhitelistConfigured === false ? '未配置' : '未知'}`)
+    } catch (err) { showMessage(err instanceof Error ? err.message : '读取 Agent 状态失败') }
   }
   const confirmImport = async () => {
     if (!importTarget) return
@@ -1165,6 +1494,12 @@ function DataSources() {
       } else if (importTarget.kind === 'hadoop') {
         await saveHadoopMenuItem(importTarget.source.id, name)
         showMessage(`${name} 已导入菜单`)
+      } else if (importTarget.kind === 'mysql') {
+        await saveMySQLMenuItem(importTarget.source.id, name)
+        showMessage(`${name} 已导入菜单`)
+      } else if (importTarget.kind === 'consul') {
+        await saveConsulMenuItem(importTarget.source.id, name)
+        showMessage(`${name} 已导入菜单`)
       } else {
         await saveAmbariMenuItem(importTarget.source.id, name)
         showMessage(`${name} 已导入菜单`)
@@ -1174,16 +1509,17 @@ function DataSources() {
   }
   const buildPayload = (formElement: HTMLFormElement): Source => {
     const form = new FormData(formElement)
-    const type = String(form.get('type') || selectedType) as 'Prometheus' | 'MySQL' | 'SSH' | 'Hadoop' | 'Ambari'
-    const needsCredentials = type === 'MySQL' || type === 'SSH' || type === 'Ambari'
+    const type = String(form.get('type') || selectedType) as 'Prometheus' | 'MySQL' | 'SSH' | 'Hadoop' | 'Ambari' | 'Consul'
+    const needsCredentials = type === 'MySQL' || type === 'SSH' || type === 'Ambari' || type === 'Consul'
     const nodeManagerUrl = String(form.get('nodeManagerUrl') || '').trim()
     const jobHistoryUrl = String(form.get('jobHistoryUrl') || '').trim()
     const sshSourceId = String(form.get('sshSourceId') ?? editing?.options?.sshSourceId ?? '').trim()
-    const options = type === 'Hadoop' ? { ...editing?.options, ...(nodeManagerUrl ? { nodeManagerUrl } : {}), ...(jobHistoryUrl ? { jobHistoryUrl } : {}), ...(sshSourceId ? { sshSourceId } : {}) } : undefined
+    const options: Record<string, string> | undefined = type === 'Hadoop' ? { ...editing?.options, ...(nodeManagerUrl ? { nodeManagerUrl } : {}), ...(jobHistoryUrl ? { jobHistoryUrl } : {}), ...(sshSourceId ? { sshSourceId } : {}) } : type === 'SSH' ? { ...editing?.options, ...(sshAuthMode === 'agent' ? { authMode: 'agent' } : {}) } : undefined
     if (options && !nodeManagerUrl) delete options.nodeManagerUrl
     if (options && !jobHistoryUrl) delete options.jobHistoryUrl
     if (options && !sshSourceId) delete options.sshSourceId
-    return { id: editing?.id || '', name: String(form.get('name') || ''), type, host: String(form.get('host') || ''), port: String(form.get('port') || ''), username: needsCredentials ? String(form.get('username') || '') : '', password: String(form.get(needsCredentials ? 'password' : 'token') || ''), database: type === 'MySQL' ? String(form.get('database') || '') : '', options, remark: String(form.get('remark') || ''), enabled: true, status: '待测试', lastTest: '' }
+    if (options && type === 'SSH' && sshAuthMode !== 'agent') delete options.authMode
+    return { id: editing?.id || '', name: String(form.get('name') || ''), type, host: String(form.get('host') || ''), port: String(form.get('port') || ''), username: type === 'MySQL' || type === 'SSH' || type === 'Ambari' || type === 'Consul' ? String(form.get('username') || '') : '', password: String(form.get(needsCredentials ? 'password' : 'token') || ''), database: type === 'MySQL' ? String(form.get('database') || '') : '', options, remark: String(form.get('remark') || ''), enabled: true, status: '待测试', lastTest: '' }
   }
   const saveSource = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -1193,7 +1529,10 @@ function DataSources() {
       const response = await fetch(editing ? `${api}/data-sources/${editing.id}` : `${api}/data-sources`, { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || '保存失败')
-      showMessage(`${data.name} 已保存`)
+      if (payload.type === 'SSH' && sshAuthMode === 'agent' && !editing && data.password) {
+        setAgentToken({ token: String(data.password), host: String(data.host || payload.host), port: String(data.port || payload.port) })
+        showMessage(`${data.name} 已保存`)
+      } else showMessage(`${data.name} 已保存`)
       setModalOpen(false)
       setEditing(null)
       window.dispatchEvent(new Event('opsguard-data-sources-change'))
@@ -1203,6 +1542,7 @@ function DataSources() {
     } finally { setSaving(false) }
   }
   const testSource = async (formElement: HTMLFormElement) => {
+    if (selectedType === 'SSH' && sshAuthMode === 'agent' && !editing) { showMessage('请先保存以生成 Agent 令牌，再完成 Agent 部署后测试连接'); return }
     try {
       const response = await fetch(`${api}/data-sources/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildPayload(formElement)) })
       const data = await response.json()
@@ -1215,7 +1555,7 @@ function DataSources() {
       const response = await fetch(`${api}/data-sources/health-check`, { method: 'POST' })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || '刷新失败')
-      setSources(Array.isArray(data.dataSources) ? data.dataSources.filter((item: Source) => ['Prometheus', 'MySQL', 'SSH', 'Hadoop', 'Ambari', 'Redis', 'ClickHouse', 'Kafka'].includes(item.type)) : [])
+      setSources(Array.isArray(data.dataSources) ? data.dataSources.filter((item: Source) => ['Prometheus', 'MySQL', 'SSH', 'Agent', 'Hadoop', 'Ambari', 'Redis', 'ClickHouse', 'Kafka'].includes(item.type)) : [])
       window.dispatchEvent(new Event('opsguard-data-sources-change'))
       showMessage('数据源状态已刷新')
     } catch (err) { showMessage(err instanceof Error ? err.message : '刷新失败') } finally { setRefreshing(false) }
@@ -1239,28 +1579,10 @@ function DataSources() {
       void loadSources()
     } catch (err) { showMessage(err instanceof Error ? err.message : '删除失败') }
   }
-  const deleteSource = (source: Source) => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const root = createRoot(host)
-    const close = () => { root.unmount(); host.remove() }
-    root.render(<DataSourceDeleteDialog sourceName={source.name} onClose={close} onConfirm={() => { close(); void performDeleteSource(source) }} />)
-  }
-  const addAmbariSource = () => {
-    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
-    const close = () => { root.unmount(); host.remove() }
-    root.render(<AmbariSourceDialog onClose={close} onSaved={() => { window.dispatchEvent(new Event('opsguard-data-sources-change')); void loadSources() }} />)
-  }
-  const openAmbariMenuImport = () => {
-    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
-    const close = () => { root.unmount(); host.remove() }
-    root.render(<AmbariMenuDialog sources={allSources} onClose={close} />)
-  }
-  void addAmbariSource
-  void openAmbariMenuImport
+  const deleteSource = (source: Source) => setDeletingSource(source)
   void refreshHealth
   const pageAction = <div className="page-action-group"><button className="button" onClick={() => openModal()}><Icon name="plus" /> 新增数据源</button></div>
-  return <div className="page"><PageHead title="数据节点" description="Prometheus、MySQL、SSH 和 Hadoop 数据源统一接入。Hadoop 可直接使用 Web 地址探测集群服务。" actionNode={pageAction} />{sources.length === 0 ? <section className="surface empty-state"><b>暂无数据源</b><span>点击右上角新增数据源。</span></section> : <><section className="source-list">{sources.map(source => <article className={`surface source-row ${source.status === '健康' ? 'healthy' : 'warning'} ${!source.enabled ? 'disabled' : ''}`} key={source.id}><div className="node-main"><span className="source-logo">{sourceLogo(source)}</span><div><h3>{source.name}</h3><p>{sourceSubtitle(source)}</p>{source.remark && <small className="source-remark">{source.remark}</small>}</div></div><div className="node-status" /><div className="node-enabled"><StatusSwitch checked={source.enabled} onChange={(checked) => void toggleEnabled(source, checked)} /></div><div className="node-meta"><span>最近检测：{formatCollectedAt(source.lastTest)}</span><span>{source.status}</span></div><div className="source-actions">{['MySQL', 'SSH', 'Redis', 'ClickHouse', 'Kafka'].includes(source.type) && <button type="button" onClick={() => importDashboard(source)}>导入大屏</button>}{source.type === 'Hadoop' && <button type="button" onClick={() => importHadoopMenu(source)}>导入菜单</button>}<button type="button" onClick={() => openModal(source)}>编辑</button><button className="danger" type="button" onClick={() => deleteSource(source)}>删除</button></div></article>)}</section><ListPagination total={allSources.length} page={currentSourcePage} onPageChange={setSourcePage} /></>}{importTarget && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget && !importing) setImportTarget(null) }}><section className="surface import-name-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{importTarget.kind === 'dashboard' ? '导入大屏' : '导入菜单'}</h2><p>{importTarget.source.name}</p></div><button className="close-button" type="button" disabled={importing} onClick={() => setImportTarget(null)}>×</button></header><label className="import-name-field">名称 <span className="required-mark">*</span><input autoFocus value={importName} maxLength={120} onChange={(event) => setImportName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void confirmImport() } }} /></label><footer className="modal-actions"><button className="button secondary" type="button" disabled={importing} onClick={() => setImportTarget(null)}>取消</button><button className="button" type="button" disabled={importing} onClick={() => void confirmImport()}>{importing ? '导入中...' : '确认导入'}</button></footer></section></div>}{modalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setModalOpen(false) }}><section className="surface source-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2>{editing ? '编辑数据源' : '新增数据源'}</h2><p>{selectedType} 接入</p></div><button className="close-button" type="button" onClick={() => setModalOpen(false)}>×</button></header><form onSubmit={saveSource}><div className="modal-form"><label>类型 <span className="required-mark">*</span><AppSelect name="type" value={selectedType} onChange={(next) => setSelectedType(next as 'Prometheus' | 'MySQL' | 'SSH' | 'Hadoop')} disabled={!!editing} options={[{ value: 'Prometheus', label: 'Prometheus' }, { value: 'MySQL', label: 'MySQL' }, { value: 'SSH', label: 'SSH' }, { value: 'Hadoop', label: 'Hadoop' }]} /></label><label>名称 <span className="required-mark">*</span><input key={`name-${selectedType}-${editing?.id || 'new'}`} name="name" defaultValue={editing?.name || ''} required /></label><label className={selectedType === 'Hadoop' ? 'wide' : ''}>{selectedType === 'Hadoop' ? 'Hadoop Web 地址' : '地址'} <span className="required-mark">*</span><input name="host" defaultValue={editing?.host || ''} placeholder={selectedType === 'MySQL' ? 'MySQL 主机地址' : selectedType === 'SSH' ? 'SSH 主机地址' : selectedType === 'Hadoop' ? '例如 http://hadoop-master:8088' : '例如 prometheus.example.com'} required /></label>{selectedType !== 'Hadoop' && <label>端口 <span className="required-mark">*</span><input key={`port-${selectedType}-${editing?.id || 'new'}`} name="port" defaultValue={editing?.port || ''} required /></label>}{selectedType === 'MySQL' || selectedType === 'SSH' ? <><label>用户名 <span className="required-mark">*</span><input name="username" defaultValue={editing?.username || ''} required /></label><label>密码<input name="password" type="password" placeholder={editing ? '留空则不修改' : selectedType === 'SSH' ? 'SSH 密码，可选' : 'MySQL 密码'} required={selectedType === 'MySQL' && !editing} /></label>{selectedType === 'MySQL' && <label className="wide">数据库<input name="database" defaultValue={editing?.database || ''} placeholder="可选，不填则采集实例级指标" /></label>}{selectedType === 'SSH' && <span className="form-error wide">SSH 仅采集 CPU、负载、内存和磁盘使用率。</span>}</> : selectedType === 'Hadoop' ? <><label className="wide">NodeManager 日志地址<input name="nodeManagerUrl" defaultValue={editing?.options?.nodeManagerUrl || ''} placeholder="选填，例如 http://hadoop-node-1:8042" /></label><label className="wide">JobHistory 日志地址<input name="jobHistoryUrl" defaultValue={editing?.options?.jobHistoryUrl || ''} placeholder="选填，例如 http://hadoop-history:19888" /></label><span className="form-error wide">NodeManager 与 JobHistory 地址仅用于读取 YARN 容器日志；不填时系统使用 YARN 返回的日志地址。</span></> : <label>Token<input name="token" type="password" placeholder={editing ? '留空则不修改' : '可选'} /></label>}<label className="wide">备注<textarea name="remark" defaultValue={editing?.remark || ''} placeholder="记录数据源用途或环境" /></label></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.closest('form'); if (form) void testSource(form) }}>测试连接</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
+  return <div className="page"><PageHead title="数据节点" description="Prometheus、MySQL、SSH、Hadoop、Ambari 和 Consul 数据源统一接入。" actionNode={pageAction} />{sources.length === 0 ? <section className="surface empty-state"><b>暂无数据源</b><span>点击右上角新增数据源。</span></section> : <><section className="source-list">{sources.map(source => <article className={`surface source-row ${source.status === '健康' ? 'healthy' : 'warning'} ${!source.enabled ? 'disabled' : ''}`} key={source.id}><div className="node-main"><span className="source-logo">{sourceLogo(source)}</span><div><h3>{source.name}</h3><p>{sourceSubtitle(source)}</p>{source.remark && <small className="source-remark">{source.remark}</small>}</div></div><div className="node-status" /><div className="node-enabled"><StatusSwitch checked={source.enabled} onChange={(checked) => void toggleEnabled(source, checked)} /></div><div className="node-meta"><span>最近检测：{formatCollectedAt(source.lastTest)}</span><span>{source.status}</span></div><div className="source-actions">{['MySQL', 'SSH', 'Agent', 'Redis', 'ClickHouse', 'Kafka'].includes(source.type) && <button type="button" onClick={() => importDashboard(source)}>导入大屏</button>}{source.type === 'MySQL' && <button type="button" onClick={() => importMySQLMenu(source)}>导入工作台</button>}{source.type === 'Consul' && <button type="button" onClick={() => importConsulMenu(source)}>导入工作台</button>}{source.type === 'Hadoop' && <button type="button" onClick={() => importHadoopMenu(source)}>导入菜单</button>}{source.type === 'Ambari' && <button type="button" onClick={() => { setImportName(source.name); setImportTarget({ source, kind: 'ambari' }) }}>导入菜单</button>}{(source.type === 'Agent' || (source.type === 'SSH' && source.options?.authMode === 'agent')) && <button type="button" onClick={() => void checkAgentStatus(source)}>Agent 状态</button>}<button type="button" onClick={() => openModal(source)}>编辑</button><button className="danger" type="button" onClick={() => deleteSource(source)}>删除</button></div></article>)}</section><ListPagination total={allSources.length} page={currentSourcePage} onPageChange={setSourcePage} /></>}{agentToken && <AgentTokenDialog {...agentToken} onClose={() => setAgentToken(null)} />}{deletingSource && <DataSourceDeleteDialog sourceName={deletingSource.name} onClose={() => setDeletingSource(null)} onConfirm={() => { const source = deletingSource; setDeletingSource(null); void performDeleteSource(source) }} />}{importTarget && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget && !importing) setImportTarget(null) }}><section className="surface import-name-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{importTarget.kind === 'dashboard' ? '导入大屏' : '导入菜单'}</h2><p>{importTarget.source.name}</p></div><button className="close-button" type="button" disabled={importing} onClick={() => setImportTarget(null)}>×</button></header><label className="import-name-field">名称 <span className="required-mark">*</span><input autoFocus value={importName} maxLength={120} onChange={(event) => setImportName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void confirmImport() } }} /></label><footer className="modal-actions"><button className="button secondary" type="button" disabled={importing} onClick={() => setImportTarget(null)}>取消</button><button className="button" type="button" disabled={importing} onClick={() => void confirmImport()}>{importing ? '导入中...' : '确认导入'}</button></footer></section></div>}{modalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setModalOpen(false) }}><section className="surface source-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2>{editing ? '编辑数据源' : '新增数据源'}</h2><p>{selectedType} 接入</p></div><button className="close-button" type="button" onClick={() => setModalOpen(false)}>×</button></header><form onSubmit={saveSource}><div className="modal-form"><label>类型 <span className="required-mark">*</span><AppSelect name="type" value={selectedType} onChange={(next) => setSelectedType(next as 'Prometheus' | 'MySQL' | 'SSH' | 'Hadoop')} disabled={!!editing} options={[{ value: 'Prometheus', label: 'Prometheus' }, { value: 'MySQL', label: 'MySQL' }, { value: 'SSH', label: 'SSH' }, { value: 'Hadoop', label: 'Hadoop' }, { value: 'Consul', label: 'Consul' }]} /></label><label>名称 <span className="required-mark">*</span><input key={`name-${selectedType}-${editing?.id || 'new'}`} name="name" defaultValue={editing?.name || ''} required /></label><label className={selectedType === 'Hadoop' ? 'wide' : ''}>{selectedType === 'Hadoop' ? 'Hadoop Web 地址' : '地址'} <span className="required-mark">*</span><input name="host" defaultValue={editing?.host || ''} placeholder={selectedType === 'MySQL' ? 'MySQL 主机地址' : selectedType === 'SSH' ? 'SSH 主机地址' : selectedType === 'Hadoop' ? '例如 http://hadoop-master:8088' : selectedType === 'Consul' ? '例如 http://consul-server' : '例如 prometheus.example.com'} required /></label>{selectedType !== 'Hadoop' && <label>端口 <span className="required-mark">*</span><input key={`port-${selectedType}-${editing?.id || 'new'}`} name="port" defaultValue={editing?.port || (selectedType === 'Consul' ? '8500' : '')} required /></label>}{selectedType === 'MySQL' || selectedType === 'SSH' || selectedType === 'Consul' ? <><label>用户名 <span className="optional-mark">选填</span><input name="username" defaultValue={editing?.username || ''} placeholder={selectedType === 'Consul' ? '可选；仅用于基础认证' : undefined} required={selectedType !== 'Consul'} /></label><label>密码{selectedType === 'Consul' && <span className="optional-mark">选填</span>}<input name="password" type="password" placeholder={editing ? '留空则不修改' : selectedType === 'Consul' ? '可选；账号同时填写时用于 Nginx 密码，否则作为 Consul Token' : selectedType === 'SSH' ? 'SSH 密码，可选' : 'MySQL 密码'} required={selectedType === 'MySQL' && !editing} /></label>{selectedType === 'MySQL' && <label className="wide">数据库<input name="database" defaultValue={editing?.database || ''} placeholder="可选，不填则采集实例级指标" /></label>}{selectedType === 'SSH' && <span className="form-error wide">SSH 仅采集 CPU、负载、内存和磁盘使用率。</span>}</> : selectedType === 'Hadoop' ? <><label className="wide">NodeManager 日志地址<input name="nodeManagerUrl" defaultValue={editing?.options?.nodeManagerUrl || ''} placeholder="选填，例如 http://hadoop-node-1:8042" /></label><label className="wide">JobHistory 日志地址<input name="jobHistoryUrl" defaultValue={editing?.options?.jobHistoryUrl || ''} placeholder="选填，例如 http://hadoop-history:19888" /></label><span className="form-error wide">NodeManager 与 JobHistory 地址仅用于读取 YARN 容器日志；不填时系统使用 YARN 返回的日志地址。</span></> : <label>Token<input name="token" type="password" placeholder={editing ? '留空则不修改' : '可选'} /></label>}<label className="wide">备注<textarea name="remark" defaultValue={editing?.remark || ''} placeholder="记录数据源用途或环境" /></label></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.closest('form'); if (form) void testSource(form) }}>测试连接</button><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></footer></form></section></div>}{message && <div className="toast">{message}</div>}</div>
 }
 
 function StatusSwitch({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: (next: boolean) => void }) { return <button type="button" className={`status-switch ${checked ? 'checked' : ''}`} aria-pressed={checked} disabled={disabled} onClick={() => onChange(!checked)}><span className="status-switch-track"><span className="status-switch-thumb" /></span><span>{checked ? '启用' : '停用'}</span></button> }
@@ -1295,7 +1617,7 @@ function Alerts() {
   const [rulePage, setRulePage] = useState(1)
   const prometheusSources = sources.filter(item => item.enabled && item.type === 'Prometheus')
   const mysqlSources = sources.filter(item => item.enabled && item.type === 'MySQL')
-  const sshSources = sources.filter(item => item.enabled && item.type === 'SSH')
+  const sshSources = sources.filter(item => item.enabled && (item.type === 'SSH' || item.type === 'Agent'))
   const showMessage = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 3000) }
   const loadSources = async () => {
     try {
@@ -1455,7 +1777,7 @@ function Alerts() {
     const name = String(form.get('name') || '').trim()
     if (!name) { showMessage('请填写规则名称'); return }
     if (ruleKind === 'data-monitor' && (!selectedMySQLSource || !selectedDatabase || !selectedTable || !selectedField)) { showMessage('请完整选择数据源、数据库、表和日期字段'); return }
-    if ((ruleKind === 'file-monitor' || ruleKind === 'script-monitor') && selectedSSHSources.length === 0) { showMessage('请至少选择一个 SSH 数据源'); return }
+    if ((ruleKind === 'file-monitor' || ruleKind === 'script-monitor') && selectedSSHSources.length === 0) { showMessage('请至少选择一个主机节点'); return }
     if (ruleKind === 'prometheus' && !selectedPrometheusSource) { showMessage('请选择 Prometheus 数据源'); return }
     const payload: CollectionRule = ruleKind === 'data-monitor'
       ? { id: editingRule?.id || '', name, source: selectedMySQLSource, database: selectedDatabase, table: selectedTable, field: selectedField, condition: '当天有数据', threshold: '', timeWindow: deadline, frequency: `${String(form.get('frequencyValue') || '1')}${frequencyUnit}`, remark: String(form.get('remark') || ''), lastRun: editingRule?.lastRun || '待执行', status: editingRule?.status || '启用' }
@@ -1570,22 +1892,22 @@ function Alerts() {
                     <label>表 <span className="required-mark">*</span><AppSelect value={selectedTable} placeholder={schemaLoading && tableOptions.length === 0 ? '正在加载表...' : '请选择表'} disabled={!selectedDatabase || (schemaLoading && tableOptions.length === 0)} onChange={(next) => { setSelectedTable(next); setSelectedField(''); setFieldOptions([]) }} options={tableOptions.map(name => ({ value: name, label: name }))} /></label>
                     <label>日期字段 <span className="required-mark">*</span><AppSelect name="field" value={selectedField} placeholder={schemaLoading && fieldOptions.length === 0 ? '正在加载字段...' : '请选择日期字段'} disabled={!selectedTable || (schemaLoading && fieldOptions.length === 0)} onChange={setSelectedField} options={fieldOptions.map(name => ({ value: name, label: name }))} /></label>
                     <label>告警策略<span className="static-field">当天有新数据</span></label>
-                    <label>告警判定时间<AppSelect name="deadline" value={deadline} onChange={setDeadline} options={['00:00', '01:00', '02:00', '03:00', '06:00', '09:00', '12:00'].map(value => ({ value, label: value }))} /></label>
+                    <label>告警判定时间<AppSelect name="deadline" value={deadline} onChange={setDeadline} options={Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`).map(value => ({ value, label: value }))} /></label>
                     {schemaError && <span className="form-error wide">{schemaError}</span>}
                   </>
                 ) : ruleKind === 'file-monitor' ? (
                   <>
-                    <label>SSH 数据源 <span className="required-mark">*</span><SSHSourceMultiSelect sources={sshSources} value={selectedSSHSources} onChange={setSelectedSSHSources} /></label>
-                    <label>告警判定时间 <span className="required-mark">*</span><AppSelect name="deadline" value={deadline} onChange={setDeadline} options={['00:00', '01:00', '02:00', '03:00', '06:00', '09:00', '12:00', '18:00'].map(value => ({ value, label: value }))} /></label>
+                    <label>主机节点 <span className="required-mark">*</span><SSHSourceMultiSelect sources={sshSources} value={selectedSSHSources} onChange={setSelectedSSHSources} /></label>
+                    <label>告警判定时间 <span className="required-mark">*</span><AppSelect name="deadline" value={deadline} onChange={setDeadline} options={Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`).map(value => ({ value, label: value }))} /></label>
                     <label className="wide">路径 <span className="required-mark">*</span><input name="filePath" defaultValue={editingRule?.database === 'file-monitor' ? editingRule.table : ''} placeholder="/var/data/reports" required /></label>
                     <label className="wide">文件名正则 <span className="required-mark">*</span><input name="filePattern" defaultValue={editingRule?.database === 'file-monitor' ? editingRule.field : ''} placeholder="^report_\\d{8}\\.csv$" required /></label>
                   </>
                 ) : ruleKind === 'script-monitor' ? (
                   <>
-                    <label>SSH 数据源 <span className="required-mark">*</span><SSHSourceMultiSelect sources={sshSources} value={selectedSSHSources} onChange={setSelectedSSHSources} /></label>
+                    <label>主机节点 <span className="required-mark">*</span><SSHSourceMultiSelect sources={sshSources} value={selectedSSHSources} onChange={setSelectedSSHSources} /></label>
                     <label>判断逻辑 <span className="required-mark">*</span><AppSelect value={scriptCondition} onChange={setScriptCondition} options={[{ value: '退出码等于', label: '退出码等于' }]} /></label>
                     <label>预期退出码 <span className="required-mark">*</span><input name="expectedExitCode" type="number" min="0" max="255" step="1" defaultValue={editingRule?.database === 'script-monitor' ? editingRule.threshold || '0' : '0'} required /></label>
-                    <label className="wide">执行目录<input name="scriptDirectory" defaultValue={editingRule?.database === 'script-monitor' ? editingRule.field : ''} placeholder="可选，例如 /opt/ops/scripts；不填则使用 SSH 默认目录" /></label>
+                    <label className="wide">执行目录<input name="scriptDirectory" defaultValue={editingRule?.database === 'script-monitor' ? editingRule.field : ''} placeholder="可选，例如 /opt/ops/scripts；不填则使用节点默认目录" /></label>
                     <label className="wide">检测脚本 <span className="required-mark">*</span><textarea name="script" rows={8} defaultValue={editingRule?.database === 'script-monitor' ? editingRule.table : ''} placeholder={'例如：\\n/usr/local/bin/check_service.sh\\nexit $?'} required /></label>
                   </>
                 ) : ruleKind === 'prometheus' ? (
@@ -1613,10 +1935,28 @@ function Alerts() {
           </section>
         </div>
       )}
-      {resultRule && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setResultRule(null) }}><section className="surface result-details-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{resultRule.database === 'script-monitor' ? '脚本执行日志' : '结果详情'}</h2><p>{resultRule.name}</p></div><button className="close-button" type="button" onClick={() => setResultRule(null)}>×</button></header><pre className={resultRule.database === 'script-monitor' ? 'rule-execution-log' : ''}>{resultRule.resultDetails}</pre></section></div>}
+      {resultRule && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setResultRule(null) }}><section className="surface result-details-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{resultRule.database === 'script-monitor' ? '脚本执行日志' : '结果详情'}</h2><p>{resultRule.name}</p></div><button className="close-button" type="button" onClick={() => setResultRule(null)}>×</button></header><pre className={resultRule.database === 'script-monitor' ? 'rule-execution-log' : ''}>{resultRule.database === 'file-monitor' ? normalizeFileMonitorResultDetails(resultRule.resultDetails || '') : resultRule.resultDetails}</pre></section></div>}
     </div>
   )
 
+}
+
+function AuditLogs() {
+  const [items, setItems] = useState<Array<{ id: number; action: string; username: string; remoteAddr: string; details: string; createdAt: string }>>([])
+  const [loading, setLoading] = useState(false)
+  const [keyword, setKeyword] = useState('')
+	const [search, setSearch] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  const [accountFilter, setAccountFilter] = useState('')
+  const [page, setPage] = useState(1)
+	const [total, setTotal] = useState(0)
+	const [actions, setActions] = useState<string[]>([])
+	const [usernames, setUsernames] = useState<string[]>([])
+	const load = async () => { setLoading(true); try { const query = new URLSearchParams({ page: String(page), pageSize: '20', action: typeFilter, username: accountFilter, keyword: search }); const response = await fetch(`${api}/audit-logs?${query}`); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取日志失败'); setItems(data.items || []); setTotal(data.total || 0); setActions(data.actions || []); setUsernames(data.usernames || []) } finally { setLoading(false) } }
+	useEffect(() => { const timer = window.setTimeout(() => setSearch(keyword), 280); return () => window.clearTimeout(timer) }, [keyword])
+	useEffect(() => { void load() }, [page, typeFilter, accountFilter, search])
+	const pages = Math.max(1, Math.ceil(total / 20))
+	return <div className="page audit-log-page"><PageHead title="日志中心" description="操作审计、登录与安全事件" /><div className="audit-log-toolbar"><AppSelect value={typeFilter} placeholder="全部操作类型" onChange={value => { setTypeFilter(value); setPage(1) }} options={[{ value: '', label: '全部操作类型' }, ...actions.map(value => ({ value, label: value }))]} /><AppSelect value={accountFilter} placeholder="全部账号" onChange={value => { setAccountFilter(value); setPage(1) }} options={[{ value: '', label: '全部账号' }, ...usernames.map(value => ({ value, label: value }))]} /><input value={keyword} placeholder="搜索详情" onChange={event => { setKeyword(event.target.value); setPage(1) }} /><span>共 {total} 条</span></div><section className="surface audit-log-list"><header className="audit-log-head"><span>时间</span><span>操作</span><span>账号</span><span>详情</span><span>来源地址</span></header>{items.length === 0 ? <div className="empty-state"><b>{loading ? '正在读取日志' : '暂无日志'}</b></div> : items.map(item => <article key={`${item.action}-${item.id}`}><time>{item.createdAt}</time><b>{item.action}</b><span>{item.username || '-'}</span><code>{item.details || '平台操作'}</code><small>{item.remoteAddr || '-'}</small></article>)}{total > 0 && <UnifiedPagination total={total} page={page} totalPages={pages} onPageChange={setPage} ariaLabel="日志分页" />}</section></div>
 }
 
 function Notifications() {
@@ -1677,7 +2017,7 @@ function Notifications() {
   const totalPages = Math.max(1, Math.ceil(groupedItems.length / pageSize))
   const currentPage = Math.min(page, totalPages)
   const items = groupedItems.slice((currentPage - 1) * pageSize, currentPage * pageSize)
-  const notificationPagination = groupedItems.length > 0 && <footer className="notification-pagination"><span>共 {groupedItems.length} 条规则，合并 {allItems.length} 条通知 · 第 {currentPage} / {totalPages} 页</span><div><button type="button" disabled={currentPage === 1} onClick={() => setPage(1)}>首页</button><button type="button" disabled={currentPage === 1} onClick={() => setPage(value => Math.max(1, value - 1))}>上一页</button><input type="number" min="1" max={totalPages} value={currentPage} aria-label="通知页码" onChange={(event) => { const next = Number(event.target.value); if (Number.isInteger(next) && next >= 1 && next <= totalPages) setPage(next) }} /><span>/ {totalPages}</span><button type="button" disabled={currentPage === totalPages} onClick={() => setPage(value => Math.min(totalPages, value + 1))}>下一页</button><button type="button" disabled={currentPage === totalPages} onClick={() => setPage(totalPages)}>末页</button></div></footer>
+  const notificationPagination = groupedItems.length > 0 && <UnifiedPagination total={groupedItems.length} page={currentPage} totalPages={totalPages} onPageChange={setPage} ariaLabel="通知分页" />
   useEffect(() => { void load() }, [startDate, endDate, notificationType])
   useEffect(() => { setPage(1) }, [startDate, endDate, notificationType])
   useEffect(() => { const refresh = () => void load(); window.addEventListener('opsguard-notifications-change', refresh); return () => window.removeEventListener('opsguard-notifications-change', refresh) }, [startDate, endDate, notificationType])
@@ -1709,102 +2049,35 @@ function Notifications() {
   </div>
 }
 
-function LegacySettings() {
-  const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState('')
-  const [activeSection, setActiveSection] = useState<'refresh' | 'profile'>('refresh')
-  const [refreshValue, setRefreshValue] = useState(() => String(readRefreshInterval().value))
-  const [refreshUnit, setRefreshUnit] = useState(() => readRefreshInterval().unit)
-  useEffect(() => { void loadRefreshSettings().then(setting => { setRefreshValue(String(setting.value)); setRefreshUnit(setting.unit) }) }, [])
-  useEffect(() => {
-    const settings = document.querySelector<HTMLElement>('.settings-layout .settings')
-    if (!settings) return
-    const mount = document.createElement('div')
-    mount.className = 'system-settings-mount'
-    settings.append(mount)
-    const root = createRoot(mount)
-    root.render(<SystemSettingsContent />)
-    settings.querySelector<HTMLElement>('.form-section')?.style.setProperty('display', 'none')
-    const showPlatformSettings = () => {
-      document.querySelectorAll<HTMLButtonElement>('.settings-tabs button').forEach(tab => tab.classList.remove('active'))
-      document.querySelector<HTMLButtonElement>('.settings-tabs button[data-platform-settings]')?.classList.add('active')
-      mount.querySelector('#platforms')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-    const settingTabs = Array.from(document.querySelectorAll<HTMLButtonElement>('.settings-tabs button'))
-    const replacementTabs = settingTabs.map((tab, index) => {
-      const replacement = tab.cloneNode(true) as HTMLButtonElement
-      tab.replaceWith(replacement)
-      replacement.addEventListener('click', () => {
-        document.querySelectorAll<HTMLButtonElement>('.settings-tabs button').forEach(item => item.classList.remove('active'))
-        replacement.classList.add('active')
-        mount.querySelector(index === 0 ? '#refresh-settings' : '#profile-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      })
-      return replacement
-    })
-    window.addEventListener('opsguard-show-platform-settings', showPlatformSettings)
-    if (window.location.hash === '#platforms') window.setTimeout(showPlatformSettings, 0)
-    return () => {
-      void replacementTabs
-      window.removeEventListener('opsguard-show-platform-settings', showPlatformSettings)
-      root.unmount()
-    }
-  }, [])
-  useEffect(() => {
-    const tabs = document.querySelector<HTMLElement>('.settings-layout .settings-tabs')
-    if (!tabs) return
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.dataset.platformSettings = 'true'
-    button.textContent = '常用平台'
-    button.addEventListener('click', () => window.dispatchEvent(new Event('opsguard-show-platform-settings')))
-    tabs.insertBefore(button, tabs.querySelectorAll('button')[1] || null)
-    return () => button.remove()
-  }, [])
-  const showMessage = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 3000) }
-  const changePassword = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    setMessage('')
-    const form = new FormData(event.currentTarget)
-    const newPassword = String(form.get('newPassword') || '')
-    if (newPassword !== String(form.get('confirmPassword') || '')) { showMessage('两次新密码不一致'); return }
-    setSaving(true)
-    try {
-      const response = await fetch(`${api}/change-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oldPassword: form.get('oldPassword'), newPassword }) })
-      const result = await response.json()
-      if (!response.ok) throw new Error(result.error || '修改失败')
-      showMessage('密码已修改')
-      event.currentTarget.reset()
-    } catch (err) { showMessage(err instanceof Error ? err.message : '修改失败') } finally { setSaving(false) }
-  }
-  const saveRefreshInterval = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const value = Math.max(1, Number(refreshValue) || 15)
-    try {
-      const saved = await saveRefreshSettings({ value, unit: refreshUnit })
-      setRefreshValue(String(saved.value)); setRefreshUnit(saved.unit); showMessage('自动刷新频率已更新')
-    } catch (err) { showMessage(err instanceof Error ? err.message : '刷新频率保存失败') }
-  }
-  return <div className="page"><PageHead title="系统设置" description="Prometheus 通过数据源接入；可统一调整页面自动刷新频率。" />{message && <div className="toast">{message}</div>}<section className="settings-layout"><aside className="surface settings-tabs" aria-label="配置目录"><button type="button" className={activeSection === 'refresh' ? 'active' : ''} onClick={() => setActiveSection('refresh')}>自动刷新</button><button type="button" className={activeSection === 'profile' ? 'active' : ''} onClick={() => setActiveSection('profile')}>密码修改</button></aside><section className="surface settings">{activeSection === 'refresh' ? <div className="form-section"><h3>自动刷新</h3><form className="settings-form" onSubmit={saveRefreshInterval}><label>刷新频率 <span className="required-mark">*</span><span className="frequency-input"><input value={refreshValue} type="number" min="1" step="1" onChange={(event) => setRefreshValue(event.target.value)} required /><AppSelect value={refreshUnit} onChange={(value) => setRefreshUnit(value as RefreshSetting['unit'])} options={[{ value: 's', label: '秒' }, { value: 'm', label: '分钟' }, { value: 'h', label: '小时' }]} /></span></label><div className="settings-actions"><button className="button" type="submit">保存刷新频率</button></div></form></div> : <div className="form-section"><h3>密码修改</h3><form className="settings-form" onSubmit={changePassword}><label>原密码 <span className="required-mark">*</span><input name="oldPassword" type="password" autoComplete="current-password" required /></label><label>新密码 <span className="required-mark">*</span><input name="newPassword" type="password" autoComplete="new-password" required /></label><label>确认新密码 <span className="required-mark">*</span><input name="confirmPassword" type="password" autoComplete="new-password" required /></label><div className="settings-actions"><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存密码'}</button></div></form></div>}</section></section></div>
-}
-
-void LegacySettings
-
 function FrequencyEditor({ label, value, onChange }: { label: string; value: RefreshSetting; onChange: (value: RefreshSetting) => void }) {
   return <label>{label} <span className="required-mark">*</span><span className="frequency-input"><input value={value.value} type="number" min="1" step="1" onChange={(event) => onChange({ ...value, value: Math.max(1, Number(event.target.value) || 1) })} required /><AppSelect value={value.unit} onChange={(unit) => onChange({ ...value, unit: unit as RefreshSetting['unit'] })} options={[{ value: 's', label: '秒' }, { value: 'm', label: '分钟' }, { value: 'h', label: '小时' }]} /></span></label>
 }
 
+function OperationConfirmationPanel() {
+  const [required, setRequired] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+  useEffect(() => { void fetch(`${api}/system-settings/confirmations`).then(response => response.json()).then(data => setRequired(data.requireWriteConfirmation !== false)) }, [])
+  const save = async () => { setSaving(true); try { const response = await fetch(`${api}/system-settings/confirmations`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requireWriteConfirmation: required }) }); if (!response.ok) throw new Error('保存操作确认设置失败'); setMessage('操作确认设置已保存') } catch (err) { setMessage(err instanceof Error ? err.message : '保存失败') } finally { setSaving(false) } }
+  return <div className="form-section"><h3>操作确认</h3><label className={`operation-confirmation-choice ${required ? 'checked' : ''}`}><input type="checkbox" checked={required} onChange={event => setRequired(event.target.checked)} /><span><b>写入操作前确认</b><small>执行 SQL 写操作和导入任务前要求用户确认</small></span></label><div className="settings-actions"><button className="button" type="button" disabled={saving} onClick={() => void save()}>{saving ? '保存中...' : '保存操作确认设置'}</button></div>{message && <span className="settings-inline-message">{message}</span>}</div>
+}
+
+function MySQLQueryLimitPanel() {
+  const [limit, setLimit] = useState('500'); const [maxSizeMB, setMaxSizeMB] = useState('2'); const [saving, setSaving] = useState(false); const [message, setMessage] = useState('')
+  useEffect(() => { void fetch(`${api}/system-settings/mysql-query-limit`).then(response => response.json()).then(data => { setLimit(String(data.limit || 500)); setMaxSizeMB(String(Math.max(1, Math.round((Number(data.maxBytes) || 2 * 1024 * 1024) / 1024 / 1024)))) }) }, [])
+  const save = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); setSaving(true); try { const response = await fetch(`${api}/system-settings/mysql-query-limit`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: Number(limit), maxBytes: Number(maxSizeMB) * 1024 * 1024 }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '保存失败'); setLimit(String(data.limit)); setMaxSizeMB(String(Math.round(data.maxBytes / 1024 / 1024))); setMessage('SQL 查询结果上限已保存') } catch (err) { setMessage(err instanceof Error ? err.message : '保存失败') } finally { setSaving(false) } }
+  return <div className="form-section"><h3>SQL 查询结果</h3><form className="settings-form" onSubmit={save}><label>最大返回行数 <span className="required-mark">*</span><input value={limit} type="number" min="1" max="10000" step="1" onChange={event => setLimit(event.target.value)} required /><small>单次 SQL 查询最多返回的记录数，范围 1–10000 行。</small></label><label>最大结果大小（MB） <span className="required-mark">*</span><input value={maxSizeMB} type="number" min="1" max="100" step="1" onChange={event => setMaxSizeMB(event.target.value)} required /><small>查询结果序列化后允许的最大大小，范围 1–100 MB。</small></label><div className="settings-actions"><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存查询上限'}</button></div>{message && <span className="settings-inline-message">{message}</span>}</form></div>
+}
+
 function Settings() {
-  const [activeSection, setActiveSection] = useState<'frequency' | 'platforms' | 'profile'>('frequency')
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
-  const [settings, setSettings] = useState<Record<UpdateFrequencyScope, RefreshSetting>>({
-    general: readRefreshInterval(), datasource: updateFrequencyDefaults.datasource, hadoop: updateFrequencyDefaults.hadoop, dashboard: updateFrequencyDefaults.dashboard,
-  })
-  useEffect(() => { void Promise.all((['general', 'datasource', 'hadoop', 'dashboard'] as UpdateFrequencyScope[]).map(async scope => [scope, await loadScopedRefreshSettings(scope)] as const)).then(items => setSettings(current => ({ ...current, ...Object.fromEntries(items) }))) }, [])
+  const [settings, setSettings] = useState<Record<UpdateFrequencyScope, RefreshSetting>>({ general: readRefreshInterval(), datasource: updateFrequencyDefaults.datasource, hadoop: updateFrequencyDefaults.hadoop, dashboard: updateFrequencyDefaults.dashboard, consul: updateFrequencyDefaults.consul })
+  useEffect(() => { void Promise.all((['general', 'datasource', 'hadoop', 'dashboard', 'consul'] as UpdateFrequencyScope[]).map(async scope => [scope, await loadScopedRefreshSettings(scope)] as const)).then(items => setSettings(current => ({ ...current, ...Object.fromEntries(items) }))) }, [])
   const saveFrequencies = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setSaving(true)
     try {
-      const entries = await Promise.all((['general', 'datasource', 'hadoop', 'dashboard'] as UpdateFrequencyScope[]).map(async scope => [scope, await saveScopedRefreshSettings(scope, settings[scope])] as const))
+      const entries = await Promise.all((['general', 'datasource', 'hadoop', 'dashboard', 'consul'] as UpdateFrequencyScope[]).map(async scope => [scope, await saveScopedRefreshSettings(scope, settings[scope])] as const))
       setSettings(current => ({ ...current, ...Object.fromEntries(entries) })); setMessage('更新频率已保存')
     } catch (err) { setMessage(err instanceof Error ? err.message : '更新频率保存失败') } finally { setSaving(false) }
   }
@@ -1814,7 +2087,8 @@ function Settings() {
     const response = await fetch(`${api}/change-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oldPassword: form.get('oldPassword'), newPassword: next }) })
     const data = await response.json(); setMessage(response.ok ? '密码已修改' : data.error || '密码修改失败'); if (response.ok) event.currentTarget.reset()
   }
-  return <div className="page"><PageHead title="系统设置" description="集中管理平台更新频率、常用平台与账户配置。" />{message && <div className="toast">{message}</div>}<section className="settings-layout"><aside className="surface settings-tabs" aria-label="配置目录"><button type="button" className={activeSection === 'frequency' ? 'active' : ''} onClick={() => setActiveSection('frequency')}>更新频率</button><button type="button" className={activeSection === 'platforms' ? 'active' : ''} onClick={() => setActiveSection('platforms')}>常用平台</button><button type="button" className={activeSection === 'profile' ? 'active' : ''} onClick={() => setActiveSection('profile')}>密码修改</button></aside><section className="surface settings">{activeSection === 'frequency' ? <div className="form-section"><h3>更新频率</h3><form className="settings-form frequency-settings-form" onSubmit={saveFrequencies}><FrequencyEditor label="通用页面更新频率" value={settings.general} onChange={(value) => setSettings(current => ({ ...current, general: value }))} /><FrequencyEditor label="数据源检测频率" value={settings.datasource} onChange={(value) => setSettings(current => ({ ...current, datasource: value }))} /><FrequencyEditor label="Hadoop 任务列表更新频率" value={settings.hadoop} onChange={(value) => setSettings(current => ({ ...current, hadoop: value }))} /><FrequencyEditor label="监控大屏更新频率" value={settings.dashboard} onChange={(value) => setSettings(current => ({ ...current, dashboard: value }))} /><div className="settings-actions"><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存更新频率'}</button></div></form></div> : activeSection === 'platforms' ? <PlatformLinkSettings /> : <div className="form-section"><h3>密码修改</h3><form className="settings-form" onSubmit={changePassword}><label>原密码 <span className="required-mark">*</span><input name="oldPassword" type="password" autoComplete="current-password" required /></label><label>新密码 <span className="required-mark">*</span><input name="newPassword" type="password" autoComplete="new-password" required /></label><label>确认新密码 <span className="required-mark">*</span><input name="confirmPassword" type="password" autoComplete="new-password" required /></label><div className="settings-actions"><button className="button" type="submit">保存密码</button></div></form></div>}</section></section></div>
+  const scrollToSection = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  return <div className="page"><PageHead title="系统设置" description="集中管理平台更新频率、常用平台与账户配置。" />{message && <div className="toast">{message}</div>}<section className="settings-layout"><aside className="surface settings-tabs" aria-label="配置目录"><button type="button" onClick={() => scrollToSection('settings-frequency')}>更新频率</button><button type="button" onClick={() => scrollToSection('settings-platform-name')}>平台名称</button><button type="button" onClick={() => scrollToSection('settings-platforms')}>常用平台</button><button type="button" onClick={() => scrollToSection('settings-profile')}>密码修改</button><button type="button" onClick={() => scrollToSection('settings-confirmations')}>操作确认</button><button type="button" onClick={() => scrollToSection('settings-sql-query-limit')}>SQL 查询结果</button></aside><section className="surface settings settings-all"><div id="settings-frequency" className="form-section settings-anchor"><h3>更新频率</h3><form className="settings-form frequency-settings-form" onSubmit={saveFrequencies}><FrequencyEditor label="通用页面更新频率" value={settings.general} onChange={(value) => setSettings(current => ({ ...current, general: value }))} /><FrequencyEditor label="数据源检测频率" value={settings.datasource} onChange={(value) => setSettings(current => ({ ...current, datasource: value }))} /><FrequencyEditor label="Hadoop 任务列表更新频率" value={settings.hadoop} onChange={(value) => setSettings(current => ({ ...current, hadoop: value }))} /><FrequencyEditor label="监控大屏更新频率" value={settings.dashboard} onChange={(value) => setSettings(current => ({ ...current, dashboard: value }))} /><FrequencyEditor label="Consul 当前目录自动刷新频率" value={settings.consul} onChange={(value) => setSettings(current => ({ ...current, consul: value }))} /><div className="settings-actions"><button className="button" type="submit" disabled={saving}>{saving ? '保存中...' : '保存更新频率'}</button></div></form></div><div id="settings-platform-name" className="settings-anchor"><PlatformNameSettings /></div><div id="settings-platforms" className="settings-anchor"><PlatformLinkSettings /></div><div id="settings-profile" className="form-section settings-anchor"><h3>密码修改</h3><form className="settings-form" onSubmit={changePassword}><label>原密码 <span className="required-mark">*</span><input name="oldPassword" type="password" autoComplete="current-password" required /></label><label>新密码 <span className="required-mark">*</span><input name="newPassword" type="password" autoComplete="new-password" required /></label><label>确认新密码 <span className="required-mark">*</span><input name="confirmPassword" type="password" autoComplete="new-password" required /></label><div className="settings-actions"><button className="button" type="submit">保存密码</button></div></form></div><div id="settings-confirmations" className="settings-anchor"><OperationConfirmationPanel /></div><div id="settings-sql-query-limit" className="settings-anchor"><MySQLQueryLimitPanel /></div></section></section></div>
 }
 
 function formatCollectedAt(value?: string) {

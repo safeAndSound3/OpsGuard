@@ -13,12 +13,16 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 var (
 	hadoopLogPreBlocks = regexp.MustCompile(`(?is)<pre[^>]*>(.*?)</pre>`)
 	hadoopLogLinks     = regexp.MustCompile(`(?is)<a[^>]+href\s*=\s*["']([^"']+)["'][^>]*>`)
+	hadoopLogType      = regexp.MustCompile(`(?im)^\s*LogType\s*:\s*([^\r\n]+)\s*$`)
+	hadoopContainerID  = regexp.MustCompile(`\bcontainer_\d+_\d+_\d+_\d+\b`)
+	hadoopSnapshotJobs sync.Map
 )
 
 type HadoopApplicationQuery struct {
@@ -66,6 +70,10 @@ func ListHadoopApplications(sourceID string, query HadoopApplicationQuery) (mode
 	// Persist every observation and use the snapshot as the durable source for
 	// historical tasks when ResourceManager or JobHistory is temporarily down.
 	_ = upsertHadoopApplicationSnapshots(sourceID, all)
+	// ResourceManager can discard completed-container records shortly after an
+	// application stops. Capture active applications while their full lists are
+	// still available so completed logs remain selectable later.
+	scheduleHadoopActiveContainerSnapshots(sourceID, all)
 	if snapshots, err := listHadoopApplicationSnapshots(sourceID); err == nil {
 		all = snapshots
 	}
@@ -111,6 +119,51 @@ func ListHadoopApplications(sourceID string, query HadoopApplicationQuery) (mode
 	return model.HadoopApplicationPage{Items: items, Total: len(filtered), Facets: facets}, nil
 }
 
+type hadoopSnapshotJob struct {
+	mu      sync.Mutex
+	lastRun time.Time
+}
+
+func scheduleHadoopActiveContainerSnapshots(sourceID string, apps []model.HadoopApplication) {
+	value, _ := hadoopSnapshotJobs.LoadOrStore(sourceID, &hadoopSnapshotJob{})
+	job := value.(*hadoopSnapshotJob)
+	job.mu.Lock()
+	if time.Since(job.lastRun) < 30*time.Second {
+		job.mu.Unlock()
+		return
+	}
+	job.lastRun = time.Now()
+	job.mu.Unlock()
+	active := make([]model.HadoopApplication, 0, 100)
+	for _, app := range apps {
+		if hadoopApplicationActive(app) && strings.TrimSpace(app.ID) != "" {
+			active = append(active, app)
+			if len(active) == 100 {
+				break
+			}
+		}
+	}
+	if len(active) == 0 {
+		return
+	}
+	go snapshotHadoopActiveContainers(sourceID, active)
+}
+
+func snapshotHadoopActiveContainers(sourceID string, apps []model.HadoopApplication) {
+	workers := make(chan struct{}, 4)
+	var group sync.WaitGroup
+	for _, app := range apps {
+		workers <- struct{}{}
+		group.Add(1)
+		go func(applicationID string) {
+			defer group.Done()
+			defer func() { <-workers }()
+			_, _ = ListHadoopContainers(sourceID, applicationID)
+		}(app.ID)
+	}
+	group.Wait()
+}
+
 func upsertHadoopApplicationSnapshots(sourceID string, apps []model.HadoopApplication) error {
 	current := currentStore()
 	if current == nil {
@@ -118,7 +171,7 @@ func upsertHadoopApplicationSnapshots(sourceID string, apps []model.HadoopApplic
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if _, err := current.ExecContext(ctx, `DELETE FROM hadoop_application_snapshots WHERE source_id = ? AND last_seen_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 30 DAY)`, sourceID); err != nil {
+	if _, err := current.ExecContext(ctx, `DELETE FROM hadoop_application_snapshots WHERE source_id = ? AND last_seen_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 180 DAY)`, sourceID); err != nil {
 		return err
 	}
 	for _, app := range apps {
@@ -156,6 +209,87 @@ func listHadoopApplicationSnapshots(sourceID string) ([]model.HadoopApplication,
 		}
 	}
 	return items, rows.Err()
+}
+
+func upsertHadoopContainerSnapshot(sourceID, appID string, containers []model.HadoopContainer) error {
+	if len(containers) == 0 {
+		return nil
+	}
+	current := currentStore()
+	if current == nil {
+		return errors.New("Hadoop snapshot store is not initialized")
+	}
+	// A terminal ResourceManager response commonly retains only the AM
+	// container. Never let that partial response replace the full list captured
+	// while the application was running.
+	if saved, err := listHadoopContainerSnapshot(sourceID, appID); err == nil {
+		containers = mergeHadoopContainers(containers, saved)
+	}
+	raw, err := json.Marshal(containers)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, err = current.ExecContext(ctx, `DELETE FROM hadoop_container_snapshots WHERE source_id = ? AND last_seen_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 180 DAY)`, sourceID); err != nil {
+		return err
+	}
+	_, err = current.ExecContext(ctx, `INSERT INTO hadoop_container_snapshots (source_id, application_id, container_json) VALUES (?, ?, ?)
+		ON DUPLICATE KEY UPDATE container_json = VALUES(container_json), last_seen_at = CURRENT_TIMESTAMP`, sourceID, appID, raw)
+	return err
+}
+
+func listHadoopContainerSnapshot(sourceID, appID string) ([]model.HadoopContainer, error) {
+	current := currentStore()
+	if current == nil {
+		return nil, errors.New("Hadoop snapshot store is not initialized")
+	}
+	var raw []byte
+	if err := current.QueryRow(`SELECT container_json FROM hadoop_container_snapshots WHERE source_id = ? AND application_id = ?`, sourceID, appID).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var containers []model.HadoopContainer
+	if err := json.Unmarshal(raw, &containers); err != nil {
+		return nil, err
+	}
+	return containers, nil
+}
+
+func hadoopContainerSnapshotOrError(sourceID, appID string, fallback error) ([]model.HadoopContainer, error) {
+	if containers, err := listHadoopContainerSnapshot(sourceID, appID); err == nil && len(containers) > 0 {
+		return containers, nil
+	}
+	if fallback == nil {
+		return []model.HadoopContainer{}, nil
+	}
+	return nil, fallback
+}
+
+// mergeHadoopContainers keeps the live ResourceManager data for duplicate IDs
+// while retaining containers that ResourceManager has already discarded.
+func mergeHadoopContainers(primary, fallback []model.HadoopContainer) []model.HadoopContainer {
+	if len(primary) == 0 {
+		return append([]model.HadoopContainer(nil), fallback...)
+	}
+	items := append([]model.HadoopContainer(nil), primary...)
+	seen := make(map[string]struct{}, len(primary)+len(fallback))
+	for _, container := range primary {
+		if id := strings.TrimSpace(container.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, container := range fallback {
+		id := strings.TrimSpace(container.ID)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		items = append(items, container)
+	}
+	return items
 }
 
 func hadoopApplicationActive(app model.HadoopApplication) bool {
@@ -227,10 +361,28 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 		} `json:"appAttempts"`
 	}
 	if err := hadoopGetJSON(base+"/ws/v1/cluster/apps/"+appID+"/appattempts", &attempts); err != nil {
-		return nil, err
+		if saved, snapshotErr := listHadoopContainerSnapshot(sourceID, appID); snapshotErr == nil && len(saved) > 0 {
+			return saved, nil
+		}
+		// 停止任务后 ResourceManager 可能已删除 appattempt；仍尝试从 AM 汇总日志恢复容器。
+		if amURL := hadoopApplicationAMLogURL(base, appID); amURL != "" {
+			if recovered := recoverHadoopContainersFromAMLog(sourceID, amURL, nil); len(recovered) > 0 {
+				_ = upsertHadoopContainerSnapshot(sourceID, appID, recovered)
+				return recovered, nil
+			}
+		}
+		return hadoopContainerSnapshotOrError(sourceID, appID, err)
 	}
 	if len(attempts.AppAttempts.AppAttempt) == 0 {
-		return []model.HadoopContainer{}, nil
+		items := recoverHadoopContainersFromAMLog(sourceID, hadoopApplicationAMLogURL(base, appID), nil)
+		if saved, err := listHadoopContainerSnapshot(sourceID, appID); err == nil {
+			items = mergeHadoopContainers(items, saved)
+		}
+		if len(items) > 0 {
+			_ = upsertHadoopContainerSnapshot(sourceID, appID, items)
+			return items, nil
+		}
+		return hadoopContainerSnapshotOrError(sourceID, appID, nil)
 	}
 	var payload struct {
 		Containers struct {
@@ -240,6 +392,8 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 				State           string `json:"containerState"`
 				LogURL          string `json:"logUrl"`
 				Priority        string `json:"priority"`
+				AllocatedMB     int64  `json:"allocatedMB"`
+				AllocatedVCores int64  `json:"allocatedVCores"`
 			} `json:"container"`
 		} `json:"containers"`
 		Container []struct {
@@ -248,6 +402,8 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 			State           string `json:"containerState"`
 			LogURL          string `json:"logUrl"`
 			Priority        string `json:"priority"`
+			AllocatedMB     int64  `json:"allocatedMB"`
+			AllocatedVCores int64  `json:"allocatedVCores"`
 		} `json:"container"`
 	}
 	latest := attempts.AppAttempts.AppAttempt[len(attempts.AppAttempts.AppAttempt)-1]
@@ -259,19 +415,23 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 		return nil, err
 	}
 	if err := hadoopGetJSON(base+"/ws/v1/cluster/apps/"+appID+"/appattempts/"+id+"/containers", &payload); err != nil {
-		return nil, err
+		return hadoopContainerSnapshotOrError(sourceID, appID, err)
 	}
 	containers := payload.Containers.Container
 	if len(containers) == 0 {
 		containers = payload.Container
 	}
 	if len(containers) == 0 && latest.ContainerID != "" {
-		return []model.HadoopContainer{{
+		items := []model.HadoopContainer{{
 			ID:              latest.ContainerID,
 			NodeHTTPAddress: latest.NodeHTTPAddress,
 			State:           "COMPLETED",
 			LogURL:          latest.LogsLink,
-		}}, nil
+			IsAM:            true,
+		}}
+		items = recoverHadoopContainersFromAMLog(sourceID, latest.LogsLink, items)
+		_ = upsertHadoopContainerSnapshot(sourceID, appID, items)
+		return items, nil
 	}
 	items := make([]model.HadoopContainer, 0, len(containers))
 	for _, container := range containers {
@@ -281,9 +441,91 @@ func ListHadoopContainers(sourceID, appID string) ([]model.HadoopContainer, erro
 			State:           container.State,
 			LogURL:          container.LogURL,
 			Priority:        container.Priority,
+			IsAM:            container.ID == latest.ContainerID,
+			AllocatedMB:     container.AllocatedMB,
+			AllocatedVCores: container.AllocatedVCores,
+			AttemptID:       id,
 		})
 	}
+	// Some ResourceManagers retain only the AM once an application is terminal.
+	// DistributedShell's AM log still records every allocated worker ID, so use
+	// it to recover selectable worker log links when no live/snapshotted list
+	// exists yet.
+	if len(items) == 1 {
+		items = recoverHadoopContainersFromAMLog(sourceID, items[0].LogURL, items)
+	}
+	// ResourceManager can return only the AM after an application finishes.
+	// Return the current entries first, then the durable running-time snapshot
+	// so the user can still select every worker container and download its log.
+	if saved, err := listHadoopContainerSnapshot(sourceID, appID); err == nil {
+		items = mergeHadoopContainers(items, saved)
+	}
+	_ = upsertHadoopContainerSnapshot(sourceID, appID, items)
 	return items, nil
+}
+
+// hadoopApplicationAMLogURL queries the application detail endpoint because
+// ResourceManager may remove app-attempt records once an application ends,
+// while retaining the ApplicationMaster aggregate-log address.
+func hadoopApplicationAMLogURL(base, appID string) string {
+	var payload struct {
+		App struct {
+			AMContainerLogs string `json:"amContainerLogs"`
+		} `json:"app"`
+	}
+	if err := hadoopGetJSON(base+"/ws/v1/cluster/apps/"+url.PathEscape(appID), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.App.AMContainerLogs)
+}
+
+func recoverHadoopContainersFromAMLog(sourceID, amLogURL string, containers []model.HadoopContainer) []model.HadoopContainer {
+	if strings.TrimSpace(amLogURL) == "" {
+		return containers
+	}
+	content, err := HadoopContainerLog(sourceID, amLogURL)
+	if err != nil {
+		return containers
+	}
+	seen := make(map[string]struct{}, len(containers)+1)
+	for _, container := range containers {
+		if id := strings.TrimSpace(container.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	amID := hadoopContainerID.FindString(amLogURL)
+	if amID != "" {
+		if _, exists := seen[amID]; !exists {
+			containers = append(containers, model.HadoopContainer{ID: amID, State: "COMPLETED", LogURL: amLogURL, IsAM: true})
+			seen[amID] = struct{}{}
+		}
+	}
+	for _, id := range hadoopContainerID.FindAllString(content, -1) {
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		logURL := hadoopContainerLogURLForID(amLogURL, id)
+		if logURL == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+		containers = append(containers, model.HadoopContainer{ID: id, State: "COMPLETED", LogURL: logURL, IsAM: id == amID})
+	}
+	return containers
+}
+
+func hadoopContainerLogURLForID(amLogURL, containerID string) string {
+	endpoint, err := url.Parse(strings.TrimSpace(amLogURL))
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return ""
+	}
+	currentID := hadoopContainerID.FindString(endpoint.Path)
+	if currentID == "" {
+		return ""
+	}
+	endpoint.Path = strings.Replace(endpoint.Path, currentID, containerID, 1)
+	endpoint.RawPath = ""
+	return endpoint.String()
 }
 
 // YARN implementations differ: appAttempt IDs may be JSON strings or numbers.
@@ -341,7 +583,7 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", errors.New(resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -399,17 +641,21 @@ func readableHadoopLog(body []byte) string {
 	if len(blocks) == 0 {
 		return text
 	}
-	lines := make([]string, 0, len(blocks))
+	sections := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		value := strings.TrimSpace(html.UnescapeString(block[1]))
 		if value != "" {
-			lines = append(lines, value)
+			if match := hadoopLogType.FindStringSubmatch(value); len(match) == 2 {
+				sections = append(sections, "===== "+strings.TrimSpace(match[1])+" =====\n"+value)
+			} else {
+				sections = append(sections, value)
+			}
 		}
 	}
-	if len(lines) == 0 {
+	if len(sections) == 0 {
 		return text
 	}
-	return strings.Join(lines, "\n\n")
+	return strings.Join(sections, "\n\n")
 }
 
 // A running container's NodeManager URL returns an HTML index of files rather
@@ -437,7 +683,7 @@ func readableHadoopLogFromDirectory(client *http.Client, hadoop model.DataSource
 			_ = resp.Body.Close()
 			continue
 		}
-		content, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+		content, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
 			continue
@@ -453,12 +699,14 @@ func readableHadoopLogFromDirectory(client *http.Client, hadoop model.DataSource
 		if value == "" {
 			value = "（空文件）"
 		}
-		sections = append(sections, "===== "+name+" =====\n"+value)
+		section := "===== " + name + " =====\n" + value
+		sections = append(sections, section)
 	}
 	if len(sections) == 0 {
 		return "容器日志目录存在，但暂未生成可读取的 stdout、stderr 或 syslog。", nil
 	}
-	return strings.Join(sections, "\n\n"), nil
+	result := strings.Join(sections, "\n\n")
+	return result, nil
 }
 
 func hadoopContainerLogFileURLs(page *url.URL, body string) []string {

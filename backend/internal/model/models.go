@@ -45,6 +45,24 @@ type AmbariMenuItem struct {
 	Name     string `json:"name"`
 }
 
+type MySQLMenuItem struct {
+	SourceID string `json:"sourceId"`
+	Name     string `json:"name"`
+}
+
+type ConsulMenuItem struct {
+	SourceID string `json:"sourceId"`
+	Name     string `json:"name"`
+}
+
+type ConsulKVValue struct {
+	Key         string `json:"key"`
+	Value       string `json:"value"`
+	ModifyIndex uint64 `json:"modifyIndex"`
+	Format      string `json:"format,omitempty"`
+	Create      bool   `json:"create,omitempty"`
+}
+
 type AmbariOverview struct {
 	ClusterName string            `json:"clusterName"`
 	Version     string            `json:"version"`
@@ -98,16 +116,17 @@ type RefreshSettings struct {
 }
 
 type HadoopApplication struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	User         string  `json:"user"`
-	Queue        string  `json:"queue"`
-	Type         string  `json:"applicationType"`
-	State        string  `json:"state"`
-	FinalStatus  string  `json:"finalStatus"`
-	Progress     float64 `json:"progress"`
-	StartedTime  int64   `json:"startedTime"`
-	FinishedTime int64   `json:"finishedTime"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	User            string  `json:"user"`
+	Queue           string  `json:"queue"`
+	Type            string  `json:"applicationType"`
+	State           string  `json:"state"`
+	FinalStatus     string  `json:"finalStatus"`
+	Progress        float64 `json:"progress"`
+	StartedTime     int64   `json:"startedTime"`
+	FinishedTime    int64   `json:"finishedTime"`
+	AMContainerLogs string  `json:"amContainerLogs,omitempty"`
 }
 
 type HadoopApplicationPage struct {
@@ -122,6 +141,10 @@ type HadoopContainer struct {
 	State           string `json:"state"`
 	LogURL          string `json:"logUrl"`
 	Priority        string `json:"priority,omitempty"`
+	IsAM            bool   `json:"isAM"`
+	AllocatedMB     int64  `json:"allocatedMB,omitempty"`
+	AllocatedVCores int64  `json:"allocatedVCores,omitempty"`
+	AttemptID       string `json:"attemptId,omitempty"`
 }
 
 type CollectionRule struct {

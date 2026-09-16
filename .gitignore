@@ -8,6 +8,7 @@ backend/bin
 backend/*.exe
 backend/*.log
 bin/
+agent/bin/
 
 # Local caches and package stores
 .cache/

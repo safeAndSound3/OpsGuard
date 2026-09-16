@@ -53,6 +53,14 @@ func encryptCredential(plain string) (string, error) {
 	return encryptedCredentialPrefix + base64.StdEncoding.EncodeToString(append(nonce, ciphertext...)), nil
 }
 
+func generateAgentToken() (string, error) {
+	value := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, value); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
 func decryptCredential(value string) (string, error) {
 	if value == "" {
 		return "", nil

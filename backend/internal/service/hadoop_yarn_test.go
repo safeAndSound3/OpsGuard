@@ -3,6 +3,8 @@ package service
 import (
 	"monitor-platform/internal/model"
 	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +56,66 @@ func TestHadoopContainerLogFileURLs(t *testing.T) {
 	}
 	if hadoopContainerLogFileName(got[1]) != "AppMaster.stdout" {
 		t.Fatalf("log file name = %q", hadoopContainerLogFileName(got[1]))
+	}
+}
+
+func TestHadoopContainerLogFileURLsKeepsEveryFile(t *testing.T) {
+	page, err := url.Parse("http://127.0.0.1:8042/node/containerlogs/container_1/root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body strings.Builder
+	for i := 0; i < 32; i++ {
+		body.WriteString(`<a href="/node/containerlogs/container_1/root/log-`)
+		body.WriteString(strconv.Itoa(i))
+		body.WriteString(`">log</a>`)
+	}
+	if got := hadoopContainerLogFileURLs(page, body.String()); len(got) != 32 {
+		t.Fatalf("hadoopContainerLogFileURLs() returned %d URLs, want 32", len(got))
+	}
+}
+
+func TestReadableHadoopLogKeepsJobHistoryFileSections(t *testing.T) {
+	body := []byte(`<html><pre>LogType:stdout
+Log Contents:
+worker output</pre><pre>LogType:stderr
+Log Contents:
+worker error</pre></html>`)
+	got := readableHadoopLog(body)
+	for _, heading := range []string{"===== stdout =====", "===== stderr ====="} {
+		if !strings.Contains(got, heading) {
+			t.Fatalf("readableHadoopLog() missing %q: %s", heading, got)
+		}
+	}
+}
+
+func TestMergeHadoopContainersRetainsWorkersAfterTerminalResponse(t *testing.T) {
+	liveAM := model.HadoopContainer{ID: "container_01_0001_01_000001", State: "COMPLETED", LogURL: "http://live/am"}
+	savedWorkerOne := model.HadoopContainer{ID: "container_01_0001_01_000002", State: "COMPLETE", LogURL: "http://history/worker-1"}
+	savedWorkerTwo := model.HadoopContainer{ID: "container_01_0001_01_000003", State: "COMPLETE", LogURL: "http://history/worker-2"}
+	// The RM response for an ended application has only the AM. Its current
+	// URL wins, while both historical worker containers remain selectable.
+	got := mergeHadoopContainers([]model.HadoopContainer{liveAM}, []model.HadoopContainer{
+		{ID: liveAM.ID, State: "RUNNING", LogURL: "http://stale/am"}, savedWorkerOne, savedWorkerTwo,
+	})
+	if len(got) != 3 {
+		t.Fatalf("mergeHadoopContainers() returned %d containers, want 3: %#v", len(got), got)
+	}
+	if got[0].LogURL != liveAM.LogURL {
+		t.Fatalf("live AM URL should take precedence, got %q", got[0].LogURL)
+	}
+	if got[1].ID != savedWorkerOne.ID || got[2].ID != savedWorkerTwo.ID {
+		t.Fatalf("worker containers were not retained: %#v", got)
+	}
+}
+
+func TestHadoopContainerLogURLForID(t *testing.T) {
+	amURL := "http://node:8042/node/containerlogs/container_1_0002_01_000001/root?start=0"
+	if got, want := hadoopContainerLogURLForID(amURL, "container_1_0002_01_000004"), "http://node:8042/node/containerlogs/container_1_0002_01_000004/root?start=0"; got != want {
+		t.Fatalf("hadoopContainerLogURLForID() = %q, want %q", got, want)
+	}
+	ids := hadoopContainerID.FindAllString("containerId=container_1_0002_01_000002 containerId=container_1_0002_01_000003", -1)
+	if len(ids) != 2 || ids[1] != "container_1_0002_01_000003" {
+		t.Fatalf("container ID parsing = %#v", ids)
 	}
 }

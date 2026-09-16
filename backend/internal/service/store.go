@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -156,6 +157,12 @@ func InitDataSourceStore() error {
 	if err := initSessionStore(appDB); err != nil {
 		return err
 	}
+	if err := initMySQLWorkspaceStore(appDB); err != nil {
+		return err
+	}
+	if err := initMySQLAsyncJobStore(appDB); err != nil {
+		return err
+	}
 	mu.Lock()
 	db = appDB
 	mu.Unlock()
@@ -163,6 +170,7 @@ func InitDataSourceStore() error {
 	startMySQLMetricCollector()
 	startSSHMetricCollector()
 	startMiddlewareMetricCollector()
+	startDataRetentionJob()
 	startCollectionRuleEvaluator()
 	startPrometheusAlertSynchronizer()
 	return nil
@@ -255,8 +263,14 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	if ds.Name == "" || ds.Type == "" || ds.Host == "" || (ds.Port == "" && !strings.EqualFold(ds.Type, "hadoop") && !strings.EqualFold(ds.Type, "ambari")) {
 		return model.DataSource{}, errors.New("name, type, host and port are required")
 	}
-	if !isSupportedDataSourceType(ds.Type) {
-		return model.DataSource{}, errors.New("目前仅支持 Prometheus、MySQL、SSH 和 Hadoop 数据源")
+	generatedAgentToken := false
+	if isAgentSSH(ds) && strings.TrimSpace(ds.Password) == "" {
+		var err error
+		ds.Password, err = generateAgentToken()
+		if err != nil {
+			return model.DataSource{}, fmt.Errorf("generate Agent token: %w", err)
+		}
+		generatedAgentToken = true
 	}
 	optionsJSON, err := json.Marshal(ds.Options)
 	if err != nil {
@@ -289,7 +303,9 @@ func AddDataSource(ds model.DataSource) (model.DataSource, error) {
 	if !connectionOK {
 		upsertDataSourceHealthNotification(current, ds, connectionMessage)
 	}
-	ds.Password = ""
+	if !generatedAgentToken {
+		ds.Password = ""
+	}
 	return ds, nil
 }
 
@@ -333,9 +349,6 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 	optionsJSON, err := json.Marshal(ds.Options)
 	if err != nil {
 		return model.DataSource{}, err
-	}
-	if !isSupportedDataSourceType(ds.Type) {
-		return model.DataSource{}, errors.New("目前仅支持 Prometheus、MySQL、SSH 和 Hadoop 数据源")
 	}
 	connectionOK, connectionMessage := TestDataSourceConnection(ds)
 	if connectionOK {
@@ -522,6 +535,14 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 			return false, err.Error()
 		}
 		return true, "MySQL 连接测试成功"
+	case isAgentSSH(ds):
+		if strings.TrimSpace(ds.Password) == "" {
+			return false, "Agent 令牌不能为空"
+		}
+		if err := TestAgentDataSource(ds); err != nil {
+			return false, fmt.Sprintf("SSH Agent 连接失败：%s", err)
+		}
+		return true, "SSH Agent 连接测试成功"
 	case strings.EqualFold(ds.Type, "ssh"):
 		if strings.TrimSpace(ds.Username) == "" {
 			return false, "SSH 用户名不能为空"
@@ -560,13 +581,84 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 			return false, err.Error()
 		}
 		return true, "Kafka Broker 网络检测成功"
+	case strings.EqualFold(ds.Type, "consul"):
+		if err := TestConsulDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "Consul 服务状态、Leader 与 Agent 信息检测成功"
 	default:
-		return false, "目前仅支持 Prometheus、MySQL、SSH、Hadoop 和 Ambari 数据源"
+		if err := TestGenericDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "网络端口连接成功"
 	}
 }
 
-func isSupportedDataSourceType(sourceType string) bool {
-	return strings.EqualFold(sourceType, "prometheus") || strings.EqualFold(sourceType, "mysql") || strings.EqualFold(sourceType, "ssh") || strings.EqualFold(sourceType, "hadoop") || strings.EqualFold(sourceType, "ambari") || strings.EqualFold(sourceType, "redis") || strings.EqualFold(sourceType, "clickhouse") || strings.EqualFold(sourceType, "kafka")
+// TestGenericDataSource keeps custom data-source testing useful without a type
+// allowlist: unsupported protocol-specific types receive a basic TCP reachability check.
+func TestGenericDataSource(ds model.DataSource) error {
+	host := strings.TrimSpace(ds.Host)
+	if strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://") {
+		parsed, err := url.Parse(host)
+		if err != nil {
+			return fmt.Errorf("地址格式错误：%w", err)
+		}
+		host = parsed.Hostname()
+		if ds.Port == "" {
+			ds.Port = parsed.Port()
+		}
+	}
+	address := net.JoinHostPort(host, strings.TrimSpace(ds.Port))
+	connection, err := safeDialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("网络端口连接失败：%w", err)
+	}
+	return connection.Close()
+}
+
+func TestConsulDataSource(ds model.DataSource) error {
+	base := strings.TrimRight(strings.TrimSpace(ds.Host), "/")
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "http://" + base
+	}
+	if port := strings.TrimSpace(ds.Port); port != "" {
+		parsed, err := url.Parse(base)
+		if err != nil {
+			return fmt.Errorf("Consul 地址格式错误：%w", err)
+		}
+		if parsed.Port() == "" {
+			parsed.Host = net.JoinHostPort(parsed.Hostname(), port)
+			base = strings.TrimRight(parsed.String(), "/")
+		}
+	}
+	client := safeHTTPClient(5 * time.Second)
+	for _, endpoint := range []struct {
+		path string
+		name string
+	}{
+		{path: "/v1/status/leader", name: "Leader 状态"},
+		{path: "/v1/agent/self", name: "Agent 信息"},
+	} {
+		req, err := http.NewRequest(http.MethodGet, base+endpoint.path, nil)
+		if err != nil {
+			return fmt.Errorf("创建 Consul %s请求失败：%w", endpoint.name, err)
+		}
+		// Consul 原生 ACL 使用 Token；如经由反向代理启用基础认证，则同时支持账号密码。
+		if username := strings.TrimSpace(ds.Username); username != "" {
+			req.SetBasicAuth(username, ds.Password)
+		} else if token := strings.TrimSpace(ds.Password); token != "" {
+			req.Header.Set("X-Consul-Token", token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("Consul %s检测失败：%w", endpoint.name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return fmt.Errorf("Consul %s检测失败：HTTP %d", endpoint.name, resp.StatusCode)
+		}
+	}
+	return nil
 }
 
 func FillDataSourcePassword(ds *model.DataSource) error {
@@ -650,7 +742,7 @@ func checkAllDataSourceConnections() {
 			status = "健康"
 		}
 		_, _ = current.Exec(`UPDATE data_sources SET status = ?, last_test = ? WHERE id = ?`, status, time.Now().Format("2006-01-02 15:04"), ds.ID)
-		if !ok && (previousStatus != status || !hasActiveDataSourceHealthNotification(current, ds.ID)) {
+		if !ok {
 			upsertDataSourceHealthNotification(current, ds, message)
 		} else if ok && previousStatus != status {
 			resolveDataSourceHealthNotification(current, ds)
@@ -764,7 +856,7 @@ func DeleteCollectionRule(id string) error {
 	if affected == 0 {
 		return errors.New("collection rule not found")
 	}
-	return nil
+	return resolveStoppedCollectionRuleNotifications(current, id, "规则已删除，平台已停止检测")
 }
 
 func ListAlertNotifications(status string, unread string, start string, end string, limit int) []model.AlertNotification {
@@ -953,6 +1045,9 @@ func initCollectionRuleStore(appDB *sql.DB) error {
 	if err := backfillResolvedAlertHistory(appDB); err != nil {
 		return err
 	}
+	if err := resolveOrphanedCollectionRuleNotifications(appDB); err != nil {
+		return err
+	}
 	return deduplicateActiveAlertNotifications(appDB)
 }
 
@@ -1073,23 +1168,6 @@ func migrateAlertNotificationTimes(appDB *sql.DB) error {
 		return err
 	}
 	return nil
-}
-
-func clearCollectionRules(appDB *sql.DB) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, _ = appDB.ExecContext(ctx, `DELETE FROM collection_rules`)
-	_, _ = appDB.ExecContext(ctx, `DELETE FROM alert_notifications`)
-}
-
-func ensureDefaultPrometheusDataSource(appDB *sql.DB) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, _ = appDB.ExecContext(ctx, `INSERT INTO data_sources
-		(id, name, type, host, port, username, password, database_name, remark, options_json, enabled, status, last_test)
-		VALUES ('prometheus-local', '本机 Prometheus', 'Prometheus', '127.0.0.1', '9090', '', '', '', 'docker-compose 部署的 Prometheus', '{}', 1, '健康', ?)
-		ON DUPLICATE KEY UPDATE type = VALUES(type), host = VALUES(host), port = VALUES(port), remark = VALUES(remark), enabled = 1`,
-		time.Now().Format("2006-01-02 15:04"))
 }
 
 func startCollectionRuleEvaluator() {
@@ -1417,6 +1495,79 @@ func resolveAlertNotification(appDB *sql.DB, ruleID string) {
 	}
 }
 
+// Deleting a collection rule must end its active incident immediately. Keep
+// the alert as audit history and emit a recovery that explains why evaluation
+// stopped rather than leaving a stale active notification behind.
+func resolveStoppedCollectionRuleNotifications(appDB *sql.DB, ruleID, reason string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := appDB.QueryContext(ctx, `SELECT id, rule_name, source, database_name, table_name, field_name, severity, first_seen_at
+		FROM alert_notifications WHERE rule_id = ? AND status = 'active'`, ruleID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type activeNotification struct {
+		id, ruleName, source, databaseName, tableName, fieldName, severity string
+		firstSeenAt                                                        time.Time
+	}
+	items := make([]activeNotification, 0)
+	for rows.Next() {
+		var item activeNotification
+		if err := rows.Scan(&item.id, &item.ruleName, &item.source, &item.databaseName, &item.tableName, &item.fieldName, &item.severity, &item.firstSeenAt); err == nil {
+			items = append(items, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	now := time.Now()
+	for index, item := range items {
+		if _, err := appDB.ExecContext(ctx, `UPDATE alert_notifications SET status = 'alert', unread = 0, last_seen_at = ? WHERE id = ?`, now, item.id); err != nil {
+			return err
+		}
+		if _, err := appDB.ExecContext(ctx, `INSERT INTO alert_notifications
+			(id, rule_id, rule_name, source, database_name, table_name, field_name, severity, status, message, unread, first_seen_at, last_seen_at, resolved_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'resolved', ?, 1, ?, ?, ?)`,
+			fmt.Sprintf("rule-stop-%d-%d", now.UnixNano(), index), ruleID, item.ruleName, item.source, item.databaseName, item.tableName, item.fieldName, item.severity,
+			reason, item.firstSeenAt, now, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Repair stale alerts from releases that deleted collection_rules without
+// closing the corresponding notification record.
+func resolveOrphanedCollectionRuleNotifications(appDB *sql.DB) error {
+	rows, err := appDB.Query(`SELECT DISTINCT n.rule_id
+		FROM alert_notifications n
+		WHERE n.status = 'active'
+			AND n.database_name <> 'prometheus'
+			AND n.rule_id NOT LIKE 'datasource:%'
+			AND NOT EXISTS (SELECT 1 FROM collection_rules r WHERE r.id = n.rule_id)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := resolveStoppedCollectionRuleNotifications(appDB, id, "规则已删除，平台已停止检测"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func dataSourceHealthNotificationID(sourceID string) string {
 	return "datasource-health-" + sourceID
 }
@@ -1566,8 +1717,8 @@ func getRuleSSHDatasources(source string) ([]model.DataSource, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !strings.EqualFold(ds.Type, "ssh") {
-			return nil, errors.New("数据源类型不是 SSH")
+		if !strings.EqualFold(ds.Type, "ssh") && !strings.EqualFold(ds.Type, "agent") {
+			return nil, errors.New("数据源类型不是 SSH 或 SSH - Agent")
 		}
 		items = append(items, ds)
 	}
@@ -1592,11 +1743,37 @@ func evaluateFileMonitorRule(rule model.CollectionRule) (string, bool, string) {
 	details := "目录：" + rule.Table + "\n文件名正则：" + rule.Field + "\n"
 	missing := make([]string, 0)
 	for _, ds := range sources {
-		output, commandErr := executeSSHCommand(ds, command)
+		output := ""
+		agentDiagnostic := ""
+		var commandErr error
+		if isAgentSSH(ds) {
+			result, err := runAgentFileCheck(ds, rule.Table, rule.Field)
+			output, commandErr = result.Details, err
+			if err == nil && !result.Passed {
+				agentDiagnostic = strings.TrimSpace(result.Summary)
+				if detail := strings.TrimSpace(result.Details); detail != "" {
+					if agentDiagnostic != "" {
+						agentDiagnostic += "："
+					}
+					agentDiagnostic += detail
+				}
+			}
+		} else {
+			var exitCode int
+			output, exitCode, commandErr = executeSSHCommandWithExitStatus(ds, command)
+			if commandErr == nil && exitCode != 0 {
+				agentDiagnostic = output
+			}
+		}
 		details += "\n[" + ds.Name + "]\n"
 		if commandErr != nil {
 			details += "执行失败：" + commandErr.Error() + "\n"
 			return fmt.Sprintf("执行失败 %s：%s 文件检测失败：%s", checkedAt, ds.Name, commandErr.Error()), false, details
+		}
+		if agentDiagnostic != "" {
+			details += "- " + fileCheckDiagnostic(rule.Table, agentDiagnostic) + "\n"
+			missing = append(missing, ds.Name)
+			continue
 		}
 		matches := make([]string, 0)
 		for _, fileName := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
@@ -1624,6 +1801,23 @@ func evaluateFileMonitorRule(rule model.CollectionRule) (string, bool, string) {
 	return fmt.Sprintf("告警 %s：%s 当天未生成匹配文件（目录：%s）", checkedAt, strings.Join(missing, "、"), rule.Table), false, details
 }
 
+// File checks can run through SSH's find command or the Agent's directory
+// reader. Present the same business result regardless of the transport.
+func fileCheckDiagnostic(path, raw string) string {
+	value := strings.TrimSpace(raw)
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "no such file or directory") || strings.Contains(lower, "not exist") {
+		return "目录不存在：" + path
+	}
+	if strings.Contains(lower, "matched 0 files") {
+		return "未发现匹配文件"
+	}
+	if value == "" {
+		return "未发现匹配文件"
+	}
+	return "文件检测失败：" + value
+}
+
 func evaluateScriptMonitorRule(rule model.CollectionRule) (string, bool, string) {
 	now := time.Now()
 	checkedAt := now.Format("15:04")
@@ -1641,7 +1835,13 @@ func evaluateScriptMonitorRule(rule model.CollectionRule) (string, bool, string)
 	for _, ds := range sources {
 		command := scriptMonitorCommand(rule.Table, rule.Field)
 		output, exitCode, commandErr := executeSSHCommandWithExitStatus(ds, command)
-		actualDirectory, output := scriptMonitorOutputDirectory(output, configuredDirectory)
+		actualDirectory := configuredDirectory
+		if isAgentSSH(ds) {
+			result, err := runAgentScriptCheck(ds, rule.Table, rule.Field)
+			output, exitCode, commandErr = result.Details, result.ExitCode, err
+		} else {
+			actualDirectory, output = scriptMonitorOutputDirectory(output, configuredDirectory)
+		}
 		details += "\n========== " + ds.Name + " ==========\n"
 		details += "执行目录：" + actualDirectory + "\n执行命令：\n" + rule.Table + "\n退出码："
 		if commandErr != nil {
@@ -1852,7 +2052,7 @@ func validateCollectionRule(rule model.CollectionRule) error {
 	}
 	if isFileMonitorRule(rule) {
 		if rule.Source == "" || rule.Table == "" || rule.Field == "" {
-			return errors.New("文件检测规则必须选择 SSH 数据源、路径和文件名正则")
+			return errors.New("文件检测规则必须选择 SSH 或 SSH - Agent 数据源、路径和文件名正则")
 		}
 		if !strings.HasPrefix(rule.Table, "/") || strings.ContainsAny(rule.Table, "\r\n\x00") {
 			return errors.New("文件检测路径必须是有效的 Linux 绝对路径")
@@ -1867,7 +2067,7 @@ func validateCollectionRule(rule model.CollectionRule) error {
 	}
 	if isScriptMonitorRule(rule) {
 		if len(collectionRuleSourceIDs(rule.Source)) == 0 {
-			return errors.New("脚本检测至少选择一个 SSH 数据源")
+			return errors.New("脚本检测至少选择一个 SSH 或 SSH - Agent 数据源")
 		}
 		if strings.TrimSpace(rule.Table) == "" || len(rule.Table) > 8000 || strings.Contains(rule.Table, "\x00") {
 			return errors.New("检测脚本不能为空，且长度不能超过 8000 个字符")
@@ -1977,8 +2177,8 @@ func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
 		if !ds.Enabled {
 			return errors.New("该数据源已停止，请先启用数据源后再启用告警规则")
 		}
-		if (isFileMonitorRule(rule) || isScriptMonitorRule(rule)) && !strings.EqualFold(ds.Type, "ssh") {
-			return errors.New("SSH 检测规则仅支持 SSH 数据源")
+		if (isFileMonitorRule(rule) || isScriptMonitorRule(rule)) && !strings.EqualFold(ds.Type, "ssh") && !strings.EqualFold(ds.Type, "agent") {
+			return errors.New("主机检测规则仅支持 SSH 或 SSH - Agent 数据源")
 		}
 		if isDataMonitorRule(rule) && !strings.EqualFold(ds.Type, "mysql") {
 			return errors.New("数据监控规则仅支持 MySQL 数据源")

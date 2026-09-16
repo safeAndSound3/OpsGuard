@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -111,9 +112,18 @@ func collectMySQLDataSourceMetrics(ds model.DataSource) ([]mysqlPromMetric, erro
 }
 
 func openMySQLDataSource(ds model.DataSource) (*sql.DB, error) {
+	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" {
+		if err := FillDataSourcePassword(&ds); err != nil {
+			return nil, err
+		}
+	}
+
 	user := strings.TrimSpace(ds.Username)
 	if user == "" {
-		user = "root"
+		return nil, errors.New("MySQL 用户名不能为空")
+	}
+	if err := validateOutboundAddress(strings.TrimSpace(ds.Host)); err != nil {
+		return nil, err
 	}
 	port := strings.TrimSpace(ds.Port)
 	if port == "" {
@@ -124,7 +134,7 @@ func openMySQLDataSource(ds model.DataSource) (*sql.DB, error) {
 	if database != "" {
 		path += database
 	}
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)%s?parseTime=true&timeout=5s&readTimeout=8s&writeTimeout=8s&loc=Local%s", user, ds.Password, strings.TrimSpace(ds.Host), port, path, mysqlSessionTimeZone)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)%s?parseTime=true&timeout=5s&readTimeout=35s&writeTimeout=35s&loc=Local%s", user, ds.Password, strings.TrimSpace(ds.Host), port, path, mysqlSessionTimeZone)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, err

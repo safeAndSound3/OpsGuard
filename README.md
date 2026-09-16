@@ -6,8 +6,8 @@ OpsGuard 是一个面向运维巡检和告警处置的本地部署平台。它�
 
 ## 能力
 
-- 数据源：Prometheus、MySQL、SSH、Hadoop / YARN。
-- 告警：Prometheus 规则同步，以及 MySQL 数据监测、端口检测、文件检测、SSH 脚本检测等自定义规则。
+- 数据源：Prometheus、MySQL、SSH、SSH - Agent、Hadoop / YARN。
+- 告警：Prometheus 规则同步，以及 MySQL 数据监测、端口检测、主机文件与脚本检测等自定义规则。
 - 通知：活跃、告警和恢复事件分离展示；支持未读、全部已读、持续时间与隐秘告警。
 - Hadoop：运行任务从 ResourceManager 获取；已完成的 MapReduce 任务可由 JobHistory 补充；支持后端筛选、分页、容器日志和任务详情跳转。
 - 大屏：MySQL 与 SSH 已采集指标概览，MySQL 慢查询与高耗时 SQL 明细。
@@ -25,7 +25,8 @@ Browser
           ├─ MySQL: 平台配置、通知、采样数据
           ├─ Prometheus: 指标、规则、告警
           ├─ Hadoop: ResourceManager / NodeManager / JobHistory
-          └─ SSH: 节点指标与自定义检测脚本
+          ├─ SSH: 兼容已有节点指标与自定义检测脚本
+          └─ SSH - Agent: 平台拉取主机指标，并下发文件与脚本检测请求
 ```
 
 平台数据与被监控的数据源相互隔离。每个 Prometheus、Hadoop、SSH、MySQL 数据源都以其数据源 ID 作为查询边界。登录会话以 HttpOnly Cookie 传递，服务重启或多实例部署时会话保存在平台 MySQL 中；安全审计表记录登录成功、失败与限流事件。
@@ -37,6 +38,10 @@ Browser
 - MySQL 8+，用于保存 OpsGuard 自身数据
 
 外部 Prometheus、Hadoop、SSH 和 MySQL 均为可选接入项。生产数据源凭据不会写入浏览器代码。
+
+## Linux Agent
+
+生产监控可使用 `SSH - Agent` 代替平台保存 SSH 登录密码。Agent 在被监控 Linux 主机监听指定端口（默认 `4001`）；平台使用地址、端口和令牌拉取指标，并在执行规则时发送文件路径、正则、脚本和工作目录。Agent 配置采用易读的 `.conf` 格式，不保存固定检测目录或脚本白名单。部署步骤见 [agent/README.md](agent/README.md)。
 
 ## 配置
 
