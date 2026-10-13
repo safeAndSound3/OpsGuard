@@ -59,7 +59,7 @@ func exportMySQLDataContext(ctx context.Context, sourceID string, options MySQLT
 	options.Table = strings.TrimSpace(options.Table)
 	options.Scope = strings.TrimSpace(options.Scope)
 	options.Format = strings.ToLower(strings.TrimSpace(options.Format))
-	if !validSQLIdentifier(options.Database) {
+	if options.Database == "" {
 		return nil, "", errors.New("请选择有效的数据库")
 	}
 	if options.Scope != "structure" && options.Scope != "schema" && options.Scope != "data" {
@@ -76,9 +76,6 @@ func exportMySQLDataContext(ctx context.Context, sourceID string, options MySQLT
 			return nil, "", errors.New("未选择表时仅支持导出 SQL")
 		}
 		return exportMySQLDatabaseSQL(ctx, sourceID, options)
-	}
-	if !validSQLIdentifier(options.Table) {
-		return nil, "", errors.New("请选择有效的数据表")
 	}
 	ds, err := GetDataSourceByID(sourceID)
 	if err != nil || !strings.EqualFold(ds.Type, "mysql") || !ds.Enabled {
@@ -117,6 +114,7 @@ func exportMySQLDataContext(ctx context.Context, sourceID string, options MySQLT
 		return content, base + ".json", nil
 	case "csv":
 		var buffer bytes.Buffer
+		buffer.WriteString("\xEF\xBB\xBF")
 		writer := csv.NewWriter(&buffer)
 		if err := writer.Write(doc.Columns); err != nil {
 			return nil, "", err
@@ -140,7 +138,7 @@ func exportMySQLDataContext(ctx context.Context, sourceID string, options MySQLT
 		if options.Scope == "schema" || options.Scope == "data" {
 			buffer.WriteString(createDatabase + ";\n\n")
 		}
-		buffer.WriteString(fmt.Sprintf("USE `%s`;\n\n", options.Database))
+		buffer.WriteString(fmt.Sprintf("USE %s;\n\n", mysqlQuoteIdentifier(options.Database)))
 		buffer.WriteString(createTable + ";\n")
 		if options.Scope == "data" {
 			for _, row := range doc.Rows {
@@ -164,7 +162,7 @@ func exportMySQLDatabaseSQL(ctx context.Context, sourceID string, options MySQLT
 		return nil, "", err
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx, "SHOW FULL TABLES FROM `"+options.Database+"` WHERE Table_type = 'BASE TABLE'")
+	rows, err := db.QueryContext(ctx, "SHOW FULL TABLES FROM "+mysqlQuoteIdentifier(options.Database)+" WHERE Table_type = 'BASE TABLE'")
 	if err != nil {
 		return nil, "", err
 	}
@@ -175,9 +173,7 @@ func exportMySQLDatabaseSQL(ctx context.Context, sourceID string, options MySQLT
 		if err := rows.Scan(&name, &kind); err != nil {
 			return nil, "", err
 		}
-		if validSQLIdentifier(name) {
-			tables = append(tables, name)
-		}
+		tables = append(tables, name)
 	}
 	var out strings.Builder
 	if options.Scope == "schema" || options.Scope == "data" {
@@ -347,16 +343,16 @@ func mysqlTransferStatementPreview(statement string) string {
 
 func mysqlShowCreate(ctx context.Context, db *sql.DB, kind, name string) (string, error) {
 	var ignored, statement string
-	err := db.QueryRowContext(ctx, "SHOW CREATE "+kind+" `"+name+"`").Scan(&ignored, &statement)
+	err := db.QueryRowContext(ctx, "SHOW CREATE "+kind+" "+mysqlQuoteIdentifier(name)).Scan(&ignored, &statement)
 	return statement, err
 }
 func mysqlShowCreateTable(ctx context.Context, db *sql.DB, database, table string) (string, error) {
 	var ignored, statement string
-	err := db.QueryRowContext(ctx, fmt.Sprintf("SHOW CREATE TABLE `%s`.`%s`", database, table)).Scan(&ignored, &statement)
+	err := db.QueryRowContext(ctx, fmt.Sprintf("SHOW CREATE TABLE %s.%s", mysqlQuoteIdentifier(database), mysqlQuoteIdentifier(table))).Scan(&ignored, &statement)
 	return statement, err
 }
 func mysqlTransferRows(ctx context.Context, db *sql.DB, database, table string) ([]string, [][]any, error) {
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, maxMySQLTransferRows))
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM %s.%s LIMIT %d", mysqlQuoteIdentifier(database), mysqlQuoteIdentifier(table), maxMySQLTransferRows))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -407,7 +403,7 @@ func mysqlTransferString(value any) string {
 	case []byte:
 		return string(typed)
 	case nil:
-		return ""
+		return "NULL"
 	default:
 		return fmt.Sprint(typed)
 	}

@@ -1,7 +1,6 @@
 package router
 
 import (
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,11 +20,7 @@ type loginLimiter struct {
 func newLoginLimiter() *loginLimiter { return &loginLimiter{attempts: make(map[string]loginAttempt)} }
 
 func (l *loginLimiter) key(r *http.Request, username string) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	return host + "|" + strings.ToLower(strings.TrimSpace(username))
+	return requestClientIP(r) + "|" + strings.ToLower(strings.TrimSpace(username))
 }
 
 func (l *loginLimiter) allowed(r *http.Request, username string) bool {

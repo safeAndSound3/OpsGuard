@@ -137,65 +137,9 @@ func GetConsulKVValue(sourceID, key string) (model.ConsulKVValue, error) {
 	return model.ConsulKVValue{Key: values[0].Key, Value: string(decoded), ModifyIndex: values[0].ModifyIndex}, nil
 }
 
-func validateConsulKVFormat(value, format string) error {
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "", "text":
-		return nil
-	case "json":
-		if !json.Valid([]byte(value)) {
-			return errors.New("JSON 格式校验失败")
-		}
-		return nil
-	case "yaml", "hcl":
-		// HCL/YAML are intentionally kept as text in Consul. The platform performs
-		// a conservative structural check without rewriting user formatting.
-		depth := 0
-		quote := rune(0)
-		escaped := false
-		for _, char := range value {
-			if quote != 0 {
-				if escaped {
-					escaped = false
-					continue
-				}
-				if char == '\\' {
-					escaped = true
-					continue
-				}
-				if char == quote {
-					quote = 0
-				}
-				continue
-			}
-			if char == '\'' || char == '"' {
-				quote = char
-				continue
-			}
-			if strings.ContainsRune("{[(", char) {
-				depth++
-			}
-			if strings.ContainsRune("}])", char) {
-				depth--
-			}
-			if depth < 0 {
-				return fmt.Errorf("%s 格式校验失败：括号不匹配", strings.ToUpper(format))
-			}
-		}
-		if quote != 0 || depth != 0 {
-			return fmt.Errorf("%s 格式校验失败：引号或括号未闭合", strings.ToUpper(format))
-		}
-		return nil
-	default:
-		return errors.New("不支持的 Consul KV 格式")
-	}
-}
-
 func PutConsulKVValue(sourceID, key, value, format string, modifyIndex uint64, createOnly bool) error {
 	if strings.TrimSpace(key) == "" {
 		return errors.New("KV 键不能为空")
-	}
-	if err := validateConsulKVFormat(value, format); err != nil {
-		return err
 	}
 	ds, base, err := consulSource(sourceID)
 	if err != nil {

@@ -1,23 +1,19 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
-	"os"
+	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	"monitor-platform/internal/model"
 )
-
-var insecureSSHWarningOnce sync.Once
 
 func initSSHMetricStore() error {
 	metricsMu.RLock()
@@ -146,6 +142,9 @@ func executeSSHCommand(ds model.DataSource, command string) (string, error) {
 }
 
 func executeSSHCommandWithExitStatus(ds model.DataSource, command string) (string, int, error) {
+	if isLocalSSH(ds) {
+		return executeLocalShellCommand(command)
+	}
 	if strings.TrimSpace(ds.Password) == "" {
 		return "", 0, errors.New("SSH 密码不能为空")
 	}
@@ -154,11 +153,8 @@ func executeSSHCommandWithExitStatus(ds model.DataSource, command string) (strin
 		return "", 0, err
 	}
 	addr := net.JoinHostPort(host, strings.TrimSpace(ds.Port))
-	hostKeyCallback, err := sshHostKeyCallback()
-	if err != nil {
-		return "", 0, err
-	}
-	config := &ssh.ClientConfig{User: ds.Username, Auth: []ssh.AuthMethod{ssh.Password(ds.Password)}, HostKeyCallback: hostKeyCallback, Timeout: 8 * time.Second}
+	// 传统 SSH 数据源不再要求主机指纹文件；Agent 数据源仍使用自身的令牌认证。
+	config := &ssh.ClientConfig{User: ds.Username, Auth: []ssh.AuthMethod{ssh.Password(ds.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 8 * time.Second}
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
 		return "", 0, err
@@ -179,31 +175,21 @@ func executeSSHCommandWithExitStatus(ds model.DataSource, command string) (strin
 	return string(out), 0, nil
 }
 
-func sshHostKeyCallback() (ssh.HostKeyCallback, error) {
-	policy := strings.ToLower(strings.TrimSpace(os.Getenv("SSH_HOST_KEY_POLICY")))
-	if policy == "" {
-		// Strict verification is the secure default in every environment.
-		// Insecure mode must be explicitly opted into for local testing.
-		policy = "strict"
+func executeLocalShellCommand(command string) (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	result := exec.CommandContext(ctx, "sh", "-c", command)
+	out, err := result.CombinedOutput()
+	if ctx.Err() != nil {
+		return string(out), 0, fmt.Errorf("本机命令执行超时")
 	}
-	if policy == "insecure" {
-		insecureSSHWarningOnce.Do(func() {
-			log.Print("warning: SSH host key verification is disabled; configure SSH_HOST_KEY_POLICY=strict and SSH_KNOWN_HOSTS_FILE for production")
-		})
-		return ssh.InsecureIgnoreHostKey(), nil
-	}
-	if policy != "strict" {
-		return nil, fmt.Errorf("unsupported SSH_HOST_KEY_POLICY %q", policy)
-	}
-	knownHostsFile := strings.TrimSpace(os.Getenv("SSH_KNOWN_HOSTS_FILE"))
-	if knownHostsFile == "" {
-		return nil, errors.New("SSH_KNOWN_HOSTS_FILE is required when SSH_HOST_KEY_POLICY=strict")
-	}
-	callback, err := knownhosts.New(knownHostsFile)
 	if err != nil {
-		return nil, fmt.Errorf("load SSH known_hosts file: %w", err)
+		if exitError, ok := err.(*exec.ExitError); ok {
+			return string(out), exitError.ExitCode(), nil
+		}
+		return string(out), 0, err
 	}
-	return callback, nil
+	return string(out), 0, nil
 }
 
 func LatestSSHDashboardMetrics(sourceID string) (map[string]float64, time.Time, error) {

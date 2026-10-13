@@ -18,11 +18,9 @@ var prometheusAlertSynchronizerOnce sync.Once
 func startPrometheusAlertSynchronizer() {
 	prometheusAlertSynchronizerOnce.Do(func() {
 		go func() {
-			syncPrometheusAlertNotifications()
-			ticker := time.NewTicker(15 * time.Second)
-			defer ticker.Stop()
-			for range ticker.C {
+			for {
 				syncPrometheusAlertNotifications()
+				time.Sleep(RefreshSettingsDuration("prometheus"))
 			}
 		}()
 	})

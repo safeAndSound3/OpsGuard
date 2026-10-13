@@ -47,6 +47,44 @@ func initNavigationStore(current *sql.DB) error {
 	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS consul_menu_items (source_id varchar(64) PRIMARY KEY, name varchar(120) NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
 		return err
 	}
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS hive_menu_items (source_id varchar(64) PRIMARY KEY, name varchar(120) NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		return err
+	}
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS postgresql_menu_items (source_id varchar(64) PRIMARY KEY, name varchar(120) NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		return err
+	}
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mysql_report_tasks (
+		id varchar(64) PRIMARY KEY,
+		name varchar(120) NOT NULL,
+		source_id varchar(64) NOT NULL,
+		sql_text mediumtext NOT NULL,
+		time_range text NOT NULL,
+		schedule varchar(120) NOT NULL DEFAULT '手动',
+		enabled tinyint(1) NOT NULL DEFAULT 1,
+		status varchar(24) NOT NULL DEFAULT '待执行',
+		last_run_at datetime NULL,
+		last_message varchar(255) NOT NULL DEFAULT '',
+		created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_mysql_report_source (source_id),
+		INDEX idx_mysql_report_updated (updated_at)
+	)`); err != nil {
+		return err
+	}
+	for _, column := range []struct{ name, want, definition string }{
+		{"sql_text", "mediumtext", "MEDIUMTEXT NOT NULL"},
+		{"time_range", "text", "TEXT NOT NULL"},
+	} {
+		var dataType string
+		if err := current.QueryRowContext(ctx, `SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mysql_report_tasks' AND COLUMN_NAME = ?`, column.name).Scan(&dataType); err != nil {
+			return err
+		}
+		if dataType != column.want {
+			if _, err := current.ExecContext(ctx, "ALTER TABLE mysql_report_tasks MODIFY COLUMN "+column.name+" "+column.definition); err != nil {
+				return err
+			}
+		}
+	}
 	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS hadoop_application_snapshots (
 		source_id varchar(64) NOT NULL,
 		application_id varchar(160) NOT NULL,
@@ -98,6 +136,94 @@ func initNavigationStore(current *sql.DB) error {
 		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 	)`)
 	return err
+}
+
+func ListPostgreSQLMenuItems() []model.PostgreSQLMenuItem {
+	current := currentStore()
+	if current == nil {
+		return []model.PostgreSQLMenuItem{}
+	}
+	rows, err := current.Query(`SELECT source_id, name FROM postgresql_menu_items ORDER BY created_at, source_id`)
+	if err != nil {
+		return []model.PostgreSQLMenuItem{}
+	}
+	defer rows.Close()
+	items := []model.PostgreSQLMenuItem{}
+	for rows.Next() {
+		var item model.PostgreSQLMenuItem
+		if rows.Scan(&item.SourceID, &item.Name) == nil {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func AddPostgreSQLMenuItem(sourceID, name string) (model.PostgreSQLMenuItem, error) {
+	sourceID, name = strings.TrimSpace(sourceID), strings.TrimSpace(name)
+	source, err := GetDataSourceByID(sourceID)
+	if err != nil || !(strings.EqualFold(source.Type, "postgresql") || strings.EqualFold(source.Type, "postgres")) {
+		return model.PostgreSQLMenuItem{}, errors.New("PostgreSQL data source not found")
+	}
+	if name == "" {
+		name = source.Name
+	}
+	if len(name) > 120 {
+		return model.PostgreSQLMenuItem{}, errors.New("PostgreSQL menu name must be at most 120 characters")
+	}
+	current := currentStore()
+	if current == nil {
+		return model.PostgreSQLMenuItem{}, errors.New("PostgreSQL menu store is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := current.ExecContext(ctx, `INSERT INTO postgresql_menu_items (source_id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)`, sourceID, name); err != nil {
+		return model.PostgreSQLMenuItem{}, err
+	}
+	return model.PostgreSQLMenuItem{SourceID: sourceID, Name: name}, nil
+}
+
+func ListHiveMenuItems() []model.HiveMenuItem {
+	current := currentStore()
+	if current == nil {
+		return []model.HiveMenuItem{}
+	}
+	rows, err := current.Query(`SELECT source_id, name FROM hive_menu_items ORDER BY created_at, source_id`)
+	if err != nil {
+		return []model.HiveMenuItem{}
+	}
+	defer rows.Close()
+	items := []model.HiveMenuItem{}
+	for rows.Next() {
+		var item model.HiveMenuItem
+		if rows.Scan(&item.SourceID, &item.Name) == nil {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func AddHiveMenuItem(sourceID, name string) (model.HiveMenuItem, error) {
+	sourceID, name = strings.TrimSpace(sourceID), strings.TrimSpace(name)
+	source, err := GetDataSourceByID(sourceID)
+	if err != nil || !strings.EqualFold(source.Type, "hive") {
+		return model.HiveMenuItem{}, errors.New("Hive 数据源不存在")
+	}
+	if name == "" {
+		name = source.Name
+	}
+	if len(name) > 120 {
+		return model.HiveMenuItem{}, errors.New("Hive 菜单名称不能超过 120 个字符")
+	}
+	current := currentStore()
+	if current == nil {
+		return model.HiveMenuItem{}, errors.New("Hive 菜单存储未初始化")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := current.ExecContext(ctx, `INSERT INTO hive_menu_items (source_id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)`, sourceID, name); err != nil {
+		return model.HiveMenuItem{}, err
+	}
+	return model.HiveMenuItem{SourceID: sourceID, Name: name}, nil
 }
 
 func ListPlatformLinks() []model.PlatformLink {
@@ -471,37 +597,52 @@ func refreshSettingDefinition(scope string) (string, model.RefreshSettings) {
 		return "dashboard_refresh_interval", model.RefreshSettings{Value: 1, Unit: "m"}
 	case "consul":
 		return "consul_kv_sync_interval", model.RefreshSettings{Value: 1, Unit: "m"}
+	case "mysql":
+		return "mysql_metric_sync_interval", model.RefreshSettings{Value: 30, Unit: "s"}
+	case "prometheus":
+		return "prometheus_alert_sync_interval", model.RefreshSettings{Value: 15, Unit: "s"}
 	default:
 		return "refresh_interval", model.RefreshSettings{Value: 15, Unit: "s"}
 	}
 }
 
+func readRefreshSetting(current *sql.DB, settingKey string) (model.RefreshSettings, bool) {
+	var raw string
+	if err := current.QueryRow(`SELECT setting_value FROM system_settings WHERE setting_key = ?`, settingKey).Scan(&raw); err != nil {
+		return model.RefreshSettings{}, false
+	}
+	parts := strings.Split(raw, ":")
+	if len(parts) != 2 {
+		return model.RefreshSettings{}, false
+	}
+	value, err := strconv.Atoi(parts[0])
+	unit := parts[1]
+	if err != nil || value < 1 || (unit != "s" && unit != "m" && unit != "h") {
+		return model.RefreshSettings{}, false
+	}
+	return model.RefreshSettings{Value: value, Unit: unit, Configured: true}, true
+}
+
 func GetRefreshSettings(scopes ...string) model.RefreshSettings {
 	scope := ""
 	if len(scopes) > 0 {
-		scope = scopes[0]
+		scope = strings.TrimSpace(scopes[0])
 	}
 	settingKey, settings := refreshSettingDefinition(scope)
 	current := currentStore()
 	if current == nil {
 		return settings
 	}
-	var raw string
-	if err := current.QueryRow(`SELECT setting_value FROM system_settings WHERE setting_key = ?`, settingKey).Scan(&raw); err != nil {
-		return settings
+	if saved, ok := readRefreshSetting(current, settingKey); ok {
+		return saved
 	}
-	parts := strings.Split(raw, ":")
-	if len(parts) != 2 {
-		return settings
+	// A module with no independent setting inherits the platform-wide frequency.
+	if scope != "" && scope != "general" {
+		if general, ok := readRefreshSetting(current, "refresh_interval"); ok {
+			general.Configured = false
+			return general
+		}
 	}
-	value, err := strconv.Atoi(parts[0])
-	unit := parts[1]
-	if err != nil || value < 1 || (unit != "s" && unit != "m" && unit != "h") {
-		return settings
-	}
-	settings.Value = value
-	settings.Unit = unit
-	settings.Configured = true
 	return settings
 }
 
@@ -529,6 +670,45 @@ func SaveRefreshSettings(settings model.RefreshSettings, scopes ...string) (mode
 	}
 	settings.Configured = true
 	return settings, nil
+}
+
+// DeleteRefreshSettings removes a module-specific override so it follows the
+// common refresh interval again. The common interval itself must always remain.
+func DeleteRefreshSettings(scopes ...string) error {
+	scope := ""
+	if len(scopes) > 0 {
+		scope = strings.TrimSpace(scopes[0])
+	}
+	if scope == "" || scope == "general" {
+		return errors.New("通用刷新频率不能删除")
+	}
+	settingKey, _ := refreshSettingDefinition(scope)
+	if settingKey == "refresh_interval" {
+		return errors.New("不支持的刷新频率类型")
+	}
+	current := currentStore()
+	if current == nil {
+		return errors.New("system settings store is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := current.ExecContext(ctx, `DELETE FROM system_settings WHERE setting_key = ?`, settingKey)
+	return err
+}
+
+func RefreshSettingsDuration(scope string) time.Duration {
+	setting := GetRefreshSettings(scope)
+	delay := time.Duration(setting.Value) * time.Minute
+	switch setting.Unit {
+	case "s":
+		delay = time.Duration(setting.Value) * time.Second
+	case "h":
+		delay = time.Duration(setting.Value) * time.Hour
+	}
+	if delay < time.Second {
+		return time.Second
+	}
+	return delay
 }
 
 func GetPlatformName() string {
@@ -649,5 +829,33 @@ func SaveMySQLQueryResultMaxBytes(limit int) error {
 		return errors.New("系统设置数据库未初始化")
 	}
 	_, err := current.Exec(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('mysql_query_result_max_bytes', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_at=CURRENT_TIMESTAMP`, strconv.Itoa(limit))
+	return err
+}
+
+func GetMySQLReportConcurrency() int {
+	current := currentStore()
+	if current == nil {
+		return 2
+	}
+	var value string
+	if err := current.QueryRow(`SELECT setting_value FROM system_settings WHERE setting_key='mysql_report_concurrency'`).Scan(&value); err != nil {
+		return 2
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 || n > 16 {
+		return 2
+	}
+	return n
+}
+
+func SaveMySQLReportConcurrency(value int) error {
+	if value < 1 || value > 16 {
+		return errors.New("报表任务并发数必须在 1 到 16 之间")
+	}
+	current := currentStore()
+	if current == nil {
+		return errors.New("系统设置数据库未初始化")
+	}
+	_, err := current.Exec(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('mysql_report_concurrency', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_at=CURRENT_TIMESTAMP`, strconv.Itoa(value))
 	return err
 }

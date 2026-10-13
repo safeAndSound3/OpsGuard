@@ -186,7 +186,8 @@ func runMySQLAsyncJob(job MySQLAsyncJob, request mysqlJobRequest) {
 					_ = writer.Write(values)
 				}
 				writer.Flush()
-				content, filename = buffer.Bytes(), "sql-query-result.csv"
+				content = append([]byte{0xEF, 0xBB, 0xBF}, buffer.Bytes()...)
+				filename = "sql-query-result.csv"
 			}
 		}
 	}

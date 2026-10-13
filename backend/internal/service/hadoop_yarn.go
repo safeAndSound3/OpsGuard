@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,11 +19,12 @@ import (
 )
 
 var (
-	hadoopLogPreBlocks = regexp.MustCompile(`(?is)<pre[^>]*>(.*?)</pre>`)
-	hadoopLogLinks     = regexp.MustCompile(`(?is)<a[^>]+href\s*=\s*["']([^"']+)["'][^>]*>`)
-	hadoopLogType      = regexp.MustCompile(`(?im)^\s*LogType\s*:\s*([^\r\n]+)\s*$`)
-	hadoopContainerID  = regexp.MustCompile(`\bcontainer_\d+_\d+_\d+_\d+\b`)
-	hadoopSnapshotJobs sync.Map
+	hadoopLogPreBlocks     = regexp.MustCompile(`(?is)<pre[^>]*>(.*?)</pre>`)
+	hadoopLogLinks         = regexp.MustCompile(`(?is)<a[^>]+href\s*=\s*["']([^"']+)["'][^>]*>`)
+	hadoopLogType          = regexp.MustCompile(`(?im)^\s*LogType\s*:\s*([^\r\n]+)\s*$`)
+	hadoopContainerID      = regexp.MustCompile(`\bcontainer_\d+_\d+_\d+_\d+\b`)
+	hadoopSnapshotJobs     sync.Map
+	hadoopSynchronizerOnce sync.Once
 )
 
 type HadoopApplicationQuery struct {
@@ -33,6 +35,24 @@ type HadoopApplicationQuery struct {
 	Type        string
 	State       string
 	FinalStatus string
+}
+
+// startHadoopApplicationSynchronizer keeps application and active-container
+// snapshots current even while nobody has the Hadoop page open. UI requests
+// still call ListHadoopApplications directly and therefore remain immediate.
+func startHadoopApplicationSynchronizer() {
+	hadoopSynchronizerOnce.Do(func() {
+		go func() {
+			for {
+				for _, source := range ListDataSources() {
+					if source.Enabled && strings.EqualFold(source.Type, "hadoop") {
+						_, _ = ListHadoopApplications(source.ID, HadoopApplicationQuery{Page: 1, PageSize: 20})
+					}
+				}
+				time.Sleep(RefreshSettingsDuration("hadoop"))
+			}
+		}()
+	})
 }
 
 func ListHadoopApplications(sourceID string, query HadoopApplicationQuery) (model.HadoopApplicationPage, error) {
@@ -305,8 +325,8 @@ func hadoopApplicationMatches(app model.HadoopApplication, query HadoopApplicati
 }
 
 func listHadoopHistoryApplications(ds model.DataSource) []model.HadoopApplication {
-	base := strings.TrimRight(strings.TrimSpace(ds.Options["jobHistoryUrl"]), "/")
-	if base == "" {
+	endpoints := hadoopEndpointURLs(ds.Options["jobHistoryUrl"])
+	if len(endpoints) == 0 {
 		return nil
 	}
 	var payload struct {
@@ -322,7 +342,15 @@ func listHadoopHistoryApplications(ds model.DataSource) []model.HadoopApplicatio
 			} `json:"job"`
 		} `json:"jobs"`
 	}
-	if err := hadoopGetJSON(base+"/ws/v1/history/mapreduce/jobs?limit=1000", &payload); err != nil {
+	var err error
+	for _, endpoint := range endpoints {
+		payload.Jobs.Job = nil
+		err = hadoopGetJSON(endpoint+"/ws/v1/history/mapreduce/jobs?limit=1000", &payload)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
 		return nil
 	}
 	items := make([]model.HadoopApplication, 0, len(payload.Jobs.Job))
@@ -556,12 +584,18 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 	if !hadoopLogURLBelongsToSource(ds, base, logURL) {
 		return "", errors.New("日志地址不属于当前 Hadoop 数据源")
 	}
-	requestURL := hadoopNodeManagerLogURL(ds, logURL)
+	requestURLs := hadoopNodeManagerLogURLs(ds, logURL)
 	client := safeHTTPClient(12 * time.Second)
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := hadoopLogGet(client, requestURL)
+	resp, requestURL, err := hadoopLogGetFromCandidates(client, requestURLs)
 	if err != nil {
-		return "", fmt.Errorf("日志服务不可用：%w", err)
+		// Completed containers may already have been removed from every
+		// NodeManager without returning the usual redirect. In that case use the
+		// standard JobHistory aggregated-log URL derived from the container URL.
+		resp, requestURL, err = hadoopLogGetFromCandidates(client, hadoopAggregatedLogURLs(ds, logURL))
+		if err != nil {
+			return "", fmt.Errorf("日志服务不可用：%w", err)
+		}
 	}
 	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
 		location, locationErr := resp.Location()
@@ -569,12 +603,8 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 		if locationErr != nil {
 			return "", locationErr
 		}
-		redirectURL := hadoopJobHistoryLogURL(ds, location)
-		if !hadoopLogURLBelongsToSource(ds, base, redirectURL) {
-			return "", errors.New("重定向日志地址不属于当前 Hadoop 数据源")
-		}
-		requestURL = redirectURL
-		resp, err = hadoopLogGet(client, redirectURL)
+		redirectURLs := hadoopJobHistoryLogURLs(ds, location)
+		resp, requestURL, err = hadoopLogGetFromCandidates(client, redirectURLs)
 		if err != nil {
 			return "", fmt.Errorf("JobHistory 日志服务不可用：%w", err)
 		}
@@ -588,6 +618,50 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 		return "", err
 	}
 	return readableHadoopLogFromDirectory(client, ds, base, requestURL, body)
+}
+
+func hadoopLogGetFromCandidates(client *http.Client, candidates []string) (*http.Response, string, error) {
+	var lastErr error
+	for _, candidate := range candidates {
+		resp, err := hadoopLogGet(client, candidate)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode >= http.StatusBadRequest {
+			lastErr = errors.New(resp.Status)
+			_ = resp.Body.Close()
+			continue
+		}
+		// A NodeManager that does not own the requested container returns a 200
+		// HTML page containing this message. It is not a usable log response;
+		// continue through the configured NodeManager allowlist instead.
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				lastErr = readErr
+				continue
+			}
+			if hadoopContainerLogUnavailable(body) {
+				lastErr = errors.New("该节点未保存此容器日志")
+				continue
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		return resp, candidate, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的 Hadoop 日志地址")
+	}
+	return nil, "", lastErr
+}
+
+func hadoopContainerLogUnavailable(body []byte) bool {
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "no logs available for container") ||
+		strings.Contains(text, "no logs available for the container") ||
+		strings.Contains(text, "container log not found")
 }
 
 // hadoopLogGet retries a transient connection reset once. Hadoop's embedded
@@ -615,13 +689,16 @@ func hadoopLogURLBelongsToSource(hadoop model.DataSource, base, logURL string) b
 	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
 		return false
 	}
-	// YARN can return a NodeManager's internal hostname. When this datasource
-	// has an explicit NodeManager endpoint, only preserve the container-log path
-	// and rewrite the request to that configured endpoint below.
-	if strings.TrimSpace(hadoop.Options["nodeManagerUrl"]) != "" && strings.HasPrefix(endpoint.Path, "/node/containerlogs/") {
+	// ResourceManager commonly returns an internal NodeManager hostname while
+	// operators configure externally reachable IPs or DNS names. Once explicit
+	// NodeManagers are configured, accept only the container-log path and route
+	// it through that allowlisted set below; never request the unknown host.
+	if strings.HasPrefix(endpoint.Path, "/node/containerlogs/") && len(hadoopEndpointURLs(hadoop.Options["nodeManagerUrl"])) > 0 {
 		return true
 	}
-	for _, configured := range []string{base, hadoop.Options["nodeManagerUrl"], hadoop.Options["jobHistoryUrl"]} {
+	// YARN can return a NodeManager's internal hostname. When this datasource
+	// has no configured NodeManager endpoint, retain the stricter origin check.
+	for _, configured := range append([]string{base}, append(hadoopEndpointURLs(hadoop.Options["nodeManagerUrl"]), hadoopEndpointURLs(hadoop.Options["jobHistoryUrl"])...)...) {
 		origin, parseErr := url.Parse(strings.TrimSpace(configured))
 		if parseErr == nil && strings.EqualFold(endpoint.Scheme, origin.Scheme) && strings.EqualFold(endpoint.Host, origin.Host) {
 			return true
@@ -675,7 +752,7 @@ func readableHadoopLogFromDirectory(client *http.Client, hadoop model.DataSource
 		if !hadoopLogURLBelongsToSource(hadoop, base, fileURL) {
 			continue
 		}
-		resp, getErr := hadoopLogGet(client, hadoopNodeManagerLogURL(hadoop, fileURL))
+		resp, _, getErr := hadoopLogGetFromCandidates(client, hadoopNodeManagerLogURLs(hadoop, fileURL))
 		if getErr != nil {
 			continue
 		}
@@ -746,38 +823,98 @@ func hadoopContainerLogFileName(logURL string) string {
 	return path[strings.LastIndex(path, "/")+1:]
 }
 
-func hadoopNodeManagerLogURL(hadoop model.DataSource, logURL string) string {
-	configured := strings.TrimRight(strings.TrimSpace(hadoop.Options["nodeManagerUrl"]), "/")
-	if configured == "" {
-		return logURL
-	}
+func hadoopNodeManagerLogURLs(hadoop model.DataSource, logURL string) []string {
 	logEndpoint, err := url.Parse(logURL)
 	if err != nil || !strings.HasPrefix(logEndpoint.Path, "/node/containerlogs/") {
-		return logURL
+		return []string{logURL}
 	}
-	resolved := configured + logEndpoint.EscapedPath()
-	if logEndpoint.RawQuery != "" {
-		resolved += "?" + logEndpoint.RawQuery
+	configuredEndpoints := hadoopEndpointURLs(hadoop.Options["nodeManagerUrl"])
+	if len(configuredEndpoints) == 0 {
+		return []string{logURL}
 	}
-	return resolved
+	items := make([]string, 0, len(configuredEndpoints))
+	seen := make(map[string]struct{}, len(configuredEndpoints)+1)
+	// Preserve an address only when it is explicitly configured. An internal
+	// hostname from ResourceManager is replaced by configured reachable nodes.
+	for _, configured := range configuredEndpoints {
+		origin, parseErr := url.Parse(configured)
+		if parseErr == nil && strings.EqualFold(logEndpoint.Scheme, origin.Scheme) && strings.EqualFold(logEndpoint.Host, origin.Host) {
+			items = append(items, logURL)
+			seen[logURL] = struct{}{}
+			break
+		}
+	}
+	for _, configured := range configuredEndpoints {
+		resolved := configured + logEndpoint.EscapedPath()
+		if logEndpoint.RawQuery != "" {
+			resolved += "?" + logEndpoint.RawQuery
+		}
+		if _, exists := seen[resolved]; !exists {
+			seen[resolved] = struct{}{}
+			items = append(items, resolved)
+		}
+	}
+	return items
 }
 
-func hadoopJobHistoryLogURL(hadoop model.DataSource, target *url.URL) string {
-	configured := strings.TrimSpace(hadoop.Options["jobHistoryUrl"])
-	if configured == "" || target == nil {
-		if target == nil {
-			return ""
+func hadoopJobHistoryLogURLs(hadoop model.DataSource, target *url.URL) []string {
+	if target == nil {
+		return nil
+	}
+	configuredEndpoints := hadoopEndpointURLs(hadoop.Options["jobHistoryUrl"])
+	if len(configuredEndpoints) == 0 {
+		return []string{target.String()}
+	}
+	items := make([]string, 0, len(configuredEndpoints))
+	seen := make(map[string]struct{}, len(configuredEndpoints))
+	for _, configured := range configuredEndpoints {
+		base, err := url.Parse(configured)
+		if err != nil || base.Scheme == "" || base.Host == "" {
+			continue
 		}
-		return target.String()
+		base.Path = target.Path
+		base.RawPath = target.RawPath
+		base.RawQuery = target.RawQuery
+		resolved := base.String()
+		if _, exists := seen[resolved]; !exists {
+			seen[resolved] = struct{}{}
+			items = append(items, resolved)
+		}
 	}
-	base, err := url.Parse(configured)
-	if err != nil || base.Scheme == "" || base.Host == "" {
-		return target.String()
+	return items
+}
+
+// hadoopAggregatedLogURLs builds JobHistory aggregate-log paths when a
+// completed container is no longer retained by its NodeManager. The regular
+// redirect is still preferred; this is a fallback for clusters that return a
+// 200 "No logs available" page instead of redirecting.
+func hadoopAggregatedLogURLs(hadoop model.DataSource, logURL string) []string {
+	endpoint, err := url.Parse(logURL)
+	if err != nil || endpoint.Host == "" {
+		return nil
 	}
-	base.Path = target.Path
-	base.RawPath = target.RawPath
-	base.RawQuery = target.RawQuery
-	return base.String()
+	parts := strings.Split(strings.Trim(endpoint.Path, "/"), "/")
+	containerIndex := -1
+	for index, value := range parts {
+		if strings.HasPrefix(value, "container_") {
+			containerIndex = index
+			break
+		}
+	}
+	if containerIndex < 0 || containerIndex+1 >= len(parts) {
+		return nil
+	}
+	containerID := parts[containerIndex]
+	user := parts[containerIndex+1]
+	if containerID == "" || user == "" {
+		return nil
+	}
+	items := make([]string, 0)
+	for _, base := range hadoopEndpointURLs(hadoop.Options["jobHistoryUrl"]) {
+		value := base + "/jobhistory/logs/" + url.PathEscape(endpoint.Host) + "/" + url.PathEscape(containerID) + "/" + url.PathEscape(containerID) + "/" + url.PathEscape(user)
+		items = append(items, value)
+	}
+	return items
 }
 
 func hadoopGetJSON(url string, target any) error {

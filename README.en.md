@@ -2,7 +2,7 @@
 
 [中文](README.md) | English
 
-OpsGuard is a locally deployable operations inspection and alert-handling platform. It does not replace Prometheus, Hadoop, Grafana, or other production systems. Instead, it connects to existing services and provides a unified view for data sources, alert rules, notifications, and essential operational metrics.
+OpsGuard is a locally deployable operations inspection and alert-handling platform. It does not replace Prometheus, Hadoop, or other production systems. Instead, it connects to existing services and provides a unified view for data sources, alert rules, notifications, and essential operational metrics.
 
 ## Features
 
@@ -95,18 +95,19 @@ pnpm install
 pnpm dev
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000). Vite proxies `/api` and `/health` to `http://127.0.0.1:8030`.
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000). Vite proxies `/api` and `/health` to `https://127.0.0.1:8030`.
 
 ## Build and Verify
 
 ```powershell
 cd backend
 go test ./internal/service ./internal/router
-go build -o .\bin\opsguard.exe .\cmd\server
 
 cd ..\frontend
 pnpm build
 ```
+
+Run the local backend with `go run ./cmd/server`; do not use a Windows exe as the test backend. The compiled Linux x86_64 and ARM64 server and agent packages are in [replease](replease).
 
 ## Hadoop Integration
 

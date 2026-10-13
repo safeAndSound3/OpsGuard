@@ -13,6 +13,8 @@ agent/bin/
 # Local caches and package stores
 .cache/
 .pnpm-store/
+.gocache/
+.docxtext/
 *.tsbuildinfo
 
 # System
@@ -20,5 +22,18 @@ agent/bin/
 .env
 backend/.env
 backend/config/opsguard.conf
+backend/certs/
+backend/logs/
 frontend/.env
 .tools/
+
+# Build artifacts and local caches
+.gopath/
+dist/
+replease/
+hc.jar
+backend/cmd/dbg/
+backend/internal/tlsbootstrap/
+backend/sql/
+docs/
+

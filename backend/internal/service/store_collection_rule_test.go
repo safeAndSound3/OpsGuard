@@ -121,3 +121,18 @@ func TestFileCheckDiagnosticNormalizesTransportErrors(t *testing.T) {
 		t.Fatalf("no-match diagnostic = %q, want %q", got, want)
 	}
 }
+
+func TestIsFileCheckPathUnavailable(t *testing.T) {
+	for _, raw := range []string{
+		"read directory failed: open /data: no such file or directory",
+		"find: '/data': No such file or directory",
+		"目录不存在：/data",
+	} {
+		if !isFileCheckPathUnavailable(raw) {
+			t.Fatalf("isFileCheckPathUnavailable(%q) = false, want true", raw)
+		}
+	}
+	if isFileCheckPathUnavailable("matched 0 files") {
+		t.Fatal("an empty but existing directory must not be treated as unavailable")
+	}
+}

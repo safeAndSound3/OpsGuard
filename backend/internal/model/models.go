@@ -55,6 +55,32 @@ type ConsulMenuItem struct {
 	Name     string `json:"name"`
 }
 
+type HiveMenuItem struct {
+	SourceID string `json:"sourceId"`
+	Name     string `json:"name"`
+}
+
+type PostgreSQLMenuItem struct {
+	SourceID string `json:"sourceId"`
+	Name     string `json:"name"`
+}
+
+type MySQLReportTask struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	SourceID    string  `json:"sourceId"`
+	SourceName  string  `json:"sourceName,omitempty"`
+	SQL         string  `json:"sql"`
+	TimeRange   string  `json:"timeRange"`
+	Schedule    string  `json:"schedule"`
+	Enabled     bool    `json:"enabled"`
+	Status      string  `json:"status"`
+	LastRunAt   *string `json:"lastRunAt,omitempty"`
+	LastMessage string  `json:"lastMessage,omitempty"`
+	CreatedAt   string  `json:"createdAt"`
+	UpdatedAt   string  `json:"updatedAt"`
+}
+
 type ConsulKVValue struct {
 	Key         string `json:"key"`
 	Value       string `json:"value"`
@@ -154,6 +180,7 @@ type CollectionRule struct {
 	Database        string     `json:"database"`
 	Table           string     `json:"table"`
 	Field           string     `json:"field"`
+	AllowEmpty      bool       `json:"allowEmpty"`
 	Condition       string     `json:"condition"`
 	Threshold       string     `json:"threshold,omitempty"`
 	TimeWindow      string     `json:"timeWindow"`
@@ -331,9 +358,6 @@ type ExternalMonitorConfig struct {
 	PrometheusURL             string `json:"prometheusUrl,omitempty"`
 	PrometheusConfigured      bool   `json:"prometheusConfigured"`
 	PrometheusTokenConfigured bool   `json:"prometheusTokenConfigured"`
-	GrafanaURL                string `json:"grafanaUrl,omitempty"`
-	GrafanaConfigured         bool   `json:"grafanaConfigured"`
-	GrafanaTokenConfigured    bool   `json:"grafanaTokenConfigured"`
 }
 
 type PrometheusAlert struct {
@@ -367,13 +391,4 @@ type PrometheusRule struct {
 
 type PrometheusMetric struct {
 	Name string `json:"name"`
-}
-
-type GrafanaDashboard struct {
-	UID         string   `json:"uid"`
-	Title       string   `json:"title"`
-	URI         string   `json:"uri,omitempty"`
-	URL         string   `json:"url,omitempty"`
-	FolderTitle string   `json:"folderTitle,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
 }

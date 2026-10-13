@@ -30,12 +30,14 @@ type config struct {
 	allowedPlatformIPs []netip.Prefix
 	timeout            time.Duration
 	maxOutput          int64
+	logFile            string
 }
 type collector struct{ total, idle uint64 }
 type fileCheck struct {
 	Path          string `json:"path"`
 	NamePattern   string `json:"namePattern"`
 	ModifiedToday bool   `json:"modifiedToday"`
+	AllowEmpty    bool   `json:"allowEmpty"`
 }
 type scriptCheck struct {
 	Command          string `json:"command"`
@@ -71,6 +73,11 @@ func main() {
 	cfg, err := loadConfig(*path)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if closeLog, err := configureFileLogging(cfg.logFile); err != nil {
+		log.Printf("无法打开 Agent 日志文件 %s：%v，继续输出到终端", cfg.logFile, err)
+	} else {
+		defer closeLog()
 	}
 	metrics := &collector{}
 	startedAt := time.Now()
@@ -152,7 +159,10 @@ func loadConfig(path string) (config, error) {
 	if s.Err() != nil {
 		return config{}, s.Err()
 	}
-	cfg := config{listen: values["LISTEN"], token: values["TOKEN"], timeout: 30 * time.Second, maxOutput: 65536}
+	cfg := config{listen: values["LISTEN"], token: values["TOKEN"], timeout: 30 * time.Second, maxOutput: 65536, logFile: values["LOG_FILE"]}
+	if strings.TrimSpace(cfg.logFile) == "" {
+		cfg.logFile = "/var/log/opsguard-agent/agent.log"
+	}
 	if cfg.listen == "" {
 		cfg.listen = "0.0.0.0:4001"
 	}
@@ -181,6 +191,22 @@ func loadConfig(path string) (config, error) {
 		cfg.maxOutput = v
 	}
 	return cfg, nil
+}
+
+func configureFileLogging(path string) (func(), error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "." || path == "" {
+		return func() {}, errors.New("日志文件路径为空")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return func() {}, err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return func() {}, err
+	}
+	log.SetOutput(io.MultiWriter(os.Stdout, file))
+	return func() { _ = file.Close() }, nil
 }
 func allowedPlatform(r *http.Request, cfg config) bool {
 	if len(cfg.allowedPlatformIPs) == 0 {
@@ -283,11 +309,20 @@ func excludedFilesystem(filesystem, mountPoint string) bool {
 	if mount == "" {
 		mount = "/"
 	}
-	if mount == "/var/lib/docker" || strings.HasPrefix(mount, "/var/lib/docker/") || mount == "/var/lib/kubelet" || strings.HasPrefix(mount, "/var/lib/kubelet/") {
+	if containerRuntimeMount(mount) {
 		return true
 	}
 	for _, value := range []string{"tmpfs", "devtmpfs", "overlay", "squashfs", "nsfs", "proc", "sysfs", "cgroup", "cgroup2"} {
 		if fs == value || strings.HasPrefix(fs, value+":") {
+			return true
+		}
+	}
+	return false
+}
+func containerRuntimeMount(mountPoint string) bool {
+	for _, segment := range strings.Split(strings.Trim(mountPoint, "/"), "/") {
+		switch strings.ToLower(strings.TrimSpace(segment)) {
+		case "docker", "containerd", "containers", "kubelet", "kubernetes", "podman", "k3s", "rancher":
 			return true
 		}
 	}
@@ -318,7 +353,7 @@ func runFile(req fileCheck, cfg config) checkResult {
 	defer directory.Close()
 	const maxFileCheckEntries = 10000
 	const maxFileCheckMatches = 1000
-	matchCount, scanned := 0, 0
+	matchCount, emptyCount, scanned := 0, 0, 0
 	truncated := false
 	var details strings.Builder
 	today := time.Now().Format("2006-01-02")
@@ -334,7 +369,12 @@ func runFile(req fileCheck, cfg config) checkResult {
 				continue
 			}
 			matchCount++
-			line := entry.Name() + "\n"
+			line := entry.Name()
+			if info.Size() == 0 {
+				emptyCount++
+				line += "（空文件）"
+			}
+			line += "\n"
 			if matchCount > maxFileCheckMatches || int64(details.Len()+len(line)) > cfg.maxOutput {
 				truncated = true
 				continue
@@ -352,10 +392,13 @@ func runFile(req fileCheck, cfg config) checkResult {
 		}
 	}
 	summary := fmt.Sprintf("matched %d files", matchCount)
+	if emptyCount > 0 && !req.AllowEmpty {
+		summary += fmt.Sprintf("，empty %d files", emptyCount)
+	}
 	if truncated {
 		summary += " (results truncated)"
 	}
-	return checkResult{Passed: matchCount > 0, Summary: summary, Details: strings.TrimSuffix(details.String(), "\n")}
+	return checkResult{Passed: matchCount > 0 && (req.AllowEmpty || emptyCount == 0), Summary: summary, Details: strings.TrimSuffix(details.String(), "\n")}
 }
 func runScript(req scriptCheck, cfg config) checkResult {
 	if strings.TrimSpace(req.Command) == "" {

@@ -1,6 +1,8 @@
 # 拉取式 Agent：平台在运行期间请求指标、文件检测和脚本检测。
 # 监听地址。仅本机访问可填写 127.0.0.1:4001；由平台访问时使用实际网卡地址或 0.0.0.0:4001。
 LISTEN=0.0.0.0:4001
+# Agent 服务日志文件，建议生产环境使用 /var/log/opsguard-agent/agent.log。
+LOG_FILE=/var/log/opsguard-agent/agent.log
 # 平台访问 Agent 时使用的固定令牌。请为每台 Agent 生成不同的随机值。
 TOKEN=replace-with-a-per-agent-random-token
 # 允许请求 Agent 的平台 IP 或网段，多个值以英文逗号分隔。生产环境必须填写。

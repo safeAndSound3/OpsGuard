@@ -94,3 +94,20 @@ func TestSameOriginOnlyRelaxesPortsForLoopbackDevelopment(t *testing.T) {
 		t.Fatal("different production ports must not be treated as same-origin")
 	}
 }
+
+func TestRequestClientIP(t *testing.T) {
+	for _, test := range []struct {
+		remote string
+		want   string
+	}{
+		{remote: "192.0.2.10:54321", want: "192.0.2.10"},
+		{remote: "[2001:db8::12]:8443", want: "2001:db8::12"},
+		{remote: "192.0.2.10", want: "192.0.2.10"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = test.remote
+		if got := requestClientIP(req); got != test.want {
+			t.Fatalf("requestClientIP(%q) = %q, want %q", test.remote, got, test.want)
+		}
+	}
+}

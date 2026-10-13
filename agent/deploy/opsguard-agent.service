@@ -24,6 +24,7 @@ CPUQuota=50%
 TasksMax=128
 KillMode=control-group
 ReadWritePaths=/var/lib/opsguard-agent
+ReadWritePaths=/var/log/opsguard-agent
 
 [Install]
 WantedBy=multi-user.target

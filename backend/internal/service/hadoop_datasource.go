@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -49,30 +48,64 @@ func CheckHadoopHealth(ds model.DataSource) (model.HadoopHealth, error) {
 		details[0] = "ResourceManager：健康"
 	}
 	for _, item := range []struct{ key, label, path string }{{"nodeManagerUrl", "NodeManager", "/ws/v1/node/info"}, {"jobHistoryUrl", "JobHistory", "/ws/v1/history/info"}} {
-		target := strings.TrimRight(strings.TrimSpace(ds.Options[item.key]), "/")
-		if target == "" {
+		endpoints := hadoopEndpointURLs(ds.Options[item.key])
+		if len(endpoints) == 0 {
 			continue
 		}
-		status, reason := check(target, item.path)
+		healthCount := 0
+		endpointDetails := make([]string, 0, len(endpoints))
+		for _, endpoint := range endpoints {
+			status, reason := check(endpoint, item.path)
+			if status == "健康" {
+				healthCount++
+			}
+			if reason == "" {
+				reason = "健康"
+			}
+			endpointDetails = append(endpointDetails, endpoint+"（"+reason+"）")
+		}
+		summary := fmt.Sprintf("%d/%d 健康", healthCount, len(endpoints))
 		if item.key == "nodeManagerUrl" {
-			health.NodeManager = status
+			health.NodeManager = summary
 		} else {
-			health.JobHistory = status
+			health.JobHistory = summary
 		}
-		if reason == "" {
-			reason = "健康"
-		}
-		details = append(details, item.label+"："+reason)
+		details = append(details, item.label+"："+strings.Join(endpointDetails, "、"))
 	}
 	health.Details = strings.Join(details, "；")
 	_ = saveHadoopHealth(health)
 	if health.ResourceManager != "健康" {
 		return health, errors.New("Hadoop ResourceManager 不可用：" + health.Details)
 	}
-	if health.NodeManager == "异常" || health.JobHistory == "异常" {
+	if strings.HasPrefix(health.NodeManager, "0/") || strings.HasPrefix(health.JobHistory, "0/") {
 		return health, errors.New("Hadoop 日志服务异常：" + health.Details)
 	}
 	return health, nil
+}
+
+// hadoopEndpointURLs parses the multi-node endpoints accepted by the data
+// source form. A comma, semicolon, or newline separates independent services.
+func hadoopEndpointURLs(value string) []string {
+	seen := make(map[string]struct{})
+	items := make([]string, 0)
+	for _, raw := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' }) {
+		endpoint := strings.TrimRight(strings.TrimSpace(raw), "/")
+		if endpoint == "" {
+			continue
+		}
+		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+			endpoint = "http://" + endpoint
+		}
+		if _, err := url.ParseRequestURI(endpoint); err != nil {
+			continue
+		}
+		if _, exists := seen[endpoint]; exists {
+			continue
+		}
+		seen[endpoint] = struct{}{}
+		items = append(items, endpoint)
+	}
+	return items
 }
 
 func saveHadoopHealth(health model.HadoopHealth) error {

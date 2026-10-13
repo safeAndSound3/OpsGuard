@@ -10,7 +10,7 @@ import (
 
 func TestHadoopLogURLBelongsToSource(t *testing.T) {
 	source := model.DataSource{Options: map[string]string{
-		"nodeManagerUrl": "http://127.0.0.1:6064",
+		"nodeManagerUrl": "http://127.0.0.1:6064, http://127.0.0.1:6065",
 		"jobHistoryUrl":  "http://127.0.0.1:6063",
 	}}
 	base := "http://127.0.0.1:6062"
@@ -22,8 +22,8 @@ func TestHadoopLogURLBelongsToSource(t *testing.T) {
 		{name: "resource manager", url: base + "/logs/app", want: true},
 		{name: "configured node manager", url: "http://127.0.0.1:6064/node/containerlogs/container_1", want: true},
 		{name: "configured history server", url: "http://127.0.0.1:6063/jobhistory/logs/container_1", want: true},
-		{name: "internal node manager log is rewritten", url: "http://hadoop-node:8042/node/containerlogs/container_1", want: true},
-		{name: "raw node manager origin is rewritten", url: "http://other-cluster:8042/node/containerlogs/container_1", want: true},
+		{name: "second configured node manager", url: "http://127.0.0.1:6065/node/containerlogs/container_1", want: true},
+		{name: "internal node manager is routed through configured nodes", url: "http://other-cluster:8042/node/containerlogs/container_1", want: true},
 		{name: "unrelated path", url: "http://other-cluster:8042/admin", want: false},
 	}
 	for _, tc := range cases {
@@ -33,8 +33,9 @@ func TestHadoopLogURLBelongsToSource(t *testing.T) {
 			}
 		})
 	}
-	if got, want := hadoopNodeManagerLogURL(source, "http://other-cluster:8042/node/containerlogs/container_1?start=0"), "http://127.0.0.1:6064/node/containerlogs/container_1?start=0"; got != want {
-		t.Fatalf("hadoopNodeManagerLogURL() = %q, want %q", got, want)
+	urls := hadoopNodeManagerLogURLs(source, "http://127.0.0.1:6064/node/containerlogs/container_1?start=0")
+	if got, want := strings.Join(urls, ","), "http://127.0.0.1:6064/node/containerlogs/container_1?start=0,http://127.0.0.1:6065/node/containerlogs/container_1?start=0"; got != want {
+		t.Fatalf("hadoopNodeManagerLogURLs() = %q, want %q", got, want)
 	}
 }
 
@@ -56,6 +57,23 @@ func TestHadoopContainerLogFileURLs(t *testing.T) {
 	}
 	if hadoopContainerLogFileName(got[1]) != "AppMaster.stdout" {
 		t.Fatalf("log file name = %q", hadoopContainerLogFileName(got[1]))
+	}
+}
+
+func TestHadoopContainerLogUnavailable(t *testing.T) {
+	if !hadoopContainerLogUnavailable([]byte("<h1>No logs available for container container_01</h1>")) {
+		t.Fatal("missing-container page must be treated as an unavailable NodeManager response")
+	}
+	if hadoopContainerLogUnavailable([]byte("LogType:stdout\nworker output")) {
+		t.Fatal("a regular container log must remain readable")
+	}
+}
+
+func TestHadoopAggregatedLogURLs(t *testing.T) {
+	source := model.DataSource{Options: map[string]string{"jobHistoryUrl": "http://history:19888"}}
+	urls := hadoopAggregatedLogURLs(source, "http://ga-k8s2:8042/node/containerlogs/container_e383_01_000001/root")
+	if got, want := strings.Join(urls, ","), "http://history:19888/jobhistory/logs/ga-k8s2:8042/container_e383_01_000001/container_e383_01_000001/root"; got != want {
+		t.Fatalf("hadoopAggregatedLogURLs() = %q, want %q", got, want)
 	}
 }
 

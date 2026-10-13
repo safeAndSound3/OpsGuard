@@ -10,13 +10,23 @@ HOST=127.0.0.1
 PORT=8030
 ENV=production
 
-# 首次启动且 users 表中没有 admin 时必须填写，至少 12 位。创建后请删除本项，
-# 后续密码以数据库中的 bcrypt 哈希为准。
-OPSGUARD_ADMIN_PASSWORD=replace-with-a-strong-initial-password
+# 服务日志文件。相对路径相对于服务端工作目录，也可填写绝对路径。
+LOG_FILE=logs/opsguard-server.log
 
-# 登录会话。通过 HTTPS 部署时必须将 Cookie 安全模式改为 true。
+# HTTPS。设为 true 后，后端首次启动会在证书文件不存在时自动生成自签名证书，后续
+# 启动复用同一证书。TLS_SERVER_NAMES 必须填写用户实际访问平台使用的 IP 或域名。
+# 自签名证书首次访问会有浏览器提示；将证书导入受信任证书库后即可消除提示。
+TLS_ENABLED=true
+TLS_CERT_FILE=certs/opsguard.crt
+TLS_KEY_FILE=certs/opsguard.key
+TLS_SERVER_NAMES=127.0.0.1,localhost
+
+# 首次启动且 users 表中没有 admin 时必须填写，至少 8 位。创建后请删除本项，
+# 后续密码以数据库中的 bcrypt 哈希为准。
+OPSGUARD_ADMIN_PASSWORD=example8
+
+# 登录会话有效期。平台固定使用 HTTP，Cookie 不启用 HTTPS 专用标记。
 SESSION_TTL=12h
-SESSION_COOKIE_SECURE=true
 
 # 默认同源访问，无需配置。只有前后端跨域部署时才填写允许的完整来源，逗号分隔。
 # CORS_ALLOWED_ORIGINS=https://opsguard.example.com
@@ -29,7 +39,8 @@ SESSION_COOKIE_SECURE=true
 # OUTBOUND_ALLOW_LOOPBACK=false
 
 # OpsGuard 平台数据库。保存平台用户、数据源定义、告警通知、规则和采样数据。
-# 该数据库不同于平台接入并监控的 MySQL 数据源。
+# 该数据库不同于平台接入并监控的 MySQL 数据源。首次启动会自动创建该库，MYSQL_USER
+# 因此需要全局 CREATE 权限，以及该库内的建表和读写权限。
 MYSQL_HOST=mysql.example.com
 MYSQL_PORT=3306
 MYSQL_DATABASE=opsguard
@@ -40,7 +51,4 @@ MYSQL_PASSWORD=replace-with-a-strong-password
 # 随机生成器，并妥善保管，丢失后无法解密已有凭据。
 OPSGUARD_ENCRYPTION_KEY=replace-with-a-base64-encoded-32-byte-key
 
-# SSH 主机密钥校验。生产环境保持 strict，并提供 OpenSSH known_hosts 文件。
-# 临时测试环境可显式设为 insecure，但会降低中间人攻击防护能力。
-SSH_HOST_KEY_POLICY=strict
-SSH_KNOWN_HOSTS_FILE=/etc/opsguard/ssh_known_hosts
+# 传统 SSH 数据源使用账号密码连接，不需要额外的主机密钥文件。

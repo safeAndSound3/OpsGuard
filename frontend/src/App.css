@@ -129,7 +129,7 @@
 .notification-pagination{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 8px 2px;margin-top:4px;border-top:1px solid #edf1f6;color:#7a889d;font-size:11px;font-weight:700}.notification-pagination>div{display:flex;align-items:center;gap:8px}.notification-pagination button{height:34px;border:1px solid #dfe5ee;border-radius:7px;background:#fff;color:#4968df;padding:0 12px;font-size:11px;font-weight:800}.notification-pagination button:hover:not(:disabled){border-color:#aabceb;background:#f2f6ff}.notification-pagination button:disabled{color:#a9b3c3;background:#f7f9fc;cursor:default}.notification-pagination input{width:46px;height:34px;border:1px solid #dfe5ee;border-radius:7px;background:#fff;color:#34435c;padding:0 5px;text-align:center;font-size:11px;font-weight:800;outline:0}.notification-pagination input:focus{border-color:#8ea1f4;box-shadow:0 0 0 3px #e9eeff}
 .list-pagination{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:20px 0 0;padding:18px 8px 2px;border-top:1px solid #edf1f6;color:#7a889d;font-size:11px;font-weight:700}.list-pagination>div{display:flex;align-items:center;gap:8px}.list-pagination button{height:34px;border:1px solid #dfe5ee;border-radius:7px;background:#fff;color:#4968df;padding:0 12px;font-size:11px;font-weight:800}.list-pagination button:hover:not(:disabled){border-color:#aabceb;background:#f2f6ff}.list-pagination button:disabled{color:#a9b3c3;background:#f7f9fc;cursor:default}.list-pagination input{width:46px;height:34px;border:1px solid #dfe5ee;border-radius:7px;background:#fff;color:#34435c;padding:0 5px;text-align:center;font-size:11px;font-weight:800;outline:0}.list-pagination input:focus{border-color:#8ea1f4;box-shadow:0 0 0 3px #e9eeff}
 .notification-mute{justify-self:end;display:inline-flex;align-items:center;gap:7px;color:#7b879a;font-size:11px;font-weight:800;white-space:nowrap;cursor:pointer}.notification-mute input{position:absolute;opacity:0;pointer-events:none}.notification-mute i{width:30px;height:17px;border-radius:999px;background:#cfd7e4;position:relative;transition:background .18s}.notification-mute i:after{content:'';position:absolute;top:3px;left:3px;width:11px;height:11px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #21314a3b;transition:transform .18s}.notification-mute.active{color:#7760cf}.notification-mute.active i{background:#8069df}.notification-mute.active i:after{transform:translateX(13px)}
-.modal-form label:has(input[name="password"][required]){position:relative}.modal-form label:has(input[name="password"][required])::after{content:'*';position:absolute;top:0;left:26px;color:#e44f62;font-weight:800}
+.modal-form label:has(input[name="password"][required]){position:relative}
 .overview-section-title p{display:none}
 .overview-section-title{display:none}
 .frequency-input{display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:7px;margin-top:7px}.frequency-input input{margin-top:0!important}.frequency-input .app-select{margin-top:0}.frequency-input .app-select-trigger{height:40px}
@@ -137,6 +137,9 @@
 .source-modal{width:min(780px,calc(100vw - 48px));padding:22px}.source-modal .modal-form{gap:16px 18px}.source-modal .modal-form label{display:block;min-width:0;color:#5f6e85;font-size:11px;font-weight:800}.source-modal .modal-form input,.source-modal .modal-form textarea{margin-top:7px;border-radius:8px}.source-modal .modal-form input{height:40px;padding:0 12px}.source-modal .modal-form textarea{min-height:82px;padding:10px 12px}.source-modal .modal-form>.app-select{margin-top:7px}.alert-rule-modal{width:min(960px,calc(100vw - 48px))}.alert-rule-modal .modal-form{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.alert-rule-modal .rule-type-field{padding-bottom:16px;border-bottom:1px solid #edf1f6}.alert-rule-modal .rule-remark-field{padding-top:2px;border-top:1px solid #edf1f6}.alert-rule-modal .rule-remark-field input{margin-top:10px}.alert-rule-modal .modal-actions{margin-top:24px;padding-top:16px}@media(max-width:900px){.source-modal,.alert-rule-modal{width:min(680px,calc(100vw - 32px))}.alert-rule-modal .modal-form{grid-template-columns:1fr 1fr}}@media(max-width:700px){.source-modal,.alert-rule-modal{width:calc(100vw - 24px)}.alert-rule-modal .modal-form{grid-template-columns:1fr}}
 .source-delete-modal{width:min(460px,calc(100vw - 48px));padding:22px}.source-delete-content{display:grid;gap:7px;margin-top:4px;color:#687790;font-size:12px;line-height:1.6}.source-delete-content b{color:#c53d50;font-size:14px}.source-delete-modal .modal-actions{margin-top:24px;padding-top:16px;border-top:1px solid #edf1f6}.danger-button{border-color:#c94455!important;background:#c94455!important;color:#fff!important;box-shadow:none!important}.danger-button:hover{border-color:#ad3343!important;background:#ad3343!important}
 .import-name-modal{width:min(440px,calc(100vw - 48px));padding:22px}.import-name-field{display:block;color:#5f6e85;font-size:11px;font-weight:800}.import-name-field input{width:100%;height:40px;margin-top:7px;padding:0 12px;border:1px solid #dfe5ee;border-radius:8px;background:#fff;color:#34435c;font-size:12px;font-weight:700;outline:0}.import-name-field input:focus{border-color:#8ea1f4;box-shadow:0 0 0 3px #e9eeff}.import-name-modal .modal-actions{margin-top:22px;padding-top:16px}
+.import-name-field textarea{display:block;width:100%;min-height:240px;margin-top:9px;padding:12px;border:1px solid #dfe5ee;border-radius:8px;background:#101827;color:#d9e8ff;font:13px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical;outline:0;white-space:pre-wrap;overflow:auto}
+.import-name-field textarea:focus{border-color:#8ea1f4;box-shadow:0 0 0 3px #e9eeff}
+@media(max-width:700px){.import-name-modal{width:calc(100vw - 24px)}.import-name-field textarea{min-height:210px}}
 .import-name-field select{width:100%;height:40px;margin-top:7px;padding:0 12px;border:1px solid #dfe5ee;border-radius:8px;background:#fff;color:#34435c;font-size:12px;font-weight:700;outline:0}.ambari-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}.ambari-panel{padding:18px;margin-bottom:14px}.ambari-panel header{display:flex;justify-content:space-between;align-items:center;padding-bottom:12px;border-bottom:1px solid var(--line)}.ambari-panel h2{margin:0;color:#21314a;font-size:15px}.ambari-panel header span{color:#7f8ca3;font-size:11px;font-weight:800}.ambari-list{display:grid}.ambari-list>div{display:grid;grid-template-columns:minmax(150px,1fr) 92px minmax(130px,1.3fr);align-items:center;gap:12px;padding:11px 2px;border-bottom:1px solid #edf1f6}.ambari-list>div:last-child{border-bottom:0}.ambari-list b{min-width:0;color:#30415e;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ambari-list span{justify-self:start;border-radius:5px;padding:3px 7px;font-size:10px;font-weight:800}.ambari-list span.success{background:#e7f7ef;color:#128354}.ambari-list span.danger{background:#fff0f1;color:#bf4352}.ambari-list small{min-width:0;color:#7e8ba0;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ambari-list p{padding:22px 2px;margin:0;color:#8793a9;font-size:12px}.ambari-cluster-name{font-size:22px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:900px){.ambari-grid{grid-template-columns:1fr}.ambari-list>div{grid-template-columns:minmax(120px,1fr) 84px minmax(0,1fr)}}
 .alert-rule-modal-actions{display:flex;align-items:center;gap:8px}.alert-rule-modal-actions .button{height:32px;padding:0 12px;box-shadow:none}.alert-rule-modal-actions .close-button{margin-left:2px}@media(max-width:700px){.alert-rule-modal-actions .button{padding:0 9px}}
 .rule-type-options{grid-template-columns:repeat(5,minmax(0,1fr))}.ssh-source-multi{display:flex;flex-wrap:wrap;gap:8px;margin-top:7px;padding:8px;border:1px solid #dfe5ee;border-radius:8px;background:#fbfcff}.ssh-source-multi label{display:inline-flex!important;align-items:center;gap:7px;border:1px solid #e0e6ef;border-radius:6px;background:#fff;padding:7px 9px;color:#40516b!important;font-size:12px!important;font-weight:700!important;cursor:pointer}.ssh-source-multi input{width:14px;height:14px!important;margin:0!important;accent-color:#3158d4}.ssh-source-multi label:has(input:checked){border-color:#9db0f0;background:#eef3ff;color:#294fb9!important}@media(max-width:900px){.rule-type-options{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:700px){.rule-type-options{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -189,7 +192,7 @@
 
 .hadoop-log-modal .hadoop-log-fullscreen{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:92px}.hadoop-log-fullscreen span{font:700 16px/1 system-ui}.hadoop-log-fullscreen em{font-style:normal}
 
-.mysql-workspace{display:grid;gap:18px}.mysql-workspace .overview-section-title{margin:0;padding:0 2px}.mysql-workspace-grid{display:grid;grid-template-columns:290px minmax(0,1fr);height:calc(100vh - 150px);min-height:580px;overflow:hidden;padding:0;border-radius:8px}.mysql-tree-panel,.mysql-table-workspace{display:flex;min-width:0;min-height:0;flex-direction:column}.mysql-tree-panel{border-right:1px solid #dfe6ef;background:#fbfcfe;padding:18px 14px}.mysql-tree-panel>header,.mysql-table-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.mysql-tree-panel>header{padding:0 5px}.mysql-tree-panel header>b,.mysql-table-head b{color:#22324b;font-size:14px;font-weight:800}.mysql-tree-panel header>span,.mysql-table-head small{color:#8491a4;font-size:11px;font-weight:700}.mysql-tree-panel>input{height:36px;flex:0 0 auto;margin:14px 4px 12px;border:1px solid #dce5f0;border-radius:6px;padding:0 11px;color:#30415b;background:#fff;font-size:12px;outline:0}.mysql-tree-panel>input:focus{border-color:#7992ed;box-shadow:0 0 0 3px #e9eeff}.mysql-tree{min-height:0;overflow:auto;padding:0 2px 12px}.mysql-tree-database>button{width:100%;height:38px;display:grid;grid-template-columns:13px 17px minmax(0,1fr) 30px;align-items:center;gap:7px;border:0;border-radius:5px;background:transparent;padding:0 8px;color:#43546e;text-align:left}.mysql-tree-database>button:hover,.mysql-tree-database>button.selected{background:#eef2f8;color:#263b5f}.mysql-tree-database>button>i{color:#7d899b;font:700 16px/1 system-ui;font-style:normal}.mysql-tree-database>button>b,.mysql-tree-tables button>b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.mysql-tree-database>button>small{color:#8c98aa;text-align:right;font:10px 'DM Mono',monospace}.mysql-tree-icon{width:14px;height:11px;border:1px solid #6681b3;border-radius:2px;background:#dfe8f8;box-shadow:inset 0 3px #f7faff}.mysql-tree-tables{margin-left:20px;padding-left:9px;border-left:1px solid #dbe3ee}.mysql-tree-tables button{width:100%;height:34px;display:grid;grid-template-columns:16px minmax(0,1fr);align-items:center;gap:7px;border:0;border-radius:5px;background:transparent;padding:0 8px;color:#596980;text-align:left}.mysql-tree-tables button:hover{background:#f0f4fa;color:#315bd7}.mysql-tree-tables button.active{background:#e5edff;color:#254fc2}.mysql-tree-tables button>span{width:13px;height:13px;border:1px solid #9aa9bd;border-radius:2px;background:repeating-linear-gradient(to bottom,#fff 0,#fff 3px,#dfe5ed 4px)}.mysql-tree-tables button.active>span{border-color:#6987dc;background:repeating-linear-gradient(to bottom,#f8faff 0,#f8faff 3px,#b9c9f5 4px)}.mysql-tree-status{display:block;padding:10px 9px;color:#8a96a8;font-size:11px}.mysql-table-workspace{background:#fff}.mysql-table-head{height:72px;flex:0 0 auto;padding:0 22px;border-bottom:1px solid #e7edf5}.mysql-table-head>div{display:grid;gap:4px}.mysql-table-head>div>span{color:#8794a7;font:10px 'DM Mono',monospace}.mysql-view-tabs{height:45px;flex:0 0 auto;display:flex;align-items:end;gap:20px;padding:0 22px;border-bottom:1px solid #e3e9f1}.mysql-view-tabs button{height:45px;position:relative;border:0;background:transparent;padding:0 2px;color:#66758c;font-size:12px;font-weight:800}.mysql-view-tabs button:hover{color:#315bd7}.mysql-view-tabs button.active{color:#315bd7}.mysql-view-tabs button.active:after{position:absolute;right:0;bottom:-1px;left:0;height:2px;background:#3d67f5;content:''}.mysql-preview{flex:1 1 auto;min-height:0;overflow:auto;background:#fff}.mysql-preview table{min-width:100%;border-collapse:separate;border-spacing:0;font-size:11px}.mysql-preview th{position:sticky;z-index:1;top:0;background:#f5f7fa;color:#596a82;font-weight:800;text-align:left}.mysql-preview th,.mysql-preview td{max-width:280px;border-right:1px solid #e8edf3;border-bottom:1px solid #e8edf3;padding:9px 11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mysql-preview th:last-child,.mysql-preview td:last-child{border-right:0}.mysql-preview tbody tr:hover td{background:#f8faff}.mysql-preview td{color:#34435c}.mysql-preview td i{color:#9aa6b7;font-style:normal}.mysql-structure td:nth-child(1){width:52px;color:#8a96a8}.mysql-structure td:nth-child(2) b{color:#28405f;font-size:11px}.mysql-structure code{color:#315a9d;font:11px 'DM Mono',monospace}.mysql-workspace-empty{flex:1;min-height:260px;display:grid;place-content:center;justify-items:center;gap:7px;color:#8a96aa;font-size:12px}.mysql-workspace-empty>b{color:#53637a;font-size:13px}.mysql-workspace-empty>span{font-size:11px}@media(max-width:850px){.mysql-workspace-grid{grid-template-columns:230px minmax(0,1fr)}}@media(max-width:650px){.mysql-workspace-grid{height:auto;min-height:0;grid-template-columns:1fr}.mysql-tree-panel{height:330px;border-right:0;border-bottom:1px solid #dfe6ef}.mysql-table-workspace{min-height:520px}.mysql-table-head{padding:0 16px}.mysql-view-tabs{padding:0 16px}.mysql-preview{max-height:520px}}
+.mysql-workspace{display:grid;gap:18px}.mysql-workspace .overview-section-title{margin:0;padding:0 2px}.mysql-workspace-grid{display:grid;grid-template-columns:290px minmax(0,1fr);height:calc(100vh - 150px);min-height:580px;overflow:visible;padding:0;border-radius:8px}.mysql-tree-panel,.mysql-table-workspace{display:flex;min-width:0;min-height:0;flex-direction:column}.mysql-tree-panel{border-right:1px solid #dfe6ef;background:#fbfcfe;padding:18px 14px}.mysql-tree-panel>header,.mysql-table-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.mysql-tree-panel>header{padding:0 5px}.mysql-tree-panel header>b,.mysql-table-head b{color:#22324b;font-size:14px;font-weight:800}.mysql-tree-panel header>span,.mysql-table-head small{color:#8491a4;font-size:11px;font-weight:700}.mysql-tree-panel>input{height:36px;flex:0 0 auto;margin:14px 4px 12px;border:1px solid #dce5f0;border-radius:6px;padding:0 11px;color:#30415b;background:#fff;font-size:12px;outline:0}.mysql-tree-panel>input:focus{border-color:#7992ed;box-shadow:0 0 0 3px #e9eeff}.mysql-tree{min-height:0;overflow:visible;padding:0 2px 12px}.mysql-tree-database>button{width:100%;height:38px;display:grid;grid-template-columns:13px 17px minmax(0,1fr) 30px;align-items:center;gap:7px;border:0;border-radius:5px;background:transparent;padding:0 8px;color:#43546e;text-align:left}.mysql-tree-database>button:hover,.mysql-tree-database>button.selected{background:#eef2f8;color:#263b5f}.mysql-tree-database>button>i{color:#7d899b;font:700 16px/1 system-ui;font-style:normal}.mysql-tree-database>button>b,.mysql-tree-tables button>b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.mysql-tree-database>button>small{color:#8c98aa;text-align:right;font:10px 'DM Mono',monospace}.mysql-tree-icon{width:14px;height:11px;border:1px solid #6681b3;border-radius:2px;background:#dfe8f8;box-shadow:inset 0 3px #f7faff}.mysql-tree-tables{margin-left:20px;padding-left:9px;border-left:1px solid #dbe3ee}.mysql-tree-tables button{width:100%;height:34px;display:grid;grid-template-columns:16px minmax(0,1fr);align-items:center;gap:7px;border:0;border-radius:5px;background:transparent;padding:0 8px;color:#596980;text-align:left}.mysql-tree-tables button:hover{background:#f0f4fa;color:#315bd7}.mysql-tree-tables button.active{background:#e5edff;color:#254fc2}.mysql-tree-tables button>span:first-child{width:13px;height:13px;border:1px solid #9aa9bd;border-radius:2px;background:repeating-linear-gradient(to bottom,#fff 0,#fff 3px,#dfe5ed 4px)}.mysql-tree-tables button.active>span:first-child{border-color:#6987dc;background:repeating-linear-gradient(to bottom,#f8faff 0,#f8faff 3px,#b9c9f5 4px)}.mysql-tree-status{display:block;padding:10px 9px;color:#8a96a8;font-size:11px}.mysql-table-workspace{background:#fff}.mysql-table-head{height:72px;flex:0 0 auto;padding:0 22px;border-bottom:1px solid #e7edf5}.mysql-table-head>div{display:grid;gap:4px}.mysql-table-head>div>span{color:#8794a7;font:10px 'DM Mono',monospace}.mysql-view-tabs{height:45px;flex:0 0 auto;display:flex;align-items:end;gap:20px;padding:0 22px;border-bottom:1px solid #e3e9f1}.mysql-view-tabs button{height:45px;position:relative;border:0;background:transparent;padding:0 2px;color:#66758c;font-size:12px;font-weight:800}.mysql-view-tabs button:hover{color:#315bd7}.mysql-view-tabs button.active{color:#315bd7}.mysql-view-tabs button.active:after{position:absolute;right:0;bottom:-1px;left:0;height:2px;background:#3d67f5;content:''}.mysql-preview{flex:1 1 auto;min-height:0;overflow:auto;background:#fff}.mysql-preview table{min-width:100%;border-collapse:separate;border-spacing:0;font-size:11px}.mysql-preview th{position:sticky;z-index:1;top:0;background:#f5f7fa;color:#596a82;font-weight:800;text-align:left}.mysql-preview th,.mysql-preview td{max-width:280px;border-right:1px solid #e8edf3;border-bottom:1px solid #e8edf3;padding:9px 11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mysql-preview th:last-child,.mysql-preview td:last-child{border-right:0}.mysql-preview tbody tr:hover td{background:#f8faff}.mysql-preview td{color:#34435c}.mysql-preview td i{color:#9aa6b7;font-style:normal}.mysql-structure td:nth-child(1){width:52px;color:#8a96a8}.mysql-structure td:nth-child(2) b{color:#28405f;font-size:11px}.mysql-structure code{color:#315a9d;font:11px 'DM Mono',monospace}.mysql-workspace-empty{flex:1;min-height:260px;display:grid;place-content:center;justify-items:center;gap:7px;color:#8a96aa;font-size:12px}.mysql-workspace-empty>b{color:#53637a;font-size:13px}.mysql-workspace-empty>span{font-size:11px}@media(max-width:850px){.mysql-workspace-grid{grid-template-columns:230px minmax(0,1fr)}}@media(max-width:650px){.mysql-workspace-grid{height:auto;min-height:0;grid-template-columns:1fr}.mysql-tree-panel{height:330px;border-right:0;border-bottom:1px solid #dfe6ef}.mysql-table-workspace{min-height:520px}.mysql-table-head{padding:0 16px}.mysql-view-tabs{padding:0 16px}.mysql-preview{max-height:520px}}
 .mysql-table-actions{display:flex!important;grid-auto-flow:column!important;align-items:center;gap:12px!important}.mysql-table-actions>button{height:32px;border:1px solid #315bd7;border-radius:6px;background:#315bd7;padding:0 12px;color:#fff;font-size:11px;font-weight:800}.mysql-table-actions>button:hover{background:#244fc6}.mysql-row-actions-column{left:0;z-index:3!important;width:118px;min-width:118px}.mysql-row-actions{position:sticky;z-index:2;left:0;width:118px;min-width:118px;background:#fff}.mysql-preview tbody tr:hover .mysql-row-actions{background:#f8faff}.mysql-row-actions button{border:0;background:transparent;padding:2px 5px;color:#315bd7;font-size:10px;font-weight:800}.mysql-row-actions button.danger{color:#cf4054}.mysql-row-actions button:disabled{color:#aeb7c5;cursor:not-allowed}.mysql-readonly-notice{position:sticky;right:0;bottom:0;left:0;border-top:1px solid #f0d8a7;background:#fff8e9;padding:9px 12px;color:#956813;font-size:11px}.mysql-row-editor{width:min(780px,calc(100vw - 40px));max-height:calc(100vh - 48px);overflow:auto;padding:22px}.mysql-row-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.mysql-row-fields>label{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:7px 10px;border-bottom:1px solid #edf1f6;padding:0 0 13px}.mysql-row-fields>label>span{grid-column:1/-1;display:flex;min-width:0;align-items:center;gap:8px}.mysql-row-fields>label>span>b{min-width:0;overflow:hidden;color:#34455f;font-size:11px;text-overflow:ellipsis}.mysql-row-fields>label>span>code{color:#78869a;font:10px 'DM Mono',monospace}.mysql-row-fields>label>span>em{border-radius:4px;background:#e8efff;padding:2px 5px;color:#315bd7;font-size:9px;font-style:normal;font-weight:800}.mysql-row-fields>label>input,.mysql-row-fields>label>textarea{width:100%;min-width:0;border:1px solid #dce4ee;border-radius:6px;background:#fff;padding:8px 9px;color:#30415b;font-size:11px;outline:0}.mysql-row-fields>label>input{height:35px}.mysql-row-fields>label>textarea{height:76px;resize:vertical}.mysql-row-fields>label>input:focus,.mysql-row-fields>label>textarea:focus{border-color:#7992ed;box-shadow:0 0 0 3px #e9eeff}.mysql-row-fields>label>input:disabled,.mysql-row-fields>label>textarea:disabled{background:#f2f4f7;color:#9ba5b3}.mysql-row-fields>label>small{height:35px;display:flex;align-items:center;gap:4px;color:#748198;font-size:10px;white-space:nowrap}.mysql-row-fields>label>small input{width:14px;height:14px;margin:0}.mysql-delete-confirm{width:min(440px,calc(100vw - 40px));padding:22px}.mysql-delete-confirm>header{display:grid;gap:8px}.mysql-delete-confirm>header>b{color:#263750;font-size:16px}.mysql-delete-confirm>header>span{color:#7a879a;font-size:12px;line-height:1.6}.button.danger{background:#cf4054;box-shadow:none}.button.danger:hover{background:#b93447}@media(max-width:700px){.mysql-row-editor{width:calc(100vw - 24px);padding:16px}.mysql-row-fields{grid-template-columns:1fr}.mysql-table-actions>small{display:none}.mysql-table-actions>button{padding:0 9px}}
 .mysql-table-actions>button.secondary{border-color:#d5deea;background:#fff;color:#455a78}.mysql-table-actions>button.secondary:hover{border-color:#9fb0c8;background:#f5f7fb}.mysql-sql-modal{width:min(980px,calc(100vw - 40px));max-height:calc(100vh - 48px);display:flex;overflow:hidden;flex-direction:column;padding:22px}.mysql-sql-editor{width:100%;height:170px;min-height:110px;flex:0 0 auto;resize:vertical;border:1px solid #ccd7e5;border-radius:6px;background:#111827;padding:14px;color:#e5edf8;font:12px/1.65 'DM Mono',monospace;outline:0;tab-size:2}.mysql-sql-editor:focus{border-color:#6f8ce6;box-shadow:0 0 0 3px #e5ebff}.mysql-sql-editor::placeholder{color:#748096}.mysql-sql-actions{min-height:52px;display:flex;flex:0 0 auto;align-items:center;justify-content:space-between;gap:14px;border-bottom:1px solid #e6ebf2}.mysql-sql-actions>span{color:#748198;font-size:11px}.mysql-sql-warning{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 15px;align-items:center;margin-top:12px;border:1px solid #efcf93;border-radius:6px;background:#fff9ec;padding:11px 13px}.mysql-sql-warning>b{color:#8b5d0c;font-size:12px}.mysql-sql-warning>span{color:#94713a;font-size:10px}.mysql-sql-warning>button{grid-column:2;grid-row:1/3;border:0;border-radius:6px;background:#b97912;padding:8px 12px;color:#fff;font-size:11px;font-weight:800}.mysql-sql-result{min-height:120px;flex:1 1 auto;overflow:auto}.mysql-sql-result table{min-width:100%;border-collapse:separate;border-spacing:0;font-size:11px}.mysql-sql-result th{position:sticky;z-index:1;top:0;background:#f5f7fa;color:#596a82;text-align:left}.mysql-sql-result th,.mysql-sql-result td{max-width:320px;border-right:1px solid #e8edf3;border-bottom:1px solid #e8edf3;padding:9px 11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mysql-sql-result td i{color:#9aa6b7;font-style:normal}.mysql-sql-success{display:grid;min-height:120px;place-items:center;color:#16845c;font-size:12px;font-weight:800}@media(max-width:700px){.mysql-sql-modal{width:calc(100vw - 24px);padding:16px}.mysql-sql-editor{height:140px}.mysql-sql-warning{grid-template-columns:1fr}.mysql-sql-warning>button{grid-column:auto;grid-row:auto;margin-top:6px}.mysql-sql-result{max-height:45vh}}
 .mysql-data-view{display:flex;min-width:0;min-height:0;flex:1 1 auto;flex-direction:column}.mysql-pagination{min-height:58px;display:flex;flex:0 0 auto;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid #dfe6ef;background:#fafbfd;padding:9px 14px}.mysql-pagination>div,.mysql-pagination>nav{display:flex;align-items:center;gap:9px}.mysql-pagination span,.mysql-pagination label{color:#66758a;font-size:10px;white-space:nowrap}.mysql-pagination select{height:30px;border:1px solid #d5deea;border-radius:5px;background:#fff;padding:0 24px 0 8px;color:#40516c;font-size:11px;outline:0}.mysql-pagination button{height:30px;min-width:30px;border:1px solid #d8e0eb;border-radius:5px;background:#fff;padding:0 9px;color:#53637a;font-size:10px;font-weight:750}.mysql-pagination button:hover:not(:disabled){border-color:#9eb0cf;color:#315bd7}.mysql-pagination button.active{border-color:#315bd7;background:#315bd7;color:#fff}.mysql-pagination button:disabled{background:#f1f3f6;color:#a9b1bd;cursor:not-allowed}@media(max-width:900px){.mysql-pagination{align-items:flex-start;flex-direction:column}.mysql-pagination>nav{width:100%;overflow-x:auto;padding-bottom:2px}}@media(max-width:650px){.mysql-pagination>div{width:100%;justify-content:space-between}.mysql-pagination>nav button{flex:0 0 auto}}
@@ -222,7 +225,9 @@
 .audit-log-toolbar{display:grid!important;grid-template-columns:180px 180px minmax(220px,360px) 1fr!important;align-items:center!important;gap:12px!important;margin:18px 0 12px!important}.audit-log-toolbar>.app-select{width:auto!important;margin:0!important}.audit-log-toolbar input{width:100%!important}.audit-log-pagination{min-height:60px;display:flex!important;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.audit-log-pagination span{min-width:44px;text-align:center}@media(max-width:700px){.audit-log-toolbar{grid-template-columns:1fr 1fr!important}.audit-log-toolbar input,.audit-log-toolbar>span{grid-column:1/-1}.audit-log-pagination{justify-content:center}.audit-log-pagination button{min-width:66px}}
 .sidebar{position:sticky;top:0;height:100vh;min-height:100vh;overflow-y:auto;overflow-x:hidden}
 @media(max-width:700px){.sidebar{position:static;height:auto;min-height:0;overflow:visible}}
-.audit-log-toolbar{display:flex;align-items:center;gap:10px;margin:18px 0 12px}.audit-log-toolbar>.app-select{width:168px}.audit-log-toolbar input{width:220px;height:34px;border:1px solid #d9e1ed;border-radius:6px;padding:0 10px;color:#40516b;font-size:11px;outline:0}.audit-log-toolbar>span{margin-left:auto;color:#7b889b;font-size:11px}.audit-log-list{overflow:hidden}.audit-log-head,.audit-log-list article{display:grid;grid-template-columns:154px 92px 90px minmax(0,1fr) 150px;gap:12px;align-items:center;padding:0 16px}.audit-log-head{height:38px;border-bottom:1px solid #dfe6ef;background:#f7f9fc;color:#7b889b;font-size:10px;font-weight:800}.audit-log-head span:last-child{text-align:right}.audit-log-list article{min-height:52px;border-bottom:1px solid #e8edf3;color:#637189;font-size:11px}.audit-log-list article:last-child{border-bottom:0}.audit-log-list b{color:#315bd7;font-size:11px}.audit-log-list code{overflow:hidden;color:#40516b;font:11px 'DM Mono',monospace;text-overflow:ellipsis;white-space:nowrap}.audit-log-list small{color:#8a96a8;text-align:right}.audit-log-pagination{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px}.audit-log-pagination button{height:30px;border:1px solid #d9e1ed;border-radius:5px;background:#fff;padding:0 9px;color:#596a82;font-size:10px;font-weight:800}.audit-log-pagination button:disabled{opacity:.45;cursor:default}.audit-log-pagination span{color:#718096;font-size:10px}@media(max-width:800px){.audit-log-toolbar{align-items:stretch;flex-wrap:wrap}.audit-log-toolbar>.app-select,.audit-log-toolbar input{width:calc(50% - 5px)}.audit-log-toolbar>span{width:100%;margin-left:0}.audit-log-head{display:none}.audit-log-list article{grid-template-columns:1fr auto;gap:5px;padding:10px 14px}.audit-log-list article code{grid-column:1/-1}.audit-log-list article small{grid-column:2;text-align:right}.audit-log-list article span{display:none}}
+.sidebar-group{display:grid;gap:4px}.sidebar-group-toggle{display:flex;align-items:center;justify-content:space-between;border:0;background:transparent;color:#7f8eaa;padding:10px 13px 5px;font-size:10px;font-weight:700;letter-spacing:.12em;text-align:left}.sidebar-group-toggle b{font-size:14px;font-weight:500;color:#9aa9c3}.sidebar-group-items{display:grid;gap:4px}.sidebar.collapsed .sidebar-group-toggle{justify-content:center;padding-left:0;padding-right:0}.sidebar.collapsed .sidebar-group-toggle em,.sidebar.collapsed .sidebar-group-toggle b{display:none}
+.sidebar .nav-link{font-size:16px;min-height:50px}.sidebar-group-toggle{font-size:13px;padding-top:13px;padding-bottom:8px}.sidebar-group{gap:6px}.sidebar-group-items{gap:6px}
+.audit-log-toolbar{display:flex;align-items:center;gap:10px;margin:18px 0 12px}.audit-log-toolbar>.app-select{width:168px}.audit-log-toolbar input{width:220px;height:34px;border:1px solid #d9e1ed;border-radius:6px;padding:0 10px;color:#40516b;font-size:11px;outline:0}.audit-log-toolbar>span{margin-left:auto;color:#7b889b;font-size:11px}.audit-log-list{overflow:hidden}.audit-log-head,.audit-log-list article{display:grid;grid-template-columns:154px 92px 90px 128px minmax(0,1fr);gap:12px;align-items:center;padding:0 16px}.audit-log-head{height:38px;border-bottom:1px solid #dfe6ef;background:#f7f9fc;color:#7b889b;font-size:10px;font-weight:800}.audit-log-list article{min-height:52px;border-bottom:1px solid #e8edf3;color:#637189;font-size:11px}.audit-log-list article:last-child{border-bottom:0}.audit-log-list b{color:#315bd7;font-size:11px}.audit-log-list code{overflow:hidden;color:#40516b;font:11px 'DM Mono',monospace;text-overflow:ellipsis;white-space:nowrap}.audit-log-list small{color:#315bd7;font-size:12px;font-weight:700;white-space:nowrap}.audit-log-pagination{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px}.audit-log-pagination button{height:30px;border:1px solid #d9e1ed;border-radius:5px;background:#fff;padding:0 9px;color:#596a82;font-size:10px;font-weight:800}.audit-log-pagination button:disabled{opacity:.45;cursor:default}.audit-log-pagination span{color:#718096;font-size:10px}@media(max-width:800px){.audit-log-toolbar{align-items:stretch;flex-wrap:wrap}.audit-log-toolbar>.app-select,.audit-log-toolbar input{width:calc(50% - 5px)}.audit-log-toolbar>span{width:100%;margin-left:0}.audit-log-head{display:none}.audit-log-list article{grid-template-columns:1fr auto;gap:5px;padding:10px 14px}.audit-log-list article code{grid-column:1/-1}.audit-log-list article small{grid-column:2;text-align:right}.audit-log-list article span{display:none}}
 .mysql-transfer-modal{width:min(540px,calc(100vw - 40px));padding:24px}.mysql-transfer-form{display:grid;gap:16px;padding:4px 0 6px}.mysql-transfer-form>label{display:grid;gap:8px;color:#52627a;font-size:12px;font-weight:800}.mysql-transfer-form>p{margin:0;border-left:3px solid #7d98e7;background:#f7f9ff;padding:10px 12px;color:#63728a;font-size:11px;line-height:1.65}.mysql-transfer-confirm{display:flex!important;align-items:center;gap:8px;color:#8e5c0b!important;font-weight:700!important}.mysql-transfer-confirm input{width:15px;height:15px;margin:0;accent-color:#315bd7}.mysql-transfer-file-picker{position:relative;display:flex;align-items:center;gap:10px;min-height:72px;border:1px dashed #b7c5d9;border-radius:7px;background:#f8faff;padding:12px}.mysql-transfer-file-picker input{position:absolute;inset:0;width:100%;opacity:0;cursor:pointer}.mysql-transfer-file-picker b{border:1px solid #c7d2e1;border-radius:6px;background:#fff;padding:8px 11px;color:#40516b;font-size:11px;white-space:nowrap}.mysql-transfer-file-picker:hover b{border-color:#7992ed;color:#315bd7}.mysql-transfer-file-picker em{min-width:0;overflow:hidden;color:#6a7890;font-size:11px;font-style:normal;text-overflow:ellipsis;white-space:nowrap}.mysql-transfer-target-name{color:#40516b;font-weight:800}
 .mysql-transfer-modal{width:min(540px,calc(100vw - 40px));padding:24px}.mysql-transfer-form{display:grid;gap:16px;padding:4px 0 6px}.mysql-transfer-form>label{display:grid;gap:8px;color:#52627a;font-size:12px;font-weight:800}.mysql-transfer-form>p{margin:0;border-left:3px solid #7d98e7;background:#f7f9ff;padding:10px 12px;color:#63728a;font-size:11px;line-height:1.65}.mysql-transfer-confirm{display:flex!important;align-items:center;gap:8px;color:#8e5c0b!important;font-weight:700!important}.mysql-transfer-confirm input{width:15px;height:15px;margin:0;accent-color:#315bd7}.mysql-transfer-file-picker{position:relative;display:flex;align-items:center;gap:10px;min-height:72px;border:1px dashed #b7c5d9;border-radius:7px;background:#f8faff;padding:12px}.mysql-transfer-file-picker input{position:absolute;inset:0;width:100%;opacity:0;cursor:pointer}.mysql-transfer-file-picker b{border:1px solid #c7d2e1;border-radius:6px;background:#fff;padding:8px 11px;color:#40516b;font-size:11px;white-space:nowrap}.mysql-transfer-file-picker:hover b{border-color:#7992ed;color:#315bd7}.mysql-transfer-file-picker em{min-width:0;overflow:hidden;color:#6a7890;font-size:11px;font-style:normal;text-overflow:ellipsis;white-space:nowrap}.mysql-transfer-target-name{color:#40516b;font-weight:800}.audit-log-tabs{display:flex;gap:8px;margin:18px 0 12px}.audit-log-tabs button{height:32px;border:1px solid #d9e1ed;border-radius:6px;background:#fff;padding:0 12px;color:#5c6b82;font-size:11px;font-weight:800}.audit-log-tabs button.active{border-color:#315bd7;background:#315bd7;color:#fff}.audit-log-list{overflow:hidden}.audit-log-list article{display:grid;grid-template-columns:154px 92px 90px minmax(0,1fr) 150px;gap:12px;align-items:center;min-height:52px;border-bottom:1px solid #e8edf3;padding:0 16px;color:#637189;font-size:11px}.audit-log-list article:last-child{border-bottom:0}.audit-log-list b{color:#315bd7;font-size:11px}.audit-log-list code{overflow:hidden;color:#40516b;font:11px 'DM Mono',monospace;text-overflow:ellipsis;white-space:nowrap}.audit-log-list small{color:#8a96a8;text-align:right}@media(max-width:800px){.audit-log-list article{grid-template-columns:1fr auto;gap:5px;padding:10px 14px}.audit-log-list article code{grid-column:1/-1}.audit-log-list article small{grid-column:2;text-align:right}.audit-log-list article span{display:none}}
 .mysql-task-progress{display:block;height:4px;margin-top:5px;border-radius:4px;background:#edf1f6;overflow:hidden}.mysql-task-progress em{display:block;height:100%;border-radius:4px;background:#3d67f5;transition:width .2s ease}.mysql-table-actions>.mysql-task-center .mysql-task-toggle:hover{border-color:#aebfe1;background:#f3f6ff;color:#3158d4}
@@ -238,4 +243,354 @@
 .hadoop-log-pagination input{display:none}.hadoop-log-pagination>span{min-width:44px;text-align:center}
 .mysql-sql-layout{grid-template-columns:minmax(0,1fr)}.mysql-sql-history{display:none}
 .sql-history-modal{width:min(920px,calc(100vw - 40px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;padding:22px}.sql-history-modal-list{min-height:0;overflow:auto;display:grid;gap:8px}.sql-history-modal-list article{border:1px solid #e5eaf2;border-radius:8px;padding:11px 13px;background:#fbfcff}.sql-history-modal-list article header,.sql-history-modal-list article footer{display:flex;align-items:center;gap:8px}.sql-history-modal-list article header b{font-size:12px;color:#30415e}.sql-history-modal-list article header span{width:7px;height:7px;border-radius:50%;background:#d34a5c}.sql-history-modal-list article header span.success{background:#18a16f}.sql-history-modal-list article time{margin-left:auto;color:#929dad;font:10px 'DM Mono'}.sql-history-modal-list article code{display:block;margin:8px 0;max-height:90px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#263a57;font:11px/1.5 'DM Mono'}.sql-history-modal-list article footer{justify-content:space-between}.sql-history-modal-list article footer small{color:#8793a5;font-size:10px}.sql-history-modal-list article footer div{display:flex;gap:12px}.sql-history-modal .platform-pagination{margin-top:12px}
-.mysql-sql-database{display:none}
+
+.mysql-view-tabs button span{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;margin-left:4px;padding:0 5px;border-radius:9px;background:var(--surface-soft,#edf2f7);font-size:11px;line-height:1;color:inherit}.mysql-view-tabs button.active span{background:rgba(255,255,255,.22)}.mysql-indexes td{vertical-align:middle}.mysql-indexes td:nth-child(1){min-width:130px}.mysql-indexes td:nth-child(4){min-width:260px}.mysql-index-columns{display:flex;flex-wrap:wrap;gap:6px}.mysql-index-columns span{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border:1px solid #d9e2ec;border-radius:4px;background:#f8fafc;color:#334155;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:nowrap}.mysql-index-columns b{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:#e2e8f0;color:#475569;font-family:inherit;font-size:10px}.mysql-index-unique,.mysql-index-normal{display:inline-flex;align-items:center;padding:3px 7px;border-radius:3px;font-size:12px;font-weight:600;white-space:nowrap}.mysql-index-unique{background:#e7f7ef;color:#16704a}.mysql-index-normal{background:#eef2f7;color:#536274}
+
+/* The login action stays deliberately static and visually continuous. */
+.login-submit{display:flex!important;width:100%;min-height:44px;justify-content:center;background:#3d67f5!important;background-image:none!important;animation:none!important;transition:background-color .16s ease!important}.login-submit::before,.login-submit::after{display:none!important;content:none!important}.login-submit:hover{background:#3158d4!important}.login-submit:disabled{background:#3d67f5!important}
+
+.prometheus-rule-row .rule-remark{margin:6px 0 0;color:#718096;font-size:11px;line-height:1.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.prometheus-rule-row .rule-remark::first-line{color:#718096}
+
+.ssh-auth-mode{display:grid!important;gap:7px}.ssh-auth-mode>.field-label{display:block}.ssh-auth-options{display:inline-flex;align-items:center;width:max-content;max-width:100%;overflow:hidden;border:1px solid #dfe5ee;border-radius:8px;background:#f7f9fc;padding:3px}.ssh-auth-options button{min-width:112px;height:34px;border:0;border-radius:5px;background:transparent;color:#66758d;padding:0 12px;font-size:12px;font-weight:800}.ssh-auth-options button.active{background:#253b69;color:#fff;box-shadow:0 2px 7px #263b6929}.ssh-auth-options button:not(.active):hover{background:#edf2f8;color:#40506e}@media(max-width:700px){.ssh-auth-options{width:100%}.ssh-auth-options button{flex:1;min-width:0}}
+
+.frequency-editor{position:relative;display:grid;gap:0}.frequency-inherit{position:absolute;right:0;top:0;display:inline-flex;align-items:center;gap:6px;color:#718096;font-size:11px;font-weight:600}.frequency-inherit input{width:14px!important;height:14px;margin:0!important;accent-color:var(--blue)}.frequency-editor.following-general .frequency-input{opacity:.58}.frequency-help{grid-column:1/-1;margin:-3px 0 2px;color:#7b879a;font-size:11px;line-height:1.65}
+
+/* Audit table uses only the fields that are actually displayed. */
+.audit-log-head,.audit-log-list article{grid-template-columns:184px 96px 128px minmax(0,1fr)!important;gap:14px!important}.audit-log-head span:nth-child(3),.audit-log-list article small{color:#315bd7;font-size:12px;font-weight:700;text-align:left;white-space:nowrap}@media(max-width:800px){.audit-log-head{display:none!important}.audit-log-list article{grid-template-columns:1fr auto!important}.audit-log-list article time{grid-column:1}.audit-log-list article>span{grid-column:1}.audit-log-list article small{grid-column:2}.audit-log-list article code{grid-column:1/-1!important}}
+
+.select-option-name{display:inline}.select-option-note{margin-left:7px;color:#a1acbc;font-size:10px;font-weight:600}
+
+.mysql-scene-switch{display:flex;align-items:center;gap:4px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft,#f5f7fb)}.mysql-scene-switch button{border:0;border-radius:7px;background:transparent;color:var(--muted,#738096);padding:8px 14px;font:inherit;cursor:pointer}.mysql-scene-switch button.active{background:var(--surface,#fff);color:var(--text,#172033);box-shadow:0 1px 3px rgba(20,32,55,.12)}
+.report-task-wizard{width:min(760px,100%)}.wizard-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:18px 22px;border-bottom:1px solid var(--line)}.wizard-steps>div{display:flex;align-items:center;gap:8px;color:#9aa6ba;font-size:12px;font-weight:700}.wizard-steps b{width:26px;height:26px;border:1px solid #dce3ef;border-radius:50%;display:grid;place-items:center;font-size:11px}.wizard-steps>div.active{color:var(--blue)}.wizard-steps>div.active b,.wizard-steps>div.done b{border-color:var(--blue);background:var(--blue);color:#fff}.wizard-steps>div.done{color:#4e72d9}.wizard-body{min-height:220px;padding:24px}.wizard-help{grid-column:1/-1;color:#7c8aa0;font-size:12px;margin:4px 0 0}.wizard-body textarea{min-height:220px;resize:vertical;font-family:'DM Mono',Consolas,monospace;background:#111b2e;color:#e6edf8;border-color:#263958}.wizard-body textarea::placeholder{color:#71809a}
+.cron-config{grid-column:1/-1;padding:16px;border:1px solid var(--line);border-radius:10px;background:#f8faff}.cron-config>b{display:block;font-size:12px;margin-bottom:12px}.cron-fields{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.cron-fields label{font-size:11px}.cron-fields input{font-family:'DM Mono',Consolas,monospace;text-align:center}.cron-config>code{display:block;margin-top:14px;padding:10px;border-radius:7px;background:#18243b;color:#c9d6ee;font:13px 'DM Mono',Consolas,monospace}.report-create-button{margin-left:10px;white-space:nowrap}.table-toolbar .filter{margin-left:auto}
+.report-task-list{padding:18px}.report-task-row{border-top:1px solid var(--line);display:grid;grid-template-columns:minmax(280px,1fr) 78px 78px 160px auto;align-items:center;gap:16px;padding:17px 4px}.report-task-row:first-of-type{border-top:0}.report-task-row>div:first-child b{display:block;font-size:13px}.report-task-row>div:first-child span{display:block;color:#8793a9;font-size:11px;margin-top:4px}.report-task-row code{display:block;color:#66758d;font:11px/1.5 'DM Mono',monospace;margin-top:8px;max-width:620px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.report-task-row>small{color:#8793a9;font-size:10px}.report-task-actions{display:flex;gap:5px;justify-content:flex-end}.report-task-modal{width:min(820px,100%)}@media(max-width:900px){.report-task-row{grid-template-columns:1fr auto}.report-task-row>small{grid-column:1}.report-task-actions{grid-column:1/-1;justify-content:flex-start}}
+.sql-variable-preview{display:grid;gap:6px;margin-top:14px;padding:12px;border:1px solid #dce5f5;border-radius:8px;background:#f7f9fd;color:#5f6e86;font-size:11px}.sql-variable-preview b{color:#334562}.sql-variable-preview span{display:flex;gap:8px}.sql-variable-preview code{color:#4964b8}
+.cron-fields label.invalid{color:#c43d50}.cron-fields label.invalid input{border-color:#e44f62;background:#fff7f8}.cron-fields label small,.cron-error{display:block;color:#c43d50;font-size:10px;margin-top:4px}.cron-error{margin-top:10px;padding:8px;border-radius:6px;background:#fff0f2}
+.cron-symbol-help{display:grid;gap:10px;margin:16px 0 0;padding-top:14px;border-top:1px solid var(--line);font-size:12px;line-height:1.6;color:var(--muted)}
+.cron-symbol-help>div{display:grid;grid-template-columns:72px minmax(0,1fr);gap:12px}
+.cron-symbol-help dt{font-weight:600;color:var(--ink);font-family:Consolas,monospace}
+.cron-symbol-help dd{margin:0;overflow-wrap:anywhere}
+.report-task-switch{display:inline-flex;align-items:center;cursor:pointer}.report-task-switch input{position:absolute;opacity:0;pointer-events:none}.report-task-switch span{width:38px;height:22px;border-radius:13px;background:#cbd4e3;position:relative;transition:.2s}.report-task-switch span:after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #17223844;transition:.2s}.report-task-switch input:checked+span{background:#20ad78}.report-task-switch input:checked+span:after{transform:translateX(16px)}
+.report-task-list .report-task-row{grid-template-columns:minmax(0,1fr) 78px 160px auto}
+.report-task-switch input:focus-visible+span{outline:2px solid var(--blue);outline-offset:3px}
+.report-task-switch input:disabled+span{opacity:.5;cursor:wait}
+@media(max-width:900px){.report-task-list .report-task-row{grid-template-columns:minmax(0,1fr) auto}}
+
+.sidebar-group-toggle-label{display:inline-flex;align-items:center;gap:14px;min-width:0}
+.sidebar-group-toggle-label em{font-style:normal}
+.sidebar-line-icon{width:19px;height:19px;flex:none;color:#aebbd1;opacity:.95}
+.sidebar-group-toggle .sidebar-line-icon{width:19px;height:19px;color:#8290ad}
+.sidebar-group-items .nav-link{background:rgba(115,145,255,.08)}
+.sidebar-group-items .nav-link:hover{background:#1b2944}
+.sidebar-group-items .nav-link.active{background:#253b69}
+.report-result-modal{width:min(1100px,95vw)}
+
+.sidebar-group-toggle{font-size:16px;letter-spacing:normal;padding-left:14px;padding-right:14px}
+.sidebar-group-items .nav-link{font-size:13px;padding-left:24px;min-height:38px;margin:0 12px}
+.sidebar-group-items{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .3s ease,opacity .22s ease}
+.sidebar-group.open .sidebar-group-items{grid-template-rows:1fr;opacity:1}
+.sidebar-group-items-inner{display:grid;gap:6px;overflow:hidden;min-height:0}
+/* ===== 展开/关闭统一动画 ===== */
+.modal-backdrop{animation:opsguard-fade-in .16s ease}
+.modal-backdrop>.surface{animation:opsguard-pop-in .22s cubic-bezier(.2,.7,.3,1)}
+.notification-popover,.platform-popover,.account-popover{animation:opsguard-fall-in .18s ease}
+.app-select-menu,.ssh-source-select-menu{animation:opsguard-menu-in .16s ease}
+.mysql-tree-tables{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .25s ease,opacity .18s ease;margin-left:20px;padding-left:9px;border-left:1px solid #dbe3ee}
+.mysql-tree-tables.open{grid-template-rows:1fr;opacity:1}
+.mysql-tree-tables-inner{display:grid;gap:1px;overflow:hidden;min-height:0}
+.mysql-task-list{display:grid;grid-template-rows:0fr;opacity:0;max-height:none;overflow:hidden;padding-right:8px;transition:grid-template-rows .25s ease,opacity .18s ease}
+.mysql-task-center.expanded .mysql-task-list{grid-template-rows:1fr;opacity:1}
+.mysql-task-list-inner{display:grid;gap:7px;overflow-y:auto;max-height:min(520px,calc(100vh - 260px));min-height:0;padding-right:4px}
+.mysql-task-list-inner::-webkit-scrollbar{width:8px}
+.mysql-task-list-inner::-webkit-scrollbar-thumb{border:2px solid #fff;border-radius:8px;background:#b8c4d4}
+.mysql-task-list-inner::-webkit-scrollbar-track{background:transparent}
+.mysql-workspace-grid{transition:grid-template-columns .25s ease}
+@keyframes opsguard-fade-in{from{opacity:0}to{opacity:1}}
+@keyframes opsguard-pop-in{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes opsguard-fall-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes opsguard-menu-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+/* ===== UI 风格统一 ===== */
+/* 表单控件统一 7px 圆角 */
+.select-shell select,.app-select-trigger,.ssh-source-select-trigger,
+.mysql-tree-panel>input,.mysql-table-query-bar>input,.mysql-table-query-bar .app-select-trigger,
+.mysql-sql-editor,.mysql-row-fields>label>input,.mysql-row-fields>label>textarea,
+.mysql-page-size-select .app-select-trigger,.mysql-sql-database-select .app-select-trigger,
+.import-name-field select,.consul-filter input,.consul-browser-tools input,
+.consul-create-dialog input,.consul-create-dialog textarea
+{border-radius:7px}
+.mysql-table-query-bar>input:focus{border-color:#7992ed;box-shadow:0 0 0 3px #e9eeff}
+/* 次级按钮统一 7px 圆角 */
+.mysql-table-actions>button,.notification-toolbar button:not(.button),.type-picker button,
+.hadoop-filter-reset,.sql-history-trigger,.platform-menu-trigger
+{border-radius:7px}
+/* 分页统一为紧凑实心风格 */
+.sql-pagination button{height:30px;min-width:30px;border:1px solid #d8e0eb;border-radius:5px;background:#fff;padding:0 9px;color:#53637a;font-size:10px;font-weight:750}
+.sql-pagination button:hover:not(:disabled){border-color:#9eb0cf;color:#315bd7}
+.sql-pagination button:disabled{background:#f1f3f6;color:#a9b1bd;cursor:not-allowed}
+.sql-pagination span{font:700 11px 'DM Mono',monospace;color:#53637a}
+/* 开关配色统一 */
+.report-task-switch span{background:#d9e0eb}
+.report-task-switch input:checked+span{background:var(--green)}
+/* 移动端侧边栏分组标题不换行 */
+@media(max-width:700px){
+.sidebar-group-toggle{flex:0 0 auto;white-space:nowrap}
+.sidebar-group-toggle-label em{white-space:nowrap}
+}
+/* ===== 报表任务行信息重排 ===== */
+.report-task-list .report-task-row{grid-template-columns:minmax(0,1fr) max-content auto;grid-template-areas:"content status actions" "content time actions";align-items:center;column-gap:24px;padding:18px 4px}
+.report-task-list .report-task-row>div:first-child{grid-area:content;min-width:0}
+.report-task-list .report-task-row>span{grid-area:status;justify-self:start}
+.report-task-list .report-task-row>small{grid-area:time;justify-self:start;white-space:nowrap}
+.report-task-list .report-task-row>.report-task-actions{grid-area:actions;align-self:center;gap:8px}
+@media(max-width:900px){
+.report-task-list .report-task-row{grid-template-columns:1fr;grid-template-areas:"content" "status" "time" "actions";row-gap:8px}
+.report-task-list .report-task-row>.report-task-actions{justify-content:flex-start;gap:14px}
+}
+/* ===== 报表任务行信息重排 v2：右区顶对齐 ===== */
+.report-task-list .report-task-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"content actions" "content status" "content time";align-items:start;column-gap:24px;padding:18px 4px}
+.report-task-list .report-task-row>div:first-child{grid-area:content}
+.report-task-list .report-task-row>span{grid-area:status;justify-self:end}
+.report-task-list .report-task-row>small{grid-area:time;justify-self:end;white-space:nowrap;margin-top:2px}
+.report-task-list .report-task-row>.report-task-actions{grid-area:actions;justify-self:end;gap:8px;margin-top:2px}
+@media(max-width:900px){
+.report-task-list .report-task-row{grid-template-columns:1fr;grid-template-areas:"content" "status" "time" "actions";row-gap:8px}
+.report-task-list .report-task-row>span{justify-self:start}
+.report-task-list .report-task-row>small{justify-self:start;margin-top:0}
+.report-task-list .report-task-row>.report-task-actions{justify-self:start;gap:14px}
+}
+/* ===== 报表任务行 v3：名称+环境同行、状态绿色、SQL独立 ===== */
+.report-task-list .report-task-row{grid-template-columns:minmax(0,1fr) max-content max-content auto;grid-template-areas:"content status time actions" "content . . .";align-items:start;column-gap:16px;padding:18px 4px}
+.report-task-list .report-task-row>div:first-child{grid-area:content;min-width:0}
+.report-task-list .report-task-row>div:first-child b{display:inline;font-size:13px}
+.report-task-list .report-task-row>div:first-child span:nth-of-type(1){display:inline;margin-left:9px;color:#7f8da4;font-size:11px;vertical-align:1px}
+.report-task-list .report-task-row>div:first-child code{margin-top:6px;max-width:none}
+.report-task-list .report-task-row>span{grid-area:status;justify-self:start}
+.report-task-list .report-task-row>span.tag.running{background:#e7f7ef;color:#128354}
+.report-task-list .report-task-row>small{grid-area:time;justify-self:start;white-space:nowrap}
+.report-task-list .report-task-row>.report-task-actions{grid-area:actions;justify-self:end;gap:8px}
+@media(max-width:900px){
+.report-task-list .report-task-row{grid-template-columns:1fr;grid-template-areas:"content" "status" "time" "actions";row-gap:8px}
+.report-task-list .report-task-row>span{justify-self:start}
+.report-task-list .report-task-row>small{justify-self:start}
+.report-task-list .report-task-row>.report-task-actions{justify-self:start;gap:14px}
+}
+/* ===== 报表任务行卡片化 + 悬浮动画（对齐告警规则页） ===== */
+.report-task-list{display:grid;gap:10px}
+.report-task-list>.table-toolbar{padding-bottom:0;margin-bottom:5px}
+.report-task-list .report-task-row{border:1px solid #edf1f6;border-radius:10px;background:#fbfcff;padding:16px 18px;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,background .18s ease}
+.report-task-list .report-task-row:hover{transform:translateY(-1px);border-color:#c8d5e8;box-shadow:0 9px 20px #243c640e}
+@media(prefers-reduced-motion:reduce){.report-task-list .report-task-row{transition:none}}
+/* ===== 报表任务行右侧留白优化 ===== */
+.report-task-list .report-task-row>small{margin-right:16px}
+.report-task-list .report-task-row>.report-task-actions{gap:10px}
+/* ===== 报表任务行 v5：右侧组垂直居中 ===== */
+.report-task-list .report-task-row{grid-template-columns:minmax(0,1fr) max-content max-content auto;grid-template-areas:"content status time actions";align-items:center;column-gap:16px;padding:16px 18px}
+.report-task-list .report-task-row>div:first-child{grid-area:content;min-width:0}
+.report-task-list .report-task-row>span{grid-area:status}
+.report-task-list .report-task-row>small{grid-area:time;white-space:nowrap;margin-right:16px}
+.report-task-list .report-task-row>.report-task-actions{grid-area:actions;justify-self:end;gap:10px}
+@media(max-width:900px){
+.report-task-list .report-task-row{grid-template-columns:1fr;grid-template-areas:"content" "status" "time" "actions";row-gap:8px}
+.report-task-list .report-task-row>span{justify-self:start}
+.report-task-list .report-task-row>small{justify-self:start;margin-right:0;margin-top:0}
+.report-task-list .report-task-row>.report-task-actions{justify-self:start;gap:14px}
+}
+/* ===== 报表任务工具栏：标题单行不换行；右侧状态下拉+搜索框等高对齐 ===== */
+.report-task-list>.table-toolbar.report-toolbar{display:flex;align-items:center;gap:12px}
+.report-toolbar-title{flex-shrink:0;display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.report-toolbar-title small{margin-left:2px}
+.report-toolbar-controls{margin-left:auto;display:flex;align-items:center;gap:8px;flex-shrink:0}
+.report-status-select{width:168px;margin:0!important}
+.report-status-select .app-select-trigger{height:34px;border-radius:6px;padding:0 10px;font-size:11px;box-shadow:none}
+.report-search{width:220px;height:34px;border:1px solid #d9e1ed;border-radius:6px;background:#fff;padding:0 10px;color:#40516b;font-size:11px;outline:0}
+.report-search:focus{border-color:#8ea1f4;box-shadow:0 0 0 3px #e9eeff}
+.report-toolbar .report-create-button{margin-left:0;flex-shrink:0;white-space:nowrap}
+@media(max-width:900px){.report-toolbar{flex-wrap:wrap}.report-toolbar-controls{margin-left:0}}
+
+/* 报表任务行：SQL 悬浮提示保留换行与等宽字体 */
+.report-task-row .platform-tooltip{max-width:100%}
+.report-task-row .platform-tooltip-content{white-space:pre-wrap;font-family:'DM Mono',Consolas,monospace;max-width:min(520px,calc(100vw - 32px))}
+
+/* 报表任务行：库表名紧跟数据源，同一行内联展示 */
+.report-task-row>div:first-child code.report-table-ref{display:inline;margin:0 0 0 8px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:1px}
+
+/* 报表任务行：覆盖 display:block，让 Tooltip 内联在数据源后面 */
+.report-task-row>div:first-child .platform-tooltip{display:inline-flex;vertical-align:1px;margin:0}
+
+/* 报表任务行 v6：状态/时间紧贴内容，开关移到时间后，操作组靠右 */
+.report-task-list .report-task-row{grid-template-columns:minmax(0,auto) max-content max-content max-content minmax(0,1fr) auto;grid-template-areas:"content status time toggle spacer actions";column-gap:14px}
+.report-task-list .report-task-row>.report-task-switch{grid-area:toggle;justify-self:center}
+@media(max-width:900px){.report-task-list .report-task-row{grid-template-columns:1fr;grid-template-areas:"content" "status" "time" "toggle" "actions"}.report-task-list .report-task-row>.report-task-switch{justify-self:start}}
+
+/* 新增报表任务向导：头部/步骤条/底部按钮固定，仅中间内容区滚动 */
+.report-task-wizard{display:flex;flex-direction:column;overflow:hidden}
+.report-task-wizard>.modal-head,.report-task-wizard>.wizard-steps,.report-task-wizard>.form-error,.report-task-wizard>.modal-actions{flex-shrink:0}
+.report-task-wizard>.wizard-body{flex:1 1 auto;min-height:0;overflow-y:auto}
+
+/* 向导弹窗：去掉外层左右 padding，滚动条贴右边缘，避免悬浮的直角条 */
+.report-task-wizard{padding:0}
+.report-task-wizard>.modal-head{padding:20px 22px 15px;margin-bottom:0}
+.report-task-wizard>.wizard-steps{padding:14px 22px}
+.report-task-wizard>.wizard-body{padding:20px 22px}
+.report-task-wizard>.form-error{padding:0 22px}
+.report-task-wizard>.modal-actions{padding:15px 22px 20px;margin-top:0}
+
+/* 顶部 toast：淡入后 2.7s 开始淡出，3s 后由 React 卸载 */
+.toast{animation:toast-in .2s ease, toast-out .3s ease 2.7s forwards}
+@keyframes toast-in{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}
+@keyframes toast-out{to{opacity:0;transform:translate(-50%,-8px)}}
+
+/* 报表任务行：状态/时间/开关整体右移，视觉居中 */
+.report-task-list .report-task-row>span.tag{margin-left:40px}
+@media(max-width:900px){.report-task-list .report-task-row>span.tag{margin-left:0}}
+
+/* 报表任务行 v7：三块布局 —— 左内容 / 中状态时间开关(左右弹性间隔居中) / 右操作 */
+.report-task-list .report-task-row{grid-template-columns:minmax(0,auto) minmax(40px,1fr) max-content max-content max-content minmax(40px,1fr) auto;grid-template-areas:"content s1 status time toggle s2 actions"}
+.report-task-list .report-task-row>span.tag{margin-left:0}
+
+/* 报表任务行：内容块内元数据 span 同行排列（执行方式/数据源），排除 Tooltip 容器 */
+.report-task-list .report-task-row>div:first-child span:not(.platform-tooltip){display:inline;margin-left:9px;vertical-align:1px}
+
+/* 报表任务行 v8：桌面端左侧内容列固定宽度，保证所有行的状态/时间/开关/按钮上下对齐 */
+@media(min-width:901px){
+.report-task-list .report-task-row{grid-template-columns:clamp(340px,28%,460px) minmax(40px,1fr) max-content max-content max-content minmax(40px,1fr) auto}
+.report-task-list .report-task-row>div:first-child{min-width:0;overflow:hidden;white-space:nowrap}
+.report-task-list .report-task-row>div:first-child code.report-table-ref{max-width:220px}
+}
+
+/* 报表结果弹窗：标题与元信息居中，提示文字居中 */
+.report-result-modal{display:flex;flex-direction:column}
+.report-result-modal .modal-head{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:16px}
+.report-result-modal .modal-head>div:nth-child(2){text-align:center}
+.report-result-modal .modal-head>div:nth-child(2) p{margin-top:4px}
+.report-result-modal>p{text-align:center;margin:4px 0 12px;color:#718096;font-size:12px}
+
+/* 执行历史弹窗：表格化展示 */
+.report-history-table-wrap{overflow:auto;max-height:60vh;border:1px solid #e6ebf2;border-radius:8px}
+.report-history-table{width:100%;border-collapse:collapse;font-size:12px}
+.report-history-table th{text-align:left;padding:10px 12px;background:#f7f9fc;color:#7b889b;font-size:11px;font-weight:800;border-bottom:1px solid #dfe6ef;position:sticky;top:0}
+.report-history-table td{padding:11px 12px;border-bottom:1px solid #edf1f6;color:#40516b;vertical-align:middle}
+.report-history-table tbody tr:last-child td{border-bottom:0}
+.report-history-table td.report-history-msg{color:#718096;font-size:11px}
+.report-history-table td:last-child{white-space:nowrap;text-align:right}
+
+/* 修复：内容列 overflow:hidden 会裁掉库表悬浮提示，改回 visible */
+@media(min-width:901px){.report-task-list .report-task-row>div:first-child{overflow:visible}}
+
+/* 结果弹窗浮在历史弹窗之上 */
+.modal-backdrop-above{z-index:30}
+
+/* 报表任务行 v9：强制左列固定宽度，中间块上下对齐 */
+@media(min-width:901px){
+.report-task-list .report-task-row{grid-template-columns:440px minmax(40px,1fr) max-content max-content max-content minmax(40px,1fr) auto !important}
+}
+
+/* Hive 工作台：数据库列表整行样式 */
+.hive-tree{display:grid;gap:2px;padding:4px 2px}
+.hive-tree>button{width:100%;height:36px;display:flex;align-items:center;gap:9px;border:0;border-radius:6px;background:transparent;padding:0 10px;color:#43546e;text-align:left;cursor:pointer}
+.hive-tree>button:hover{background:#eef2f8;color:#263b5f}
+.hive-tree>button.selected{background:#e5edff;color:#254fc2;font-weight:700}
+.hive-tree-dot{width:14px;height:11px;border:1px solid #6681b3;border-radius:2px;background:#dfe8f8;box-shadow:inset 0 3px #f7faff;flex:0 0 14px}
+.hive-tree>button.selected .hive-tree-dot{border-color:#6987dc;background:#b9c9f5}
+.hive-tree>button>b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+
+/* Hive 工作台：左侧树 库→表 展开结构 */
+.hive-tree-group{display:block}
+.hive-tree-db{width:100%;height:32px;display:flex;align-items:center;gap:6px;border:0;border-radius:6px;background:transparent;padding:0 8px;color:#43546e;text-align:left;cursor:pointer}
+.hive-tree-db:hover{background:#eef2f8}
+.hive-tree-db.selected{background:#e5edff;color:#254fc2}
+.hive-caret{display:inline-block;width:10px;font-size:9px;color:#8494b0;transition:transform .18s ease}
+.hive-caret.open{transform:rotate(90deg)}
+.hive-tree-tables{display:grid;gap:1px;margin:1px 0 2px 14px;padding-left:8px;border-left:1px dashed #d8e0ee;animation:hive-tree-in .18s ease}
+.hive-tree-status{padding:4px 10px;font-size:11px;color:#98a4b8}
+.hive-tree-table{width:100%;height:28px;display:flex;align-items:center;gap:7px;border:0;border-radius:5px;background:transparent;padding:0 8px;color:#5a6a85;text-align:left;cursor:pointer;font-size:11.5px}
+.hive-tree-table:hover{background:#f0f4fb;color:#2c477d}
+.hive-tree-table.selected{background:#e8efff;color:#254fc2;font-weight:700}
+.hive-table-icon{width:12px;height:9px;border:1px solid #9db0d4;border-radius:1px;background:#f4f7fd;flex:0 0 12px}
+@keyframes hive-tree-in{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+
+/* Hive 工作台：数据表样式 */
+.hive-data-table{width:100%;border-collapse:collapse;font-size:12px}
+.hive-data-table thead th{position:sticky;top:0;background:#f5f8ff;color:#2c477d;font-weight:700;text-align:left;padding:10px 14px;border-bottom:2px solid #d8e2f5;white-space:nowrap;z-index:1}
+.hive-data-table tbody td{padding:9px 14px;border-bottom:1px solid #eef2f8;color:#34435c;white-space:nowrap}
+.hive-data-table tbody tr:nth-child(even){background:#fafbfe}
+.hive-data-table tbody tr:hover{background:#eef3ff}
+.hive-data-table tbody tr:last-child td{border-bottom:0}
+.hive-data-table-wrap{overflow:auto;max-height:calc(100vh - 320px);border:1px solid #e4eaf2;border-radius:8px;background:#fff}
+
+/* MySQL 工作台数据表对齐 Hive 样式 */
+.mysql-preview table{width:100%;border-collapse:collapse;font-size:12px}
+.mysql-preview thead th{position:sticky;top:0;background:#f5f8ff;color:#2c477d;font-weight:700;text-align:left;padding:10px 14px;border-bottom:2px solid #d8e2f5;white-space:nowrap}
+.mysql-preview tbody td{padding:9px 14px;border-bottom:1px solid #eef2f8;color:#34435c;white-space:nowrap}
+.mysql-preview tbody tr:nth-child(even){background:#fafbfe}
+.mysql-preview tbody tr:hover{background:#eef3ff}
+.mysql-preview{overflow:auto;max-height:calc(100vh - 320px);border:1px solid #e4eaf2;border-radius:8px;background:#fff}
+
+/* Hive 工作台：表格区 flex 自适应，分页固定底部 */
+.hive-data-table{width:100%;border-collapse:collapse;font-size:12px}
+.hive-data-table-wrap{flex:1 1 auto;min-height:0;overflow:auto;border:0;border-radius:0;background:#fff;max-height:none}
+.hive-data-table-wrap table{width:100%}
+.mysql-table-workspace>.platform-pagination,.mysql-table-workspace>.UnifiedPagination,
+.mysql-table-workspace footer.mysql-pagination{flex:0 0 auto;border-top:1px solid #e7edf5;background:#fff;padding:10px 22px}
+
+/* Hive 工作台：强制表格区滚动 */
+.mysql-table-workspace{overflow:hidden!important}
+.hive-data-table-wrap{flex:1 1 0%!important;min-height:0!important;overflow:auto!important;max-height:none!important;display:block}
+.hive-data-table-wrap table{margin:0}
+.mysql-table-workspace footer.mysql-pagination{flex:0 0 auto;flex-shrink:0}
+
+/* Hive 工作台：表格区固定高度滚动 */
+.hive-data-table-wrap{flex:none!important;height:calc(100vh - 320px)!important;overflow-y:auto!important;overflow-x:auto!important;-webkit-overflow-scrolling:touch}
+
+/* Hive 工作台：表格区正确类名 */
+.mysql-table-workspace .mysql-data-table-wrap{flex:1 1 auto!important;min-height:0!important;overflow:auto!important;max-height:none!important;height:auto!important;border:0;border-radius:0}
+
+.mysql-tree-database>button>.platform-tooltip,.mysql-tree-tables button>.platform-tooltip{min-width:0;display:flex;align-items:center}.mysql-tree-database>button>.platform-tooltip>b,.mysql-tree-tables button>.platform-tooltip>b{display:block;flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.mysql-tree-database>button>small{white-space:nowrap}
+
+.mysql-null{color:#9aa7bd;font-style:italic}.mysql-null:not(i){font-style:italic}.mysql-sql-result td .mysql-null{color:#9aa7bd}
+
+.hive-partition-select{width:auto;min-width:220px;max-width:min(380px,calc(100vw - 220px));margin:0}.hive-partition-select .app-select-trigger{height:34px;position:relative;border-radius:6px;padding:0 26px 0 11px;box-shadow:none}.hive-partition-select .app-select-trigger>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hive-partition-select .app-select-trigger:after{position:absolute;top:50%;right:10px;width:6px;height:6px;content:'';border-right:1.5px solid #7d8ba0;border-bottom:1.5px solid #7d8ba0;transform:translateY(-70%) rotate(45deg);transition:transform .16s ease}.hive-partition-select.open .app-select-trigger:after{transform:translateY(-30%) rotate(225deg)}.partition-select-menu{min-width:min(480px,calc(100vw - 32px));max-width:min(600px,calc(100vw - 32px))}.partition-select-menu button{white-space:normal;word-break:break-all;line-height:1.5;font-family:'DM Mono',Consolas,monospace;font-size:11px}
+
+/* tooltip: hide arrow for database names in workspace trees */
+.platform-tooltip.no-arrow .platform-tooltip-content:after{display:none}
+/* let table-name tooltips escape the collapse wrapper so top-row tooltips are visible */
+.mysql-tree-tables-inner{overflow:visible}
+
+
+/* workspace tree tooltips: only show on hover; a clicked (mouse-focused) table
+   name must not keep its tooltip stuck open. Keyboard focus-visible is
+   deliberately suppressed inside the tree (items are self-describing). */
+.mysql-tree .platform-tooltip:has(:focus):not(:hover)>.platform-tooltip-content{opacity:0;visibility:hidden;transform:translate(-50%,4px)}
+
+/* workspace tree: draggable width resize handle */
+.mysql-workspace-grid{position:relative}
+.mysql-tree-resizer{position:absolute;z-index:9;top:0;bottom:0;width:6px;margin-left:-3px;cursor:col-resize;background:transparent;border-radius:3px}
+.mysql-tree-resizer:hover{background:#c9d6ec}
+
+
+.platform-popover>button.platform-manage{display:block;width:100%;border:0;border-top:1px solid #edf1f6;border-radius:0;margin-top:4px;background:transparent;color:#4968df;font-size:11px;font-weight:800;padding:9px 10px;text-align:left;cursor:pointer;font-family:inherit}
+.platform-popover>button.platform-manage:hover{background:#f4f7ff}
+
+
+/* Hive/PG 工作台：表格区撑满 + 分页栏固定底部 */
+.mysql-table-workspace{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.mysql-table-workspace>.mysql-data-table-wrap{flex:1 1 0%!important;min-height:0!important;overflow:auto!important;max-height:none!important;height:auto!important}
+.mysql-table-workspace>footer.mysql-pagination{flex:0 0 auto!important;flex-shrink:0!important}
+.mysql-table-workspace>.empty-state{flex:1 1 auto}
+
+
+/* 空状态提示美化 */
+.mysql-workspace-empty,.empty-state{text-align:center;padding:60px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+.mysql-workspace-empty b,.empty-state b{font-size:20px!important;color:#d94b5d!important;font-weight:600}
+.mysql-workspace-empty span,.empty-state span{font-size:14px;color:#8898b0!important;line-height:1.6;max-width:520px}
+
+
+/* 树面板内部滚动，不撑高页面 */
+.mysql-tree-panel{overflow:hidden;display:flex;flex-direction:column}
+.mysql-tree-panel .mysql-tree{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden}
+.mysql-tree-panel>header,.mysql-tree-panel>input{flex:0 0 auto}
+
+
+/* 柔和化全局错误/提示条，不刺眼 */
+.form-error{display:block;border:0;border-radius:6px;background:#f4f6fa;color:#6b7a94;padding:8px 11px;font-size:11px;font-weight:600;line-height:1.5}
+

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"monitor-platform/internal/config"
 	"monitor-platform/internal/model"
 	"monitor-platform/internal/service"
+	"monitor-platform/internal/webassets"
 )
 
 func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
@@ -79,6 +82,124 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": service.ListMySQLAsyncJobs(r.URL.Query().Get("sourceId"))})
 	})
+	mux.HandleFunc("/api/mysql-report-tasks", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, map[string]any{"items": service.ListMySQLReportTasks(r.URL.Query().Get("sourceId"))})
+		case http.MethodPost, http.MethodPut:
+			var task model.MySQLReportTask
+			if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求内容格式无效"})
+				return
+			}
+			saved, err := service.SaveMySQLReportTask(task)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, saved)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	})
+	mux.HandleFunc("/api/mysql-report-tasks/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/mysql-report-tasks/"), "/"), "/")
+		if len(parts) == 0 || parts[0] == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "报表任务不存在"})
+			return
+		}
+		id := parts[0]
+		if len(parts) == 2 && parts[1] == "enabled" && r.Method == http.MethodPost {
+			var request struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求内容格式无效"})
+				return
+			}
+			task, err := service.SetMySQLReportTaskEnabled(id, request.Enabled)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, task)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "run" && r.Method == http.MethodPost {
+			if err := service.RunReportNow(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]string{"message": "报表任务已开始执行"})
+			return
+		}
+		if len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost {
+			if err := service.RunReportNow(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]string{"message": "报表任务已重新提交执行"})
+			return
+		}
+		if len(parts) == 2 && parts[1] == "result" && r.Method == http.MethodGet {
+			result, err := service.LatestReportRun(id)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "runs" && r.Method == http.MethodGet {
+			history, err := service.ListReportRuns(id, queryInt(r, "page", 1), queryInt(r, "pageSize", 10))
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "读取执行历史失败"})
+				return
+			}
+			writeJSON(w, http.StatusOK, history)
+			return
+		}
+		if len(parts) == 4 && parts[1] == "runs" && parts[3] == "result" && r.Method == http.MethodGet {
+			result, err := service.ReportRunByID(id, parts[2])
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
+		if len(parts) == 5 && parts[1] == "runs" && parts[3] == "result" && parts[4] == "download" && r.Method == http.MethodGet {
+			content, name, err := service.ReportRunCSV(id, parts[2])
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(name)))
+			_, _ = w.Write(content)
+			return
+		}
+		if len(parts) == 3 && parts[1] == "result" && parts[2] == "download" && r.Method == http.MethodGet {
+			content, name, err := service.ReportResultCSV(id)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(name)))
+			_, _ = w.Write(content)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if err := service.DeleteMySQLReportTask(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+			return
+		}
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	})
 	mux.HandleFunc("/api/audit-logs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -104,18 +225,18 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			return
 		}
 		if !logins.allowed(r, req.Username) {
-			service.RecordSecurityEvent("login_rate_limited", req.Username, r.RemoteAddr, "too many failed attempts")
+			service.RecordSecurityEvent("login_rate_limited", req.Username, requestClientIP(r), "too many failed attempts")
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "登录失败次数过多，请 15 分钟后再试"})
 			return
 		}
 		if !service.AuthenticateUser(req.Username, req.Password) {
 			logins.failure(r, req.Username)
-			service.RecordSecurityEvent("login_failed", req.Username, r.RemoteAddr, "invalid credentials")
+			service.RecordSecurityEvent("login_failed", req.Username, requestClientIP(r), "invalid credentials")
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "用户名或密码错误"})
 			return
 		}
 		logins.success(r, req.Username)
-		service.RecordSecurityEvent("login_succeeded", req.Username, r.RemoteAddr, "")
+		service.RecordSecurityEvent("login_succeeded", req.Username, requestClientIP(r), "")
 		if _, err := sessions.create(w, req.Username); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "创建登录会话失败"})
 			return
@@ -145,8 +266,8 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		if strings.TrimSpace(req.NewPassword) == "" || len(req.NewPassword) < 12 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "新密码至少 12 位"})
+		if strings.TrimSpace(req.NewPassword) == "" || len(req.NewPassword) < 8 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "新密码至少 8 位"})
 			return
 		}
 		username, ok := sessions.username(r)
@@ -322,6 +443,48 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		}
 		writeJSON(w, http.StatusCreated, saved)
 	})
+	mux.HandleFunc("/api/hive-menu", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"items": service.ListHiveMenuItems()})
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var item model.HiveMenuItem
+		if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		saved, err := service.AddHiveMenuItem(item.SourceID, item.Name)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, saved)
+	})
+	mux.HandleFunc("/api/postgresql-menu", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"items": service.ListPostgreSQLMenuItems()})
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var item model.PostgreSQLMenuItem
+		if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		saved, err := service.AddPostgreSQLMenuItem(item.SourceID, item.Name)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, saved)
+	})
 
 	mux.HandleFunc("/api/consul/", func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/consul/"), "/"), "/")
@@ -418,6 +581,12 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 				return
 			}
 			writeJSON(w, http.StatusOK, saved)
+		case http.MethodDelete:
+			if err := service.DeleteRefreshSettings(r.URL.Query().Get("scope")); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, service.GetRefreshSettings(r.URL.Query().Get("scope")))
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -528,37 +697,6 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 				return
 			}
 			writeJSON(w, http.StatusOK, updated)
-			return
-		}
-		if len(parts) == 2 && parts[1] == "rows" {
-			var request struct {
-				Database string         `json:"database"`
-				Table    string         `json:"table"`
-				Keys     map[string]any `json:"keys"`
-				Values   map[string]any `json:"values"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-				return
-			}
-			var result service.MySQLMutationResult
-			var err error
-			switch r.Method {
-			case http.MethodPost:
-				result, err = service.InsertMySQLTableRow(parts[0], request.Database, request.Table, request.Values)
-			case http.MethodPut:
-				result, err = service.UpdateMySQLTableRow(parts[0], request.Database, request.Table, request.Keys, request.Values)
-			case http.MethodDelete:
-				result, err = service.DeleteMySQLTableRow(parts[0], request.Database, request.Table, request.Keys)
-			default:
-				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-				return
-			}
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-				return
-			}
-			writeJSON(w, http.StatusOK, result)
 			return
 		}
 		if r.Method == http.MethodPut {
@@ -684,7 +822,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusAccepted, job)
 			return
 		}
-		if len(parts) == 2 && parts[1] == "execute" && r.Method == http.MethodPost {
+		if len(parts) == 2 && parts[1] == "execute" && r.Method == http.MethodPost && strings.EqualFold(func() string { ds, _ := service.GetDataSourceByID(parts[0]); return ds.Type }(), "mysql") {
 			var request struct {
 				Database  string `json:"database"`
 				SQL       string `json:"sql"`
@@ -726,7 +864,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			return
 		}
 		// expecting: /api/data-sources/{id}/schema
-		if r.Method != http.MethodGet {
+		if r.Method != http.MethodGet && !(len(parts) == 2 && parts[1] == "execute") {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
@@ -775,6 +913,113 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusOK, map[string]any{"data": health})
 			return
 		}
+		if len(parts) >= 2 && strings.EqualFold(func() string { ds, _ := service.GetDataSourceByID(parts[0]); return ds.Type }(), "hive") {
+			switch parts[1] {
+			case "databases":
+				databases, err := service.ListHiveDatabases(parts[0])
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"databases": databases})
+				return
+			case "tables":
+				tables, err := service.ListHiveTables(parts[0], r.URL.Query().Get("database"))
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"tables": tables})
+				return
+			case "partitions":
+				partitions, err := service.ListHivePartitions(parts[0], r.URL.Query().Get("database"), r.URL.Query().Get("table"))
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"partitions": partitions})
+				return
+			case "preview":
+				preview, err := service.PreviewHiveTable(parts[0], r.URL.Query().Get("database"), r.URL.Query().Get("table"), r.URL.Query().Get("partition"), queryInt(r, "page", 1), queryInt(r, "pageSize", 50))
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, preview)
+				return
+			case "execute":
+				if r.Method != http.MethodPost {
+					writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+					return
+				}
+				var request struct {
+					Database string `json:"database"`
+					SQL      string `json:"sql"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+					return
+				}
+				result, err := service.ExecuteHiveStatement(parts[0], request.Database, request.SQL)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, result)
+				return
+			}
+		}
+		if len(parts) >= 2 {
+			typeName := strings.ToLower(func() string { ds, _ := service.GetDataSourceByID(parts[0]); return ds.Type }())
+			if typeName == "postgresql" || typeName == "postgres" {
+				switch parts[1] {
+				case "databases":
+					databases, err := service.ListPostgreSQLDatabases(parts[0])
+					if err != nil {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]any{"databases": databases})
+					return
+				case "tables":
+					tables, err := service.ListPostgreSQLTables(parts[0], r.URL.Query().Get("database"))
+					if err != nil {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]any{"tables": tables})
+					return
+				case "preview":
+					preview, err := service.PreviewPostgreSQLTable(parts[0], r.URL.Query().Get("database"), r.URL.Query().Get("table"), queryInt(r, "page", 1), queryInt(r, "pageSize", 50))
+					if err != nil {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+						return
+					}
+					writeJSON(w, http.StatusOK, preview)
+					return
+				case "execute":
+					if r.Method != http.MethodPost {
+						writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+						return
+					}
+					var request struct {
+						Database string `json:"database"`
+						SQL      string `json:"sql"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+						return
+					}
+					result, err := service.ExecutePostgreSQLStatement(parts[0], request.Database, request.SQL)
+					if err != nil {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+						return
+					}
+					writeJSON(w, http.StatusOK, result)
+					return
+				}
+			}
+		}
 		if len(parts) == 2 && parts[1] == "dashboard-sql" {
 			items, mode, err := service.ListMySQLDashboardSQL(parts[0])
 			if err != nil {
@@ -807,9 +1052,18 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusOK, map[string]any{"columns": columns})
 			return
 		}
+		if len(parts) == 2 && parts[1] == "indexes" {
+			indexes, err := service.ListMySQLTableIndexes(parts[0], r.URL.Query().Get("database"), r.URL.Query().Get("table"))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"indexes": indexes})
+			return
+		}
 		if strings.HasSuffix(p, "/schema") {
 			id := strings.TrimSuffix(strings.TrimSuffix(p, "/schema"), "/")
-			schema := service.GetSchemaForDataSource(id, r.URL.Query().Get("database"), r.URL.Query().Get("table"))
+			schema := service.GetSchemaForDataSource(id, r.URL.Query().Get("database"), r.URL.Query().Get("table"), r.URL.Query().Get("full") == "1")
 			databases := make([]string, 0, len(schema))
 			for databaseName := range schema {
 				databases = append(databases, databaseName)
@@ -847,11 +1101,12 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 	mux.HandleFunc("/api/system-settings/mysql-query-limit", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			writeJSON(w, http.StatusOK, map[string]int{"limit": service.GetMySQLQueryResultLimit(), "maxBytes": service.GetMySQLQueryResultMaxBytes()})
+			writeJSON(w, http.StatusOK, map[string]int{"limit": service.GetMySQLQueryResultLimit(), "maxBytes": service.GetMySQLQueryResultMaxBytes(), "reportConcurrency": service.GetMySQLReportConcurrency()})
 		case http.MethodPut:
 			var request struct {
-				Limit    int `json:"limit"`
-				MaxBytes int `json:"maxBytes"`
+				Limit             int `json:"limit"`
+				MaxBytes          int `json:"maxBytes"`
+				ReportConcurrency int `json:"reportConcurrency"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式无效"})
@@ -865,7 +1120,14 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]int{"limit": request.Limit, "maxBytes": request.MaxBytes})
+			if request.ReportConcurrency == 0 {
+				request.ReportConcurrency = service.GetMySQLReportConcurrency()
+			}
+			if err := service.SaveMySQLReportConcurrency(request.ReportConcurrency); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]int{"limit": request.Limit, "maxBytes": request.MaxBytes, "reportConcurrency": request.ReportConcurrency})
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -893,7 +1155,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		}
 		switch parts[1] {
 		case "metrics":
-			items, err := service.ListPrometheusMetricNames(parts[0], queryLimitMax(r, 1000, 5000))
+			items, err := service.ListPrometheusMetricNames(parts[0], 100000)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
@@ -1098,6 +1360,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		writeJSON(w, http.StatusOK, map[string]string{"platformName": service.GetPlatformName()})
 	}))
 	root.Handle("/api/", protected)
+	root.Handle("/", webassets.Handler())
 	return wrapAsServeMux(corsMiddleware(limitRequestBody(root), cfg.CORSAllowedOrigins)), nil
 }
 
@@ -1163,7 +1426,7 @@ func operationAuditMiddleware(next http.Handler, sessions *sessionManager) http.
 				action = "操作失败"
 				details += fmt.Sprintf("：请求失败（%d）", recorder.status)
 			}
-			service.RecordOperation(username, action, details, r.RemoteAddr)
+			service.RecordOperation(username, action, details, requestClientIP(r))
 		}
 	})
 }
@@ -1274,4 +1537,18 @@ func parseQueryTime(value string) *time.Time {
 		}
 	}
 	return nil
+}
+
+// requestClientIP stores only the peer IP, never its ephemeral TCP port.
+// OpsGuard is deployed directly and deliberately does not trust unverified
+// forwarding headers such as X-Forwarded-For.
+func requestClientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	remoteAddr := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return strings.Trim(remoteAddr, "[]")
 }

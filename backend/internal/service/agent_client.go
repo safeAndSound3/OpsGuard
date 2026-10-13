@@ -40,6 +40,13 @@ func isAgentSSH(ds model.DataSource) bool {
 	return strings.EqualFold(ds.Type, "agent") || (strings.EqualFold(ds.Type, "ssh") && strings.EqualFold(strings.TrimSpace(ds.Options["authMode"]), "agent"))
 }
 
+// isLocalSSH represents the server host itself. It is intentionally still an
+// SSH-category data source so existing dashboards and file/script rules can
+// select it, while execution remains local and never opens an SSH connection.
+func isLocalSSH(ds model.DataSource) bool {
+	return strings.EqualFold(ds.Type, "ssh") && strings.EqualFold(strings.TrimSpace(ds.Options["authMode"]), "local")
+}
+
 func agentBaseURL(ds model.DataSource) (string, error) {
 	host := strings.TrimSpace(ds.Host)
 	port := strings.TrimSpace(ds.Port)
@@ -144,11 +151,11 @@ func collectAgentDataSourceMetrics(ds model.DataSource) (agentMetrics, error) {
 	return agentMetrics{cpu: response.CPU, load1: response.Load1, load5: response.Load5, memory: response.Memory, disk: response.Disk, filesystems: response.Filesystems}, nil
 }
 
-func runAgentFileCheck(ds model.DataSource, path, pattern string) (agentCheckResult, error) {
+func runAgentFileCheck(ds model.DataSource, path, pattern string, allowEmpty bool) (agentCheckResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var result agentCheckResult
-	err := callAgent(ctx, ds, http.MethodPost, "/v1/checks/file", map[string]any{"path": path, "namePattern": pattern, "modifiedToday": true}, &result)
+	err := callAgent(ctx, ds, http.MethodPost, "/v1/checks/file", map[string]any{"path": path, "namePattern": pattern, "modifiedToday": true, "allowEmpty": allowEmpty}, &result)
 	return result, err
 }
 

@@ -70,8 +70,14 @@ func InitDataSourceStore() error {
 		return errors.New("MYSQL_PASSWORD is required")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	// Database initialization includes schema creation and migrations. A
+	// forwarded or remote MySQL endpoint can legitimately take longer than a
+	// single connection ping, so do not share a short timeout across all steps.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	if err := ensurePlatformDatabase(ctx, host, port, user, password, database); err != nil {
+		return err
+	}
 	if err := initMySQLMetricStore(host, port, user, password, database); err != nil {
 		return err
 	}
@@ -90,7 +96,9 @@ func InitDataSourceStore() error {
 	appDB.SetMaxOpenConns(10)
 	appDB.SetMaxIdleConns(5)
 	appDB.SetConnMaxLifetime(5 * time.Minute)
-	if err := appDB.PingContext(ctx); err != nil {
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer pingCancel()
+	if err := appDB.PingContext(pingCtx); err != nil {
 		return err
 	}
 
@@ -134,8 +142,8 @@ func InitDataSourceStore() error {
 	}
 	if adminCount == 0 {
 		initialPassword := strings.TrimSpace(os.Getenv("OPSGUARD_ADMIN_PASSWORD"))
-		if len(initialPassword) < 12 {
-			return errors.New("first startup requires OPSGUARD_ADMIN_PASSWORD with at least 12 characters")
+		if len(initialPassword) < 8 {
+			return errors.New("first startup requires OPSGUARD_ADMIN_PASSWORD with at least 8 characters")
 		}
 		hash, err := hashUserPassword(initialPassword)
 		if err != nil {
@@ -163,9 +171,15 @@ func InitDataSourceStore() error {
 	if err := initMySQLAsyncJobStore(appDB); err != nil {
 		return err
 	}
+	if err := ensureLocalServerDataSource(ctx, appDB); err != nil {
+		return err
+	}
 	mu.Lock()
 	db = appDB
 	mu.Unlock()
+	if err := startReportScheduler(); err != nil {
+		return err
+	}
 	go startDataSourceHealthChecker()
 	startMySQLMetricCollector()
 	startSSHMetricCollector()
@@ -173,7 +187,58 @@ func InitDataSourceStore() error {
 	startDataRetentionJob()
 	startCollectionRuleEvaluator()
 	startPrometheusAlertSynchronizer()
+	startHadoopApplicationSynchronizer()
 	return nil
+}
+
+// ensurePlatformDatabase lets a freshly deployed server initialize its own
+// platform schema before the metric and application stores open it. The
+// configured MySQL account needs global CREATE only for this first operation.
+func ensurePlatformDatabase(ctx context.Context, host, port, user, password, database string) error {
+	database = strings.TrimSpace(database)
+	if !validSQLIdentifier(database) {
+		return errors.New("MYSQL_DATABASE 必须是有效的 MySQL 库名")
+	}
+	serverDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/?timeout=5s&readTimeout=8s&writeTimeout=8s", user, password, host, port)
+	serverDB, err := sql.Open("mysql", serverDSN)
+	if err != nil {
+		return fmt.Errorf("连接 MySQL 实例失败：%w", err)
+	}
+	defer serverDB.Close()
+	if err := serverDB.PingContext(ctx); err != nil {
+		return fmt.Errorf("连接 MySQL 实例失败：%w", err)
+	}
+	// utf8mb4_unicode_ci is available on both MySQL 5.7 and 8.0. Avoid the
+	// MySQL-8-only utf8mb4_0900_ai_ci so a fresh platform can bootstrap on
+	// commonly deployed MySQL versions.
+	statement := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci", database)
+	if _, err := serverDB.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("创建平台数据库 %s 失败；请确认 MYSQL_USER 具备全局 CREATE 权限，且目标 MySQL 支持 utf8mb4_unicode_ci：%w", database, err)
+	}
+	return nil
+}
+
+const localServerDataSourceID = "system-local-ssh"
+
+// ensureLocalServerDataSource makes the server host selectable anywhere an SSH
+// data source is expected. It does not use the SSH daemon: commands execute in
+// the service process, which is intentionally run as root by the release unit.
+func ensureLocalServerDataSource(ctx context.Context, current *sql.DB) error {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		hostname = "localhost"
+	}
+	options, err := json.Marshal(map[string]string{"authMode": "local", "systemManaged": "true"})
+	if err != nil {
+		return err
+	}
+	name := "服务端本机（" + hostname + "）"
+	_, err = current.ExecContext(ctx, `INSERT INTO data_sources
+		(id, name, type, host, port, username, password, database_name, remark, options_json, enabled, status, last_test)
+		VALUES (?, ?, 'SSH', ?, '本机直连', 'root', '', '', 'OpsGuard 服务端本机，无需 SSH 密钥或密码。', ?, 1, '健康', ?)
+		ON DUPLICATE KEY UPDATE name=VALUES(name), host=VALUES(host), port=VALUES(port), username=VALUES(username), remark=VALUES(remark), options_json=VALUES(options_json)`,
+		localServerDataSourceID, name, hostname, string(options), time.Now().Format("2006-01-02 15:04"))
+	return err
 }
 
 func AuthenticateUser(username string, password string) bool {
@@ -330,6 +395,9 @@ func UpdateDataSource(id string, ds model.DataSource) (model.DataSource, error) 
 	if err != nil {
 		return model.DataSource{}, errors.New("data source not found")
 	}
+	if isLocalSSH(existing) {
+		return model.DataSource{}, errors.New("服务端本机数据源由系统维护，仅支持启用或停用")
+	}
 	ds.ID = id
 	ds.Enabled = existing.Enabled
 	if strings.EqualFold(ds.Type, "hadoop") {
@@ -410,6 +478,9 @@ func DeleteDataSource(id string) error {
 	existing, err := GetDataSourceByID(id)
 	if err != nil {
 		return errors.New("data source not found")
+	}
+	if isLocalSSH(existing) {
+		return errors.New("服务端本机数据源由系统维护，不能删除")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -515,6 +586,12 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" {
 		_ = FillDataSourcePassword(&ds)
 	}
+	if isLocalSSH(ds) {
+		if _, err := collectSSHDataSourceMetrics(ds); err != nil {
+			return false, fmt.Sprintf("服务端本机检测失败：%s", err)
+		}
+		return true, "服务端本机检测成功"
+	}
 	if ds.Host == "" || (ds.Port == "" && !strings.EqualFold(ds.Type, "hadoop") && !strings.EqualFold(ds.Type, "ambari")) {
 		return false, "主机地址和端口不能为空"
 	}
@@ -535,6 +612,19 @@ func TestDataSourceConnection(ds model.DataSource) (bool, string) {
 			return false, err.Error()
 		}
 		return true, "MySQL 连接测试成功"
+	case strings.EqualFold(ds.Type, "hive"):
+		if err := TestHiveDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "HiveServer2 端口连接成功"
+	case strings.EqualFold(ds.Type, "postgresql") || strings.EqualFold(ds.Type, "postgres"):
+		if strings.TrimSpace(ds.Username) == "" {
+			return false, "PostgreSQL 用户名不能为空"
+		}
+		if err := TestPostgreSQLDataSource(ds); err != nil {
+			return false, err.Error()
+		}
+		return true, "PostgreSQL 连接测试成功"
 	case isAgentSSH(ds):
 		if strings.TrimSpace(ds.Password) == "" {
 			return false, "Agent 令牌不能为空"
@@ -683,6 +773,12 @@ func primaryDatabase(value string) string {
 }
 
 func ListDataSourceDatabases(ds model.DataSource) ([]string, error) {
+	if strings.EqualFold(ds.Type, "postgresql") || strings.EqualFold(ds.Type, "postgres") {
+		if strings.TrimSpace(ds.ID) == "" {
+			return nil, errors.New("PostgreSQL 数据源 ID 不能为空")
+		}
+		return ListPostgreSQLDatabases(ds.ID)
+	}
 	return []string{}, nil
 }
 
@@ -759,7 +855,7 @@ func ListCollectionRules() []model.CollectionRule {
 		copy(res, rules)
 		return res
 	}
-	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, condition_text,
+	rows, err := current.Query(`SELECT id, name, source, database_name, table_name, field_name, allow_empty, condition_text,
 		COALESCE(threshold, ''), time_window, frequency, COALESCE(remark, ''), last_run, last_evaluated_at, COALESCE(result_details, ''), status FROM collection_rules ORDER BY created_at DESC`)
 	if err != nil {
 		return []model.CollectionRule{}
@@ -769,7 +865,7 @@ func ListCollectionRules() []model.CollectionRule {
 	for rows.Next() {
 		var rule model.CollectionRule
 		var lastEvaluatedAt sql.NullTime
-		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.Condition, &rule.Threshold, &rule.TimeWindow, &rule.Frequency, &rule.Remark, &rule.LastRun, &lastEvaluatedAt, &rule.ResultDetails, &rule.Status); err != nil {
+		if err := rows.Scan(&rule.ID, &rule.Name, &rule.Source, &rule.Database, &rule.Table, &rule.Field, &rule.AllowEmpty, &rule.Condition, &rule.Threshold, &rule.TimeWindow, &rule.Frequency, &rule.Remark, &rule.LastRun, &lastEvaluatedAt, &rule.ResultDetails, &rule.Status); err != nil {
 			continue
 		}
 		if lastEvaluatedAt.Valid {
@@ -799,9 +895,9 @@ func AddCollectionRule(rule model.CollectionRule) (model.CollectionRule, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := current.ExecContext(ctx, `INSERT INTO collection_rules
-		(id, name, source, database_name, table_name, field_name, condition_text, threshold, time_window, frequency, remark, last_run, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rule.ID, rule.Name, rule.Source, rule.Database, rule.Table, rule.Field, rule.Condition, rule.Threshold, rule.TimeWindow, rule.Frequency, rule.Remark, rule.LastRun, rule.Status)
+		(id, name, source, database_name, table_name, field_name, allow_empty, condition_text, threshold, time_window, frequency, remark, last_run, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rule.ID, rule.Name, rule.Source, rule.Database, rule.Table, rule.Field, rule.AllowEmpty, rule.Condition, rule.Threshold, rule.TimeWindow, rule.Frequency, rule.Remark, rule.LastRun, rule.Status)
 	return rule, err
 }
 
@@ -821,10 +917,10 @@ func UpdateCollectionRule(id string, rule model.CollectionRule) (model.Collectio
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, err := current.ExecContext(ctx, `UPDATE collection_rules
-		SET name = ?, source = ?, database_name = ?, table_name = ?, field_name = ?, condition_text = ?,
+		SET name = ?, source = ?, database_name = ?, table_name = ?, field_name = ?, allow_empty = ?, condition_text = ?,
 			threshold = ?, time_window = ?, frequency = ?, remark = ?, status = ?, last_evaluated_at = NULL
 		WHERE id = ?`,
-		rule.Name, rule.Source, rule.Database, rule.Table, rule.Field, rule.Condition, rule.Threshold, rule.TimeWindow, rule.Frequency, rule.Remark, rule.Status, id)
+		rule.Name, rule.Source, rule.Database, rule.Table, rule.Field, rule.AllowEmpty, rule.Condition, rule.Threshold, rule.TimeWindow, rule.Frequency, rule.Remark, rule.Status, id)
 	if err != nil {
 		return model.CollectionRule{}, err
 	}
@@ -983,6 +1079,7 @@ func initCollectionRuleStore(appDB *sql.DB) error {
 		database_name varchar(120) NOT NULL DEFAULT '',
 		table_name varchar(120) NOT NULL DEFAULT '',
 		field_name varchar(120) NOT NULL DEFAULT '',
+		allow_empty boolean NOT NULL DEFAULT FALSE,
 		condition_text varchar(120) NOT NULL,
 		threshold varchar(80) NULL,
 		time_window varchar(80) NOT NULL DEFAULT '5分钟',
@@ -1005,6 +1102,7 @@ func initCollectionRuleStore(appDB *sql.DB) error {
 	_, _ = appDB.Exec(`ALTER TABLE collection_rules MODIFY alert_started_at datetime NULL`)
 	_, _ = appDB.Exec(`ALTER TABLE collection_rules MODIFY last_evaluated_at datetime NULL`)
 	_, _ = appDB.Exec(`ALTER TABLE collection_rules ADD COLUMN result_details text NULL AFTER last_run`)
+	_, _ = appDB.Exec(`ALTER TABLE collection_rules ADD COLUMN allow_empty boolean NOT NULL DEFAULT FALSE AFTER field_name`)
 	_, _ = appDB.Exec(`ALTER TABLE collection_rules MODIFY source varchar(512) NOT NULL`)
 	_, _ = appDB.Exec(`ALTER TABLE collection_rules MODIFY last_run varchar(512) NOT NULL DEFAULT '待执行'`)
 	// Old releases could leave a stale evaluation timestamp on a rule whose
@@ -1739,15 +1837,21 @@ func evaluateFileMonitorRule(rule model.CollectionRule) (string, bool, string) {
 	}
 	// The remote command is fixed. Only the user-selected directory is quoted;
 	// filtering is performed locally with Go's RE2 engine.
-	command := "LC_ALL=C find " + shellQuote(rule.Table) + " -maxdepth 1 -type f -daystart -mtime 0 -printf '%f\\n' | head -n 200"
+	// Check the directory before piping find's output. Otherwise the pipeline
+	// returns head's success status and hides a missing-directory failure.
+	quotedPath := shellQuote(rule.Table)
+	command := "if [ ! -d " + quotedPath + " ]; then printf '目录不存在：%s\\n' " + quotedPath + "; exit 42; fi; LC_ALL=C find " + quotedPath + " -maxdepth 1 -type f -daystart -mtime 0 -printf '%f\\t%s\\n' | head -n 200"
 	details := "目录：" + rule.Table + "\n文件名正则：" + rule.Field + "\n"
 	missing := make([]string, 0)
+	emptyFiles := make([]string, 0)
+	unavailable := make([]string, 0)
 	for _, ds := range sources {
 		output := ""
 		agentDiagnostic := ""
+		sourceHasEmpty := false
 		var commandErr error
 		if isAgentSSH(ds) {
-			result, err := runAgentFileCheck(ds, rule.Table, rule.Field)
+			result, err := runAgentFileCheck(ds, rule.Table, rule.Field, rule.AllowEmpty)
 			output, commandErr = result.Details, err
 			if err == nil && !result.Passed {
 				agentDiagnostic = strings.TrimSpace(result.Summary)
@@ -1771,34 +1875,64 @@ func evaluateFileMonitorRule(rule model.CollectionRule) (string, bool, string) {
 			return fmt.Sprintf("执行失败 %s：%s 文件检测失败：%s", checkedAt, ds.Name, commandErr.Error()), false, details
 		}
 		if agentDiagnostic != "" {
-			details += "- " + fileCheckDiagnostic(rule.Table, agentDiagnostic) + "\n"
+			diagnostic := fileCheckDiagnostic(rule.Table, agentDiagnostic)
+			details += "- " + diagnostic + "\n"
 			missing = append(missing, ds.Name)
+			if strings.Contains(strings.ToLower(agentDiagnostic), "empty") || strings.Contains(agentDiagnostic, "空文件") {
+				emptyFiles = append(emptyFiles, ds.Name)
+				sourceHasEmpty = true
+			}
+			if isFileCheckPathUnavailable(agentDiagnostic) {
+				unavailable = append(unavailable, ds.Name)
+			}
 			continue
 		}
 		matches := make([]string, 0)
-		for _, fileName := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
-			fileName = strings.TrimSuffix(fileName, "\r")
+		for _, fileLine := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+			fileLine = strings.TrimSuffix(fileLine, "\r")
+			parts := strings.SplitN(fileLine, "\t", 2)
+			fileName := parts[0]
 			if fileName == "" {
 				continue
 			}
-			details += "- " + fileName + "\n"
+			size := ""
+			if len(parts) == 2 {
+				size = strings.TrimSpace(parts[1])
+			}
+			empty := size == "0"
+			details += "- " + fileName + func() string {
+				if empty {
+					return "（空文件）"
+				}
+				return ""
+			}() + "\n"
 			if pattern.MatchString(fileName) {
 				matches = append(matches, fileName)
+				if empty && !rule.AllowEmpty {
+					emptyFiles = append(emptyFiles, ds.Name)
+					sourceHasEmpty = true
+					details += "空文件告警：" + fileName + "\n"
+				}
 			}
 		}
 		if len(matches) == 0 {
+			missing = append(missing, ds.Name)
+		} else if sourceHasEmpty && !rule.AllowEmpty {
 			missing = append(missing, ds.Name)
 		} else {
 			details += "命中：" + strings.Join(matches, ", ") + "\n"
 		}
 	}
+	if len(unavailable) > 0 {
+		return fmt.Sprintf("执行失败 %s：%s 检测目录不存在（%s）", checkedAt, strings.Join(unavailable, "、"), rule.Table), false, details
+	}
 	if len(missing) == 0 {
 		return fmt.Sprintf("正常 %s：结果详情", checkedAt), false, details
 	}
 	if now.Before(deadline) {
-		return fmt.Sprintf("等待 %s：%s 未生成匹配文件，%s 后仍未生成再告警", checkedAt, strings.Join(missing, "、"), deadline.Format("15:04")), false, details
+		return fmt.Sprintf("等待 %s：%s 未生成匹配文件或文件为空，%s 后仍不符合要求再告警", checkedAt, strings.Join(missing, "、"), deadline.Format("15:04")), false, details
 	}
-	return fmt.Sprintf("告警 %s：%s 当天未生成匹配文件（目录：%s）", checkedAt, strings.Join(missing, "、"), rule.Table), false, details
+	return fmt.Sprintf("告警 %s：%s 当天未生成匹配文件或匹配文件为空（目录：%s）", checkedAt, strings.Join(missing, "、"), rule.Table), false, details
 }
 
 // File checks can run through SSH's find command or the Agent's directory
@@ -1812,10 +1946,20 @@ func fileCheckDiagnostic(path, raw string) string {
 	if strings.Contains(lower, "matched 0 files") {
 		return "未发现匹配文件"
 	}
+	if strings.Contains(lower, "empty") || strings.Contains(value, "空文件") {
+		return "匹配文件为空"
+	}
 	if value == "" {
 		return "未发现匹配文件"
 	}
 	return "文件检测失败：" + value
+}
+
+func isFileCheckPathUnavailable(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	return strings.Contains(lower, "no such file or directory") ||
+		strings.Contains(lower, "not exist") ||
+		strings.Contains(raw, "目录不存在")
 }
 
 func evaluateScriptMonitorRule(rule model.CollectionRule) (string, bool, string) {
@@ -2190,7 +2334,7 @@ func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
 	return nil
 }
 
-func GetSchemaForDataSource(id string, database string, table string) map[string]map[string][]string {
+func GetSchemaForDataSource(id string, database string, table string, full bool) map[string]map[string][]string {
 	ds, err := getRuleDataSourceWithSecret(id)
 	if err != nil || !strings.EqualFold(ds.Type, "mysql") || !ds.Enabled {
 		return map[string]map[string][]string{}
@@ -2200,23 +2344,52 @@ func GetSchemaForDataSource(id string, database string, table string) map[string
 		return map[string]map[string][]string{}
 	}
 	defer targetDB.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	database = strings.TrimSpace(database)
 	table = strings.TrimSpace(table)
-	if database != "" && !validSQLIdentifier(database) {
-		return map[string]map[string][]string{}
-	}
-	if table != "" && !validSQLIdentifier(table) {
-		return map[string]map[string][]string{}
-	}
 	if database != "" && table != "" {
 		return listMySQLSchemaColumns(ctx, targetDB, database, table)
 	}
 	if database != "" {
 		return listMySQLSchemaTables(ctx, targetDB, database)
 	}
+	if full {
+		return listMySQLAllTables(ctx, targetDB)
+	}
 	return listMySQLSchemaDatabases(ctx, targetDB)
+}
+
+// listMySQLAllTables returns every non-system database with all of its table
+// names in a single query, so the workspace can support full-text search
+// across unexpanded databases. Databases without any table are still listed
+// (with an empty table map) via the LEFT JOIN.
+func listMySQLAllTables(ctx context.Context, targetDB *sql.DB) map[string]map[string][]string {
+	rows, err := targetDB.QueryContext(ctx, `SELECT s.schema_name, t.table_name
+		FROM information_schema.schemata s
+		LEFT JOIN information_schema.tables t
+			ON t.table_schema = s.schema_name AND t.table_type IN ('BASE TABLE', 'VIEW')
+		WHERE s.schema_name NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+		ORDER BY s.schema_name, t.table_name`)
+	if err != nil {
+		return map[string]map[string][]string{}
+	}
+	defer rows.Close()
+	result := map[string]map[string][]string{}
+	for rows.Next() {
+		var schemaName string
+		var tableName sql.NullString
+		if err := rows.Scan(&schemaName, &tableName); err != nil {
+			continue
+		}
+		if _, ok := result[schemaName]; !ok {
+			result[schemaName] = map[string][]string{}
+		}
+		if tableName.Valid {
+			result[schemaName][tableName.String] = []string{}
+		}
+	}
+	return result
 }
 
 func listMySQLSchemaDatabases(ctx context.Context, targetDB *sql.DB) map[string]map[string][]string {
@@ -2240,7 +2413,7 @@ func listMySQLSchemaDatabases(ctx context.Context, targetDB *sql.DB) map[string]
 
 func listMySQLSchemaTables(ctx context.Context, targetDB *sql.DB, database string) map[string]map[string][]string {
 	rows, err := targetDB.QueryContext(ctx, `SELECT table_name FROM information_schema.tables
-		WHERE table_schema = ? AND table_type = 'BASE TABLE'
+		WHERE table_schema = ? AND table_type IN ('BASE TABLE', 'VIEW')
 		ORDER BY table_name`, database)
 	if err != nil {
 		return map[string]map[string][]string{}

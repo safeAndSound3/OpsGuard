@@ -36,7 +36,7 @@ func ListPrometheusMetricNames(sourceID string, limit int) ([]model.PrometheusMe
 		return nil, errors.New(payload.Error)
 	}
 	sort.Strings(payload.Data)
-	if limit <= 0 || limit > 5000 {
+	if limit <= 0 {
 		limit = 1000
 	}
 	if len(payload.Data) > limit {

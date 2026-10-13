@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -50,16 +49,28 @@ type MySQLColumnDetail struct {
 	Comment    string  `json:"comment"`
 }
 
+type MySQLIndexColumn struct {
+	Name         string `json:"name"`
+	Sequence     int    `json:"sequence"`
+	Collation    string `json:"collation"`
+	Cardinality  *int64 `json:"cardinality"`
+	PrefixLength *int64 `json:"prefixLength"`
+}
+
+type MySQLIndexDetail struct {
+	Name    string             `json:"name"`
+	Unique  bool               `json:"unique"`
+	Type    string             `json:"type"`
+	Comment string             `json:"comment"`
+	Columns []MySQLIndexColumn `json:"columns"`
+}
+
 type MySQLStatementResult struct {
 	Columns   []string `json:"columns"`
 	Rows      [][]any  `json:"rows"`
 	Affected  int64    `json:"affected"`
 	Message   string   `json:"message"`
 	Truncated bool     `json:"truncated"`
-}
-
-type MySQLMutationResult struct {
-	Affected int64 `json:"affected"`
 }
 
 type MySQLSQLHistory struct {
@@ -126,12 +137,18 @@ func executeMySQLStatementContext(ctx context.Context, sourceID, database, state
 		ds.Database = database
 	}
 	statement = strings.TrimSpace(statement)
-	if statement == "" || strings.Contains(strings.TrimSuffix(statement, ";"), ";") {
-		return MySQLStatementResult{}, errors.New("only one SQL statement is allowed")
+	if statement == "" {
+		return MySQLStatementResult{}, errors.New("empty SQL")
 	}
-	normalized := mysqlStatementKeyword(statement)
-	read := normalized == "SELECT" || normalized == "SHOW" || normalized == "DESCRIBE" || normalized == "DESC" || normalized == "EXPLAIN"
-	if !read && GetOperationConfirmations() && !confirmed {
+	statements := splitSQLScript(statement)
+	hasWrite := false
+	for _, item := range statements {
+		kw := mysqlStatementKeyword(item)
+		if kw != "SELECT" && kw != "SHOW" && kw != "DESCRIBE" && kw != "DESC" && kw != "EXPLAIN" {
+			hasWrite = true
+		}
+	}
+	if hasWrite && GetOperationConfirmations() && !confirmed {
 		return MySQLStatementResult{}, errMySQLWriteConfirmation
 	}
 	db, err := openMySQLDataSource(ds)
@@ -139,54 +156,171 @@ func executeMySQLStatementContext(ctx context.Context, sourceID, database, state
 		return MySQLStatementResult{}, err
 	}
 	defer db.Close()
-	if !read {
-		result, err := db.ExecContext(ctx, statement)
-		if err != nil {
-			return MySQLStatementResult{}, err
-		}
-		affected, _ := result.RowsAffected()
-		clearMySQLTableCountCache()
-		return MySQLStatementResult{Affected: affected, Message: "executed"}, nil
-	}
-	rows, err := db.QueryContext(ctx, statement)
-	if err != nil {
-		return MySQLStatementResult{}, err
-	}
-	defer rows.Close()
-	columns, err := rows.Columns()
-	if err != nil {
-		return MySQLStatementResult{}, err
-	}
+	lastColumns := []string(nil)
+	lastRows := [][]any(nil)
+	lastAffected := int64(0)
+	lastTruncated := false
 	maxSQLResultRows := GetMySQLQueryResultLimit()
 	maxSQLResultBytes := GetMySQLQueryResultMaxBytes()
-	resultBytes := 0
-	result := MySQLStatementResult{Columns: columns, Rows: make([][]any, 0, maxSQLResultRows)}
-	for rows.Next() {
-		if len(result.Rows) >= maxSQLResultRows {
-			result.Truncated = true
-			break
+	for _, item := range statements {
+		kw := mysqlStatementKeyword(item)
+		isRead := kw == "SELECT" || kw == "SHOW" || kw == "DESCRIBE" || kw == "DESC" || kw == "EXPLAIN"
+		if isRead {
+			rows, qerr := db.QueryContext(ctx, item)
+			if qerr != nil {
+				return MySQLStatementResult{}, qerr
+			}
+			cols, cerr := rows.Columns()
+			if cerr != nil {
+				rows.Close()
+				return MySQLStatementResult{}, cerr
+			}
+			resultBytes := 0
+			rowsOut := make([][]any, 0, maxSQLResultRows)
+			for rows.Next() {
+				if len(rowsOut) >= maxSQLResultRows {
+					lastTruncated = true
+					break
+				}
+				values := make([]any, len(cols))
+				refs := make([]any, len(cols))
+				for i := range values {
+					refs[i] = &values[i]
+				}
+				if err := rows.Scan(refs...); err != nil {
+					rows.Close()
+					return MySQLStatementResult{}, err
+				}
+				rowBytes := 0
+				for i := range values {
+					values[i] = mysqlJSONValue(values[i])
+					rowBytes += len(fmt.Sprint(values[i]))
+				}
+				if resultBytes+rowBytes > maxSQLResultBytes {
+					lastTruncated = true
+					break
+				}
+				rowsOut = append(rowsOut, values)
+				resultBytes += rowBytes
+			}
+			scanErr := rows.Err()
+			rows.Close()
+			if scanErr != nil {
+				return MySQLStatementResult{}, scanErr
+			}
+			lastColumns = cols
+			lastRows = rowsOut
+		} else {
+			res, xerr := db.ExecContext(ctx, item)
+			if xerr != nil {
+				return MySQLStatementResult{}, xerr
+			}
+			aff, _ := res.RowsAffected()
+			lastAffected += aff
+			clearMySQLTableCountCache()
 		}
-		values := make([]any, len(columns))
-		refs := make([]any, len(columns))
-		for i := range values {
-			refs[i] = &values[i]
-		}
-		if err := rows.Scan(refs...); err != nil {
-			return MySQLStatementResult{}, err
-		}
-		rowBytes := 0
-		for i, value := range values {
-			values[i] = mysqlJSONValue(value)
-			rowBytes += len(fmt.Sprint(values[i]))
-		}
-		if resultBytes+rowBytes > maxSQLResultBytes {
-			result.Truncated = true
-			break
-		}
-		result.Rows = append(result.Rows, values)
-		resultBytes += rowBytes
 	}
-	return result, rows.Err()
+	if len(lastColumns) > 0 {
+		return MySQLStatementResult{Columns: lastColumns, Rows: lastRows, Truncated: lastTruncated}, nil
+	}
+	return MySQLStatementResult{Affected: lastAffected, Message: "executed"}, nil
+}
+
+// splitSQLScript splits a SQL script into individual statements, honoring DELIMITER directives
+// and string/identifier quoting. It strips DELIMITER lines themselves.
+func splitSQLScript(sql string) []string {
+	delimiter := ";"
+	sql = strings.TrimLeft(sql, " \t\r\n")
+	var buf strings.Builder
+	var out []string
+	flush := func() {
+		item := strings.TrimSpace(buf.String())
+		buf.Reset()
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	runes := []rune(sql)
+	i := 0
+	n := len(runes)
+	for i < n {
+		c := runes[i]
+		// DELIMITER directive: only at the start of a fresh statement buffer
+		if strings.TrimSpace(buf.String()) == "" && (c == 'D' || c == 'd') {
+			rest := string(runes[i:])
+			if trimmed := strings.TrimLeft(rest, " \t"); strings.HasPrefix(strings.ToUpper(trimmed), "DELIMITER ") {
+				// consume rest of line
+				j := i
+				for j < n && runes[j] != '\n' {
+					j++
+				}
+				line := strings.TrimSpace(string(runes[i:j]))
+				parts := strings.SplitN(line, " ", 2)
+				if len(parts) == 2 {
+					delimiter = strings.TrimSpace(parts[1])
+				}
+				i = j
+				if i < n {
+					i++
+				}
+				continue
+			}
+		}
+		// quoted string / identifier
+		if c == '\'' || c == '"' || c == '`' {
+			quote := c
+			buf.WriteRune(c)
+			i++
+			for i < n {
+				buf.WriteRune(runes[i])
+				if runes[i] == '\\' && i+1 < n {
+					buf.WriteRune(runes[i+1])
+					i += 2
+					continue
+				}
+				if runes[i] == quote {
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+		// line comments
+		if (c == '-' && i+1 < n && runes[i+1] == '-') || c == '#' {
+			for i < n && runes[i] != '\n' {
+				buf.WriteRune(runes[i])
+				i++
+			}
+			continue
+		}
+		// block comments
+		if c == '/' && i+1 < n && runes[i+1] == '*' {
+			buf.WriteRune(runes[i])
+			buf.WriteRune(runes[i+1])
+			i += 2
+			for i < n {
+				buf.WriteRune(runes[i])
+				if runes[i] == '*' && i+1 < n && runes[i+1] == '/' {
+					buf.WriteRune(runes[i+1])
+					i += 2
+					break
+				}
+				i++
+			}
+			continue
+		}
+		// delimiter match
+		if strings.HasPrefix(string(runes[i:]), delimiter) {
+			i += len([]rune(delimiter))
+			flush()
+			continue
+		}
+		buf.WriteRune(c)
+		i++
+	}
+	flush()
+	return out
 }
 
 // redactSQLForHistory retains structure useful for auditing without retaining literal values.
@@ -272,12 +406,18 @@ func ListMySQLSQLHistory(sourceID string, page, pageSize int) ([]MySQLSQLHistory
 	if current == nil || strings.TrimSpace(sourceID) == "" {
 		return []MySQLSQLHistory{}, 0
 	}
-	if page < 1 { page = 1 }
-	if pageSize <= 0 || pageSize > 100 { pageSize = 10 }
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 10
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var total int
-	if err := current.QueryRowContext(ctx, `SELECT COUNT(*) FROM mysql_sql_history WHERE source_id = ?`, sourceID).Scan(&total); err != nil { return []MySQLSQLHistory{}, 0 }
+	if err := current.QueryRowContext(ctx, `SELECT COUNT(*) FROM mysql_sql_history WHERE source_id = ?`, sourceID).Scan(&total); err != nil {
+		return []MySQLSQLHistory{}, 0
+	}
 	offset := (page - 1) * pageSize
 	rows, err := current.QueryContext(ctx, `SELECT id, source_id, database_name, statement_text, status,
 		result_rows, affected_rows, duration_ms, error_message, username, created_at
@@ -392,9 +532,6 @@ func PreviewMySQLTableWithOptions(sourceID, database, table string, page, pageSi
 	if err != nil || !strings.EqualFold(ds.Type, "mysql") || !ds.Enabled {
 		return MySQLTablePreview{}, errors.New("MySQL data source not available")
 	}
-	if !validSQLIdentifier(database) || !validSQLIdentifier(table) {
-		return MySQLTablePreview{}, errors.New("invalid database or table name")
-	}
 	db, err := openMySQLDataSource(ds)
 	if err != nil {
 		return MySQLTablePreview{}, err
@@ -422,7 +559,7 @@ func PreviewMySQLTableWithOptions(sourceID, database, table string, page, pageSi
 	whereClause := ""
 	whereArgs := make([]any, 0, 1)
 	if filterColumn != "" && filterValue != "" {
-		whereClause = fmt.Sprintf(" WHERE LOCATE(?, CAST(`%s` AS CHAR)) > 0", filterColumn)
+		whereClause = fmt.Sprintf(" WHERE LOCATE(?, CAST(%s AS CHAR)) > 0", mysqlQuoteIdentifier(filterColumn))
 		whereArgs = append(whereArgs, filterValue)
 	}
 	var total int64
@@ -431,7 +568,7 @@ func PreviewMySQLTableWithOptions(sourceID, database, table string, page, pageSi
 		total, totalExact = mysqlTableRowCount(sourceID, db, database, table)
 	} else {
 		countCtx, cancelCount := context.WithTimeout(context.Background(), 5*time.Second)
-		err = db.QueryRowContext(countCtx, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`%s", database, table, whereClause), whereArgs...).Scan(&total)
+		err = db.QueryRowContext(countCtx, fmt.Sprintf("SELECT COUNT(*) FROM %s.%s%s", mysqlQuoteIdentifier(database), mysqlQuoteIdentifier(table), whereClause), whereArgs...).Scan(&total)
 		cancelCount()
 		if err != nil {
 			return MySQLTablePreview{}, fmt.Errorf("filter count failed: %w", err)
@@ -451,14 +588,14 @@ func PreviewMySQLTableWithOptions(sourceID, database, table string, page, pageSi
 		if strings.EqualFold(strings.TrimSpace(options.SortDirection), "desc") {
 			direction = "DESC"
 		}
-		orderBy = fmt.Sprintf(" ORDER BY `%s` %s", sortColumn, direction)
+		orderBy = fmt.Sprintf(" ORDER BY %s %s", mysqlQuoteIdentifier(sortColumn), direction)
 	} else {
 		orderBy = mysqlPreviewOrderBy(ctx, db, database, table)
 	}
 	offset := (page - 1) * pageSize
 	queryArgs := append([]any{}, whereArgs...)
 	queryArgs = append(queryArgs, pageSize, offset)
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM `%s`.`%s`%s%s LIMIT ? OFFSET ?", database, table, whereClause, orderBy), queryArgs...)
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM %s.%s%s%s LIMIT ? OFFSET ?", mysqlQuoteIdentifier(database), mysqlQuoteIdentifier(table), whereClause, orderBy), queryArgs...)
 	if err != nil {
 		return MySQLTablePreview{}, err
 	}
@@ -516,7 +653,7 @@ func mysqlTableColumnNames(ctx context.Context, db *sql.DB, database, table stri
 		if err := rows.Scan(&column); err != nil {
 			return nil, err
 		}
-		if !validSQLIdentifier(column) {
+		if strings.TrimSpace(column) == "" {
 			return nil, errors.New("invalid table column")
 		}
 		columns = append(columns, column)
@@ -553,7 +690,7 @@ func mysqlTableRowCount(sourceID string, db *sql.DB, database, table string) (in
 	}
 	var exactTotal int64
 	countCtx, cancelCount := context.WithTimeout(context.Background(), 5*time.Second)
-	err = db.QueryRowContext(countCtx, fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", database, table)).Scan(&exactTotal)
+	err = db.QueryRowContext(countCtx, fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", mysqlQuoteIdentifier(database), mysqlQuoteIdentifier(table))).Scan(&exactTotal)
 	cancelCount()
 	if err == nil {
 		mysqlTableCountCache.Store(cacheKey, mysqlTableCountCacheEntry{total: exactTotal, exact: true, expiresAt: time.Now().Add(10 * time.Second)})
@@ -568,6 +705,13 @@ func clearMySQLTableCountCache() {
 		mysqlTableCountCache.Delete(key)
 		return true
 	})
+}
+
+// mysqlQuoteIdentifier quotes a MySQL identifier (database/table/column) with
+// backticks, escaping any embedded backtick, so names containing special
+// characters such as "-", ".", spaces or Chinese can be used safely in SQL.
+func mysqlQuoteIdentifier(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
 func normalizeMySQLPagination(page, pageSize int, total int64) (int, int, int) {
@@ -599,10 +743,10 @@ func mysqlPreviewOrderBy(ctx context.Context, db *sql.DB, database, table string
 	columns := make([]string, 0)
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err != nil || !validSQLIdentifier(name) {
+		if err := rows.Scan(&name); err != nil || strings.TrimSpace(name) == "" {
 			return ""
 		}
-		columns = append(columns, "`"+name+"`")
+		columns = append(columns, mysqlQuoteIdentifier(name))
 	}
 	if len(columns) == 0 {
 		return ""
@@ -615,9 +759,6 @@ func DescribeMySQLTable(sourceID, database, table string) ([]MySQLColumnDetail, 
 	if err != nil || !strings.EqualFold(ds.Type, "mysql") || !ds.Enabled {
 		return nil, errors.New("MySQL data source not available")
 	}
-	if !validSQLIdentifier(database) || !validSQLIdentifier(table) {
-		return nil, errors.New("invalid database or table name")
-	}
 	db, err := openMySQLDataSource(ds)
 	if err != nil {
 		return nil, err
@@ -625,7 +766,7 @@ func DescribeMySQLTable(sourceID, database, table string) ([]MySQLColumnDetail, 
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("SHOW FULL COLUMNS FROM `%s`.`%s`", database, table))
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SHOW FULL COLUMNS FROM %s.%s", mysqlQuoteIdentifier(database), mysqlQuoteIdentifier(table)))
 	if err != nil {
 		return nil, err
 	}
@@ -650,149 +791,66 @@ func DescribeMySQLTable(sourceID, database, table string) ([]MySQLColumnDetail, 
 	return result, rows.Err()
 }
 
-func InsertMySQLTableRow(sourceID, database, table string, values map[string]any) (MySQLMutationResult, error) {
-	columns, _, err := editableMySQLColumns(sourceID, database, table)
-	if err != nil {
-		return MySQLMutationResult{}, err
-	}
-	names, args, err := validatedMySQLValues(values, columns)
-	if err != nil {
-		return MySQLMutationResult{}, err
-	}
-	quoted := make([]string, len(names))
-	placeholders := make([]string, len(names))
-	for index, name := range names {
-		quoted[index] = "`" + name + "`"
-		placeholders[index] = "?"
-	}
-	query := fmt.Sprintf("INSERT INTO `%s`.`%s` (%s) VALUES (%s)", database, table, strings.Join(quoted, ", "), strings.Join(placeholders, ", "))
-	return executeMySQLMutation(sourceID, query, args)
-}
-
-func UpdateMySQLTableRow(sourceID, database, table string, keys, values map[string]any) (MySQLMutationResult, error) {
-	columns, primaryKeys, err := editableMySQLColumns(sourceID, database, table)
-	if err != nil {
-		return MySQLMutationResult{}, err
-	}
-	if err := validateMySQLRowKeys(keys, primaryKeys); err != nil {
-		return MySQLMutationResult{}, err
-	}
-	names, args, err := validatedMySQLValues(values, columns)
-	if err != nil {
-		return MySQLMutationResult{}, err
-	}
-	assignments := make([]string, len(names))
-	for index, name := range names {
-		assignments[index] = "`" + name + "` = ?"
-	}
-	where, keyArgs := mysqlPrimaryKeyWhere(primaryKeys, keys)
-	args = append(args, keyArgs...)
-	query := fmt.Sprintf("UPDATE `%s`.`%s` SET %s WHERE %s", database, table, strings.Join(assignments, ", "), where)
-	return executeMySQLMutation(sourceID, query, args)
-}
-
-func DeleteMySQLTableRow(sourceID, database, table string, keys map[string]any) (MySQLMutationResult, error) {
-	_, primaryKeys, err := editableMySQLColumns(sourceID, database, table)
-	if err != nil {
-		return MySQLMutationResult{}, err
-	}
-	if err := validateMySQLRowKeys(keys, primaryKeys); err != nil {
-		return MySQLMutationResult{}, err
-	}
-	where, args := mysqlPrimaryKeyWhere(primaryKeys, keys)
-	query := fmt.Sprintf("DELETE FROM `%s`.`%s` WHERE %s", database, table, where)
-	return executeMySQLMutation(sourceID, query, args)
-}
-
-func editableMySQLColumns(sourceID, database, table string) (map[string]MySQLColumnDetail, []string, error) {
-	if isMySQLSystemDatabase(database) {
-		return nil, nil, errors.New("系统数据库不允许编辑")
-	}
-	details, err := DescribeMySQLTable(sourceID, database, table)
-	if err != nil {
-		return nil, nil, err
-	}
-	columns := make(map[string]MySQLColumnDetail, len(details))
-	primaryKeys := make([]string, 0)
-	for _, item := range details {
-		columns[item.Name] = item
-		if strings.EqualFold(item.Key, "PRI") {
-			primaryKeys = append(primaryKeys, item.Name)
-		}
-	}
-	return columns, primaryKeys, nil
-}
-
-func validatedMySQLValues(values map[string]any, columns map[string]MySQLColumnDetail) ([]string, []any, error) {
-	if len(values) == 0 {
-		return nil, nil, errors.New("没有需要保存的字段")
-	}
-	names := make([]string, 0, len(values))
-	for name := range values {
-		if _, ok := columns[name]; !ok {
-			return nil, nil, fmt.Errorf("字段不存在：%s", name)
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	args := make([]any, len(names))
-	for index, name := range names {
-		args[index] = values[name]
-	}
-	return names, args, nil
-}
-
-func validateMySQLRowKeys(keys map[string]any, primaryKeys []string) error {
-	if len(primaryKeys) == 0 {
-		return errors.New("该表没有主键，不能安全更新或删除记录")
-	}
-	if len(keys) != len(primaryKeys) {
-		return errors.New("主键字段不完整")
-	}
-	for _, name := range primaryKeys {
-		if value, ok := keys[name]; !ok || value == nil {
-			return fmt.Errorf("主键字段无效：%s", name)
-		}
-	}
-	return nil
-}
-
-func mysqlPrimaryKeyWhere(primaryKeys []string, keys map[string]any) (string, []any) {
-	conditions := make([]string, len(primaryKeys))
-	args := make([]any, len(primaryKeys))
-	for index, name := range primaryKeys {
-		conditions[index] = "`" + name + "` <=> ?"
-		args[index] = keys[name]
-	}
-	return strings.Join(conditions, " AND "), args
-}
-
-func executeMySQLMutation(sourceID, query string, args []any) (MySQLMutationResult, error) {
+// ListMySQLTableIndexes returns complete index definitions, including the
+// ordered fields of composite indexes. SHOW FULL COLUMNS only exposes the
+// abbreviated PRI/UNI/MUL marker and is not sufficient for this view.
+func ListMySQLTableIndexes(sourceID, database, table string) ([]MySQLIndexDetail, error) {
 	ds, err := GetDataSourceByID(sourceID)
 	if err != nil || !strings.EqualFold(ds.Type, "mysql") || !ds.Enabled {
-		return MySQLMutationResult{}, errors.New("MySQL data source not available")
+		return nil, errors.New("MySQL data source not available")
 	}
 	db, err := openMySQLDataSource(ds)
 	if err != nil {
-		return MySQLMutationResult{}, err
+		return nil, err
 	}
 	defer db.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	result, err := db.ExecContext(ctx, query, args...)
+	rows, err := db.QueryContext(ctx, `SELECT index_name, non_unique, index_type, index_comment,
+		seq_in_index, column_name, collation, cardinality, sub_part
+		FROM information_schema.statistics
+		WHERE table_schema = ? AND table_name = ?
+		ORDER BY index_name, seq_in_index`, database, table)
 	if err != nil {
-		return MySQLMutationResult{}, err
+		return nil, err
 	}
-	affected, _ := result.RowsAffected()
-	clearMySQLTableCountCache()
-	return MySQLMutationResult{Affected: affected}, nil
-}
-
-func isMySQLSystemDatabase(database string) bool {
-	switch strings.ToLower(strings.TrimSpace(database)) {
-	case "information_schema", "mysql", "performance_schema", "sys":
-		return true
-	default:
-		return false
+	defer rows.Close()
+	byName := make(map[string]*MySQLIndexDetail)
+	ordered := make([]string, 0)
+	for rows.Next() {
+		var name, indexType, comment, columnName string
+		var nonUnique, sequence int
+		var collation sql.NullString
+		var cardinality, prefixLength sql.NullInt64
+		if err := rows.Scan(&name, &nonUnique, &indexType, &comment, &sequence, &columnName, &collation, &cardinality, &prefixLength); err != nil {
+			return nil, err
+		}
+		index := byName[name]
+		if index == nil {
+			index = &MySQLIndexDetail{Name: name, Unique: nonUnique == 0, Type: indexType, Comment: comment, Columns: make([]MySQLIndexColumn, 0)}
+			byName[name] = index
+			ordered = append(ordered, name)
+		}
+		column := MySQLIndexColumn{Name: columnName, Sequence: sequence}
+		if collation.Valid {
+			column.Collation = collation.String
+		}
+		if cardinality.Valid {
+			value := cardinality.Int64
+			column.Cardinality = &value
+		}
+		if prefixLength.Valid {
+			value := prefixLength.Int64
+			column.PrefixLength = &value
+		}
+		index.Columns = append(index.Columns, column)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]MySQLIndexDetail, 0, len(ordered))
+	for _, name := range ordered {
+		result = append(result, *byName[name])
+	}
+	return result, nil
 }

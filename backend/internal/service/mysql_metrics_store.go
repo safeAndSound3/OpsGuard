@@ -61,11 +61,9 @@ func initMySQLMetricStore(host, port, user, password, database string) error {
 
 func startMySQLMetricCollector() {
 	go func() {
-		collectAndStoreMySQLMetrics()
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
+		for {
 			collectAndStoreMySQLMetrics()
+			time.Sleep(RefreshSettingsDuration("mysql"))
 		}
 	}()
 }

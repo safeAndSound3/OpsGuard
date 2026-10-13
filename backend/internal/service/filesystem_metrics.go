@@ -54,12 +54,24 @@ func excludedFilesystem(filesystem, mountPoint string) bool {
 	if mount == "" {
 		mount = "/"
 	}
-	if mount == "/var/lib/docker" || strings.HasPrefix(mount, "/var/lib/docker/") ||
-		mount == "/var/lib/kubelet" || strings.HasPrefix(mount, "/var/lib/kubelet/") {
+	if containerRuntimeMount(mount) {
 		return true
 	}
 	for _, value := range []string{"tmpfs", "devtmpfs", "overlay", "squashfs", "nsfs", "proc", "sysfs", "cgroup", "cgroup2"} {
 		if fs == value || strings.HasPrefix(fs, value+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// containerRuntimeMount excludes storage and bind mounts owned by container
+// runtimes. Matching path segments, rather than only /var/lib/docker, also
+// covers common custom roots such as /docker and /data/containerd.
+func containerRuntimeMount(mountPoint string) bool {
+	for _, segment := range strings.Split(strings.Trim(mountPoint, "/"), "/") {
+		switch strings.ToLower(strings.TrimSpace(segment)) {
+		case "docker", "containerd", "containers", "kubelet", "kubernetes", "podman", "k3s", "rancher":
 			return true
 		}
 	}
@@ -115,6 +127,11 @@ func LatestHostFilesystemMetrics(sourceID string) ([]FilesystemMetric, time.Time
 		var item FilesystemMetric
 		if err := rows.Scan(&item.Filesystem, &item.MountPoint, &item.TotalBytes, &item.UsedBytes, &item.UsedPercent); err != nil {
 			return nil, time.Time{}, err
+		}
+		// Apply the same policy to retained samples so an older collection made
+		// before a filter update cannot reappear in the dashboard.
+		if excludedFilesystem(item.Filesystem, item.MountPoint) {
+			continue
 		}
 		items = append(items, item)
 	}

@@ -10,12 +10,16 @@ type AppConfig struct {
 	Host                 string
 	Port                 string
 	Env                  string
+	TLSEnabled           bool
+	TLSCertFile          string
+	TLSKeyFile           string
+	TLSServerNames       []string
 	CORSAllowedOrigins   []string
-	SessionCookieSecure  bool
 	SessionTTL           string
 	OutboundAllowedHosts []string
 	OutboundAllowedCIDRs []string
 	AllowLoopbackTargets bool
+	LogFile              string
 }
 
 func Load() AppConfig {
@@ -24,19 +28,29 @@ func Load() AppConfig {
 	if path := strings.TrimSpace(os.Getenv("OPSGUARD_CONFIG")); path != "" {
 		loadEnvFile(path)
 	}
-	loadEnvFile("config/opsguard.conf")
+	// Resolve both the backend working directory and the repository root. This
+	// keeps `go run ./cmd/server` and `go run ./backend/cmd/server` equivalent.
+	for _, path := range []string{"config/opsguard.conf", "backend/config/opsguard.conf"} {
+		loadEnvFile(path)
+	}
 	// Keep existing local installations working during the config-file migration.
-	loadEnvFile(".env")
+	for _, path := range []string{".env", "backend/.env"} {
+		loadEnvFile(path)
+	}
 	return AppConfig{
 		Host:                 getEnv("HOST", "0.0.0.0"),
 		Port:                 getEnv("PORT", "8030"),
 		Env:                  getEnv("ENV", "development"),
+		TLSEnabled:           strings.EqualFold(getEnv("TLS_ENABLED", "true"), "true"),
+		TLSCertFile:          getEnv("TLS_CERT_FILE", "certs/opsguard.crt"),
+		TLSKeyFile:           getEnv("TLS_KEY_FILE", "certs/opsguard.key"),
+		TLSServerNames:       splitCSV(os.Getenv("TLS_SERVER_NAMES")),
 		CORSAllowedOrigins:   splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
-		SessionCookieSecure:  strings.EqualFold(getEnv("SESSION_COOKIE_SECURE", "false"), "true"),
 		SessionTTL:           getEnv("SESSION_TTL", "12h"),
 		OutboundAllowedHosts: splitCSV(os.Getenv("OUTBOUND_ALLOWED_HOSTS")),
 		OutboundAllowedCIDRs: splitCSV(os.Getenv("OUTBOUND_ALLOWED_CIDRS")),
 		AllowLoopbackTargets: strings.EqualFold(getEnv("OUTBOUND_ALLOW_LOOPBACK", "false"), "true"),
+		LogFile:              getEnv("LOG_FILE", "logs/opsguard-server.log"),
 	}
 }
 

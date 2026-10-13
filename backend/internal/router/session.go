@@ -35,7 +35,7 @@ func newSessionManager(cfg config.AppConfig) *sessionManager {
 	if err != nil || ttl <= 0 {
 		ttl = 12 * time.Hour
 	}
-	return &sessionManager{sessions: make(map[string]sessionEntry), ttl: ttl, cookieSecure: cfg.SessionCookieSecure}
+	return &sessionManager{sessions: make(map[string]sessionEntry), ttl: ttl, cookieSecure: cfg.TLSEnabled}
 }
 
 func (m *sessionManager) create(w http.ResponseWriter, username string) (string, error) {
