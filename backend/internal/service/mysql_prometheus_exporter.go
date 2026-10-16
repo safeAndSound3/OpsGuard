@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"monitor-platform/internal/model"
+
+	_ "github.com/ClickHouse/clickhouse-go/v2"
+	_ "github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 var prometheusMetricNameRe = regexp.MustCompile(`[^a-zA-Z0-9_:]`)
@@ -136,6 +139,39 @@ func openMySQLDataSource(ds model.DataSource) (*sql.DB, error) {
 	}
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)%s?parseTime=true&timeout=5s&readTimeout=35s&writeTimeout=35s&loc=Local%s", user, ds.Password, strings.TrimSpace(ds.Host), port, path, mysqlSessionTimeZone)
 	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(time.Minute)
+	return db, nil
+}
+
+func openClickHouseDataSource(ds model.DataSource) (*sql.DB, error) {
+	if strings.TrimSpace(ds.Password) == "" && strings.TrimSpace(ds.ID) != "" {
+		if err := FillDataSourcePassword(&ds); err != nil {
+			return nil, err
+		}
+	}
+	host := strings.TrimSpace(ds.Host)
+	if host == "" {
+		return nil, errors.New("ClickHouse 主机不能为空")
+	}
+	port := strings.TrimSpace(ds.Port)
+	if port == "" {
+		port = "9000"
+	}
+	database := strings.TrimSpace(ds.Database)
+	if database == "" {
+		database = "default"
+	}
+	user := strings.TrimSpace(ds.Username)
+	if user == "" {
+		user = "default"
+	}
+	dsn := fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s?dial_timeout=5s&read_timeout=35s&write_timeout=35s", user, ds.Password, host, port, database)
+	db, err := sql.Open("clickhouse", dsn)
 	if err != nil {
 		return nil, err
 	}

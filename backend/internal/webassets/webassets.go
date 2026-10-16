@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-//go:embed assets/* index.html favicon.svg hadoop.svg icons.svg mysql.svg hadoop-elephant.png
+//go:embed assets/* index.html favicon.svg hadoop.svg icons.svg mysql.svg hadoop-elephant.png marked.min.js
 var files embed.FS
 
 func Handler() http.Handler {
@@ -16,6 +16,7 @@ func Handler() http.Handler {
 	if err != nil {
 		return http.NotFoundHandler()
 	}
+	indexBytes, _ := fs.ReadFile(root, "index.html")
 	fileServer := http.FileServer(http.FS(root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
@@ -23,7 +24,10 @@ func Handler() http.Handler {
 			requestPath = "index.html"
 		}
 		if _, err := fs.Stat(root, requestPath); err != nil && !strings.Contains(path.Base(requestPath), ".") {
-			r.URL.Path = "/index.html"
+			// SPA fallback: serve index.html directly
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(indexBytes)
+			return
 		}
 		fileServer.ServeHTTP(w, r)
 	})

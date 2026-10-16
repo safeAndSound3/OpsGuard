@@ -57,6 +57,7 @@ func ExecutePostgreSQLStatement(sourceID, database, statement string) (PostgreSQ
 		}
 		result, err := runPostgreSQLQuery(ds, database, item)
 		if err != nil {
+			recordSQLHistory(sourceID, database, statement, "failed", 0, 0, 0, err.Error(), "")
 			return PostgreSQLStatementResult{}, err
 		}
 		last = result
@@ -70,6 +71,7 @@ func ExecutePostgreSQLStatement(sourceID, database, statement string) (PostgreSQ
 	if len(last.Columns) == 0 && len(last.Rows) == 0 {
 		last.Message = "执行成功"
 	}
+	recordSQLHistory(sourceID, database, statement, "success", len(last.Rows), 0, 0, "", "")
 	return last, nil
 }
 

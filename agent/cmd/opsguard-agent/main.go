@@ -3,13 +3,22 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -19,6 +28,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -26,13 +36,20 @@ import (
 var version = "dev"
 
 type config struct {
-	listen, token      string
+	listen             string
+	tokens             []string
 	allowedPlatformIPs []netip.Prefix
 	timeout            time.Duration
 	maxOutput          int64
 	logFile            string
+	tlsEnabled         bool
+	tlsCertFile        string
+	tlsKeyFile         string
 }
-type collector struct{ total, idle uint64 }
+type collector struct {
+	mu          sync.Mutex
+	total, idle uint64
+}
 type fileCheck struct {
 	Path          string `json:"path"`
 	NamePattern   string `json:"namePattern"`
@@ -69,10 +86,20 @@ type metricsResponse struct {
 
 func main() {
 	path := flag.String("config", "/etc/opsguard-agent/agent.conf", "path to agent .conf")
+	printFingerprint := flag.Bool("print-fingerprint", false, "print the TLS certificate SHA-256 fingerprint (generating it if needed) and exit")
 	flag.Parse()
 	cfg, err := loadConfig(*path)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *printFingerprint {
+		fingerprint, err := agentCertificateFingerprint(cfg)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("SHA256 fingerprint: %s\n", fingerprint)
+		fmt.Printf("TLS cert: %s\nTLS key: %s\n", cfg.tlsCertFile, cfg.tlsKeyFile)
+		return
 	}
 	if closeLog, err := configureFileLogging(cfg.logFile); err != nil {
 		log.Printf("无法打开 Agent 日志文件 %s：%v，继续输出到终端", cfg.logFile, err)
@@ -81,12 +108,19 @@ func main() {
 	}
 	metrics := &collector{}
 	startedAt := time.Now()
+	if cfg.tlsEnabled {
+		fingerprint, certErr := agentCertificateFingerprint(cfg)
+		if certErr != nil {
+			log.Fatal(certErr)
+		}
+		log.Printf("TLS enabled: cert=%s key=%s fingerprint=%s", cfg.tlsCertFile, cfg.tlsKeyFile, fingerprint)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"status": "ok", "version": version, "startedAt": startedAt.Format(time.RFC3339), "ipWhitelistConfigured": len(cfg.allowedPlatformIPs) > 0})
+		writeJSON(w, 200, map[string]any{"status": "ok", "version": version, "startedAt": startedAt.Format(time.RFC3339), "ipWhitelistConfigured": len(cfg.allowedPlatformIPs) > 0, "tlsEnabled": cfg.tlsEnabled})
 	})
 	mux.HandleFunc("/v1/metrics", func(w http.ResponseWriter, r *http.Request) {
-		if !auth(r, cfg.token) {
+		if !auth(r, cfg.tokens) {
 			deny(w)
 			return
 		}
@@ -97,7 +131,7 @@ func main() {
 			method(w)
 			return
 		}
-		if !auth(r, cfg.token) {
+		if !auth(r, cfg.tokens) {
 			deny(w)
 			return
 		}
@@ -114,7 +148,7 @@ func main() {
 			method(w)
 			return
 		}
-		if !auth(r, cfg.token) {
+		if !auth(r, cfg.tokens) {
 			deny(w)
 			return
 		}
@@ -134,7 +168,10 @@ func main() {
 		mux.ServeHTTP(w, r)
 	})
 	server := &http.Server{Addr: cfg.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 30 * time.Second}
-	log.Printf("agent listening on %s", cfg.listen)
+	log.Printf("agent listening on %s (tls=%v)", cfg.listen, cfg.tlsEnabled)
+	if cfg.tlsEnabled {
+		log.Fatal(server.ListenAndServeTLS(cfg.tlsCertFile, cfg.tlsKeyFile))
+	}
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -159,15 +196,31 @@ func loadConfig(path string) (config, error) {
 	if s.Err() != nil {
 		return config{}, s.Err()
 	}
-	cfg := config{listen: values["LISTEN"], token: values["TOKEN"], timeout: 30 * time.Second, maxOutput: 65536, logFile: values["LOG_FILE"]}
+	configDir := filepath.Dir(path)
+	cfg := config{listen: values["LISTEN"], timeout: 30 * time.Second, maxOutput: 65536, logFile: values["LOG_FILE"], tlsEnabled: strings.EqualFold(strings.TrimSpace(values["TLS_ENABLED"]), "true")}
 	if strings.TrimSpace(cfg.logFile) == "" {
-		cfg.logFile = "/var/log/opsguard-agent/agent.log"
+		cfg.logFile = filepath.Join(configDir, "..", "..", "logs", "agent", "agent.log")
 	}
 	if cfg.listen == "" {
 		cfg.listen = "0.0.0.0:4001"
 	}
-	if cfg.token == "" {
+	// TOKEN accepts a comma-separated list so tokens can be rotated without
+	// losing connectivity: append the new token, restart, then remove the old one.
+	for _, raw := range strings.Split(values["TOKEN"], ",") {
+		if token := strings.TrimSpace(raw); token != "" {
+			cfg.tokens = append(cfg.tokens, token)
+		}
+	}
+	if len(cfg.tokens) == 0 {
 		return config{}, errors.New("TOKEN is required")
+	}
+	cfg.tlsCertFile = strings.TrimSpace(values["TLS_CERT_FILE"])
+	if cfg.tlsCertFile == "" {
+		cfg.tlsCertFile = filepath.Join(configDir, "agent.crt")
+	}
+	cfg.tlsKeyFile = strings.TrimSpace(values["TLS_KEY_FILE"])
+	if cfg.tlsKeyFile == "" {
+		cfg.tlsKeyFile = filepath.Join(configDir, "agent.key")
 	}
 	for _, raw := range strings.Split(values["ALLOWED_PLATFORM_IPS"], ",") {
 		raw = strings.TrimSpace(raw)
@@ -208,6 +261,108 @@ func configureFileLogging(path string) (func(), error) {
 	log.SetOutput(io.MultiWriter(os.Stdout, file))
 	return func() { _ = file.Close() }, nil
 }
+
+// agentCertificateFingerprint ensures the TLS certificate exists (generating a
+// self-signed one when missing) and returns its SHA-256 fingerprint in
+// lowercase hex, matching the fingerprint the platform pins per data source.
+func agentCertificateFingerprint(cfg config) (string, error) {
+	if err := ensureAgentCertificate(cfg); err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(cfg.tlsCertFile)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return "", errors.New("failed to decode TLS certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ensureAgentCertificate generates a self-signed ECDSA certificate when either
+// of the configured cert/key files is missing. Certificate validity is 10 years
+// and the SANs cover the hostname and local addresses; because the platform
+// pins the certificate fingerprint instead of hostnames, SANs are informational.
+func ensureAgentCertificate(cfg config) error {
+	certExists, keyExists := fileExists(cfg.tlsCertFile), fileExists(cfg.tlsKeyFile)
+	if certExists && keyExists {
+		return nil
+	}
+	if certExists || keyExists {
+		return errors.New("Agent TLS 证书和私钥必须同时存在；请恢复缺失文件，确认换证后再重置平台保存的证书指纹")
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.tlsCertFile), 0o750); err != nil {
+		return err
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	hostname, _ := os.Hostname()
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "opsguard-agent"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if hostname != "" {
+		template.DNSNames = append(template.DNSNames, hostname)
+	}
+	for _, address := range localAddresses() {
+		template.IPAddresses = append(template.IPAddresses, address)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		return err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(cfg.tlsCertFile, certPEM, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(cfg.tlsKeyFile, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func localAddresses() []net.IP {
+	var result []net.IP
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return result
+	}
+	for _, iface := range interfaces {
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			if ipNet, ok := address.(*net.IPNet); ok && ipNet.IP.IsGlobalUnicast() && !ipNet.IP.IsLoopback() {
+				result = append(result, ipNet.IP)
+			}
+		}
+	}
+	return result
+}
+
 func allowedPlatform(r *http.Request, cfg config) bool {
 	if len(cfg.allowedPlatformIPs) == 0 {
 		return true
@@ -227,8 +382,17 @@ func allowedPlatform(r *http.Request, cfg config) bool {
 	}
 	return false
 }
-func auth(r *http.Request, token string) bool {
-	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")), []byte(token)) == 1
+func auth(r *http.Request, tokens []string) bool {
+	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if provided == "" {
+		return false
+	}
+	for _, token := range tokens {
+		if token != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 func deny(w http.ResponseWriter) { writeJSON(w, 401, map[string]string{"error": "invalid token"}) }
 func denySource(w http.ResponseWriter) {
@@ -243,6 +407,8 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 func (c *collector) read() metricsResponse {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	result := metricsResponse{Up: 1}
 	if raw, e := os.ReadFile("/proc/loadavg"); e == nil {
 		f := strings.Fields(string(raw))
@@ -280,7 +446,9 @@ func (c *collector) read() metricsResponse {
 	return result
 }
 func readFilesystems() []filesystemMetric {
-	out, err := exec.Command("df", "-P", "-B1").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "df", "-P", "-B1").Output()
 	if err != nil {
 		return nil
 	}
@@ -430,7 +598,9 @@ func runScript(req scriptCheck, cfg config) checkResult {
 		}
 		cmd.Dir = req.WorkingDirectory
 	}
-	out, e := cmd.CombinedOutput()
+	output := &limitedCommandOutput{limit: cfg.maxOutput}
+	cmd.Stdout, cmd.Stderr = output, output
+	e := cmd.Run()
 	code := 0
 	if e != nil {
 		if exit, ok := e.(*exec.ExitError); ok {
@@ -439,8 +609,38 @@ func runScript(req scriptCheck, cfg config) checkResult {
 			return checkResult{Summary: "command start failed", Details: e.Error()}
 		}
 	}
-	if int64(len(out)) > cfg.maxOutput {
-		out = append(out[:cfg.maxOutput], []byte("\n... truncated")...)
+	return checkResult{Passed: code == 0, ExitCode: code, Summary: fmt.Sprintf("exit code %d", code), Details: output.String()}
+}
+
+type limitedCommandOutput struct {
+	mu        sync.Mutex
+	data      []byte
+	limit     int64
+	truncated bool
+}
+
+func (w *limitedCommandOutput) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(p)
+	remaining := w.limit - int64(len(w.data))
+	if remaining > 0 {
+		if remaining > int64(n) {
+			remaining = int64(n)
+		}
+		w.data = append(w.data, p[:int(remaining)]...)
 	}
-	return checkResult{Passed: code == 0, ExitCode: code, Summary: fmt.Sprintf("exit code %d", code), Details: string(out)}
+	if int64(n) > remaining {
+		w.truncated = true
+	}
+	return n, nil
+}
+
+func (w *limitedCommandOutput) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.truncated {
+		return string(w.data) + "\n... truncated"
+	}
+	return string(w.data)
 }

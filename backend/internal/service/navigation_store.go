@@ -85,6 +85,131 @@ func initNavigationStore(current *sql.DB) error {
 			}
 		}
 	}
+	_, _ = current.ExecContext(ctx, `ALTER TABLE mysql_report_tasks ADD COLUMN alert_enabled tinyint(1) NOT NULL DEFAULT 0`)
+	_, _ = current.ExecContext(ctx, `ALTER TABLE mysql_report_tasks ADD COLUMN alert_compare varchar(24) NOT NULL DEFAULT ''`)
+	_, _ = current.ExecContext(ctx, `ALTER TABLE mysql_report_tasks ADD COLUMN alert_operator varchar(8) NOT NULL DEFAULT ''`)
+	_, _ = current.ExecContext(ctx, `ALTER TABLE mysql_report_tasks ADD COLUMN alert_threshold double NOT NULL DEFAULT 0`)
+	_, _ = current.ExecContext(ctx, `ALTER TABLE mysql_report_tasks ADD COLUMN alert_unit varchar(8) NOT NULL DEFAULT ''`)
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS ssh_custom_commands (
+		id varchar(64) PRIMARY KEY,
+		label varchar(120) NOT NULL,
+		command varchar(2000) NOT NULL,
+		category varchar(60) NOT NULL DEFAULT '自定义',
+		created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	)`); err != nil {
+		return err
+	}
+
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS ssh_command_history (
+		id bigint AUTO_INCREMENT PRIMARY KEY,
+		source_id varchar(64) NOT NULL DEFAULT '',
+		source_name varchar(200) NOT NULL DEFAULT '',
+		command varchar(2000) NOT NULL,
+		exit_code int NOT NULL DEFAULT 0,
+		created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_history_source (source_id),
+		INDEX idx_history_time (created_at)
+	)`); err != nil {
+		return err
+	}
+
+	builtins := []struct{ id, label, cmd, category string }{
+		// 系统信息
+		{"builtin-hostname", "主机名", "hostname", "系统信息"},
+		{"builtin-os-release", "系统版本", "cat /etc/os-release | head -5", "系统信息"},
+		{"builtin-uname", "内核版本", "uname -a", "系统信息"},
+		{"builtin-uptime", "运行时间与负载", "uptime", "系统信息"},
+		{"builtin-whoami", "当前用户", "whoami && id", "系统信息"},
+		{"builtin-date", "系统时间", "timedatectl", "系统信息"},
+		{"builtin-last-reboot", "最近重启记录", "last reboot | head -5", "系统信息"},
+
+		// 资源使用
+		{"builtin-nproc", "CPU 核心数", "nproc", "资源使用"},
+		{"builtin-cpu-load", "CPU 实时负载", "top -bn1 | head -20", "资源使用"},
+		{"builtin-free", "内存使用", "free -h", "资源使用"},
+		{"builtin-df", "磁盘使用", "df -h", "资源使用"},
+		{"builtin-df-inode", "磁盘 inode", "df -i", "资源使用"},
+		{"builtin-du-top", "目录占用 Top10", "du -sh /* 2>/dev/null | sort -rh | head -10", "资源使用"},
+		{"builtin-ps-cpu", "Top CPU 进程", "ps aux --sort=-%cpu | head -10", "资源使用"},
+		{"builtin-ps-mem", "Top 内存进程", "ps aux --sort=-%mem | head -10", "资源使用"},
+		{"builtin-iostat", "磁盘 IO", "iostat -x 1 2 2>/dev/null || vmstat 1 3", "资源使用"},
+
+		// 网络排查
+		{"builtin-ip-addr", "IP 地址", "ip addr | grep \"inet \"", "网络"},
+		{"builtin-ss-listen", "监听端口", "ss -tlnp", "网络"},
+		{"builtin-ss-stat", "连接状态统计", "ss -s", "网络"},
+		{"builtin-ss-estab", "ESTABLISHED 连接", "ss -tnp state established | head -30", "网络"},
+		{"builtin-ip-route", "路由表", "ip route", "网络"},
+		{"builtin-dns", "DNS 解析", "cat /etc/resolv.conf", "网络"},
+		{"builtin-ping-gw", "Ping 网关", "ip route | grep default | awk '{print $3}' | head -1 | xargs -I{} ping -c 3 {}", "网络"},
+		{"builtin-firewall", "防火墙规则", "iptables -L -n 2>/dev/null || firewall-cmd --list-all 2>/dev/null", "网络"},
+
+		// 服务排查
+		{"builtin-systemd-running", "运行中的服务", "systemctl list-units --type=service --state=running", "服务"},
+		{"builtin-systemd-failed", "失败的服务", "systemctl --failed --no-pager", "服务"},
+		{"builtin-journal", "最近系统日志", "journalctl -n 30 --no-pager", "服务"},
+		{"builtin-journal-err", "最近错误日志", "journalctl -p err -n 20 --no-pager", "服务"},
+		{"builtin-docker", "Docker 容器", "docker ps", "服务"},
+		{"builtin-docker-stopped", "停止的容器", "docker ps -a --filter status=exited", "服务"},
+		{"builtin-port-80", "80/443 端口占用", "ss -tlnp | grep -E ':80|:443'", "服务"},
+
+		// Kubernetes
+		{"builtin-k8s-nodes", "节点列表", "kubectl get nodes -o wide", "Kubernetes"},
+		{"builtin-k8s-ns", "命名空间", "kubectl get ns", "Kubernetes"},
+		{"builtin-k8s-pods", "全部 Pod", "kubectl get pods -A -o wide", "Kubernetes"},
+		{"builtin-k8s-bad-pods", "异常 Pod", "kubectl get pods -A | grep -v Running", "Kubernetes"},
+		{"builtin-k8s-top-nodes", "节点资源", "kubectl top nodes", "Kubernetes"},
+		{"builtin-k8s-top-pods", "Pod 资源", "kubectl top pods -A --sort-by=cpu | head -20", "Kubernetes"},
+		{"builtin-k8s-deploy", "Deployment", "kubectl get deploy -A", "Kubernetes"},
+		{"builtin-k8s-events", "最近事件", "kubectl get events -A --sort-by=.lastTimestamp | tail -20", "Kubernetes"},
+		{"builtin-k8s-desc-pod", "查看 Pod 详情", "kubectl describe pod <pod名> -n <命名空间>", "Kubernetes"},
+		{"builtin-k8s-logs", "查看 Pod 日志", "kubectl logs <pod名> -n <命名空间> --tail=50", "Kubernetes"},
+
+		// 异常排查
+		{"builtin-oom", "OOM 记录", "dmesg | grep -i 'oom\\|out of memory' | tail -10", "异常排查"},
+		{"builtin-disk-full", "大文件查找", "find / -xdev -type f -size +500M 2>/dev/null | head -20", "异常排查"},
+		{"builtin-inode-full", "小文件目录", "find / -xdev -type d -size +1000k 2>/dev/null | head -10", "异常排查"},
+		{"builtin-tcp-tw", "TIME_WAIT 统计", "ss -ant | awk '{print $1}' | sort | uniq -c | sort -rn", "异常排查"},
+		{"builtin-conn-refused", "连接拒绝排查", "ss -tn state time-wait | wc -l", "异常排查"},
+		{"builtin-loadavg", "系统负载详情", "cat /proc/loadavg", "异常排查"},
+		{"builtin-mem-info", "内存详情", "cat /proc/meminfo | head -20", "异常排查"},
+		{"builtin-dmesg-err", "内核错误日志", "dmesg --level=err,warn | tail -20", "异常排查"},
+		{"builtin-auth-fail", "登录失败记录", "lastb 2>/dev/null | head -10 || journalctl -u sshd -n 20 --no-pager", "异常排查"},
+		{"builtin-cron", "定时任务", "crontab -l 2>/dev/null; ls -la /etc/cron.d/", "异常排查"},
+		{"builtin-lsof-port", "查端口占用", "lsof -i:端口号", "异常排查"},
+		{"builtin-lsof-pid", "查进程文件句柄", "lsof -p PID", "异常排查"},
+		{"builtin-ntp", "时间同步状态", "chronyc sources 2>/dev/null || ntpq -p 2>/dev/null", "异常排查"},
+		{"builtin-messages-log", "系统消息日志", "tail -100 /var/log/messages", "异常排查"},
+		{"builtin-secure-log", "安全日志", "tail -100 /var/log/secure", "异常排查"},
+		{"builtin-tcpdump", "抓包排查", "tcpdump -i eth0 port 80 -c 20", "异常排查"},
+		{"builtin-conn-rank", "来源 IP 连接数排行", "ss -tn | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn | head -10", "异常排查"},
+		{"builtin-zombie", "僵尸进程数", "ps aux | grep defunct | wc -l", "异常排查"},
+		{"builtin-k8s-notready", "NotReady 节点", "kubectl get nodes | grep -v Ready", "Kubernetes"},
+		{"builtin-k8s-restart", "Pod 重启次数排行", "kubectl get pods -A | awk '$5>0'", "Kubernetes"},
+		{"builtin-docker-logs", "容器日志", "docker logs --tail 50 容器名", "服务"},
+		{"builtin-docker-stats", "容器资源占用", "docker stats --no-stream", "服务"},
+	}
+	for _, b := range builtins {
+		current.ExecContext(ctx, `INSERT IGNORE INTO ssh_custom_commands (id, label, command, category) VALUES (?, ?, ?, ?)`, b.id, b.label, b.cmd, b.category)
+	}
+
+	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS knowledge_docs (
+		id varchar(64) PRIMARY KEY,
+		title varchar(200) NOT NULL,
+		content longtext NOT NULL,
+		source_name varchar(200) NOT NULL DEFAULT '',
+		category varchar(100) NOT NULL DEFAULT '基础',
+		created_by varchar(64) NOT NULL DEFAULT '',
+		created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_knowledge_updated (updated_at)
+	)`); err != nil {
+		return err
+	}
+	// 兼容已有表：补 category 字段
+	_, _ = current.ExecContext(ctx, `ALTER TABLE knowledge_docs ADD COLUMN category varchar(100) NOT NULL DEFAULT '基础'`)
+	_, _ = current.ExecContext(ctx, `ALTER TABLE knowledge_docs ADD INDEX idx_knowledge_category (category)`)
 	if _, err := current.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS hadoop_application_snapshots (
 		source_id varchar(64) NOT NULL,
 		application_id varchar(160) NOT NULL,
@@ -858,4 +983,108 @@ func SaveMySQLReportConcurrency(value int) error {
 	}
 	_, err := current.Exec(`INSERT INTO system_settings (setting_key, setting_value) VALUES ('mysql_report_concurrency', ?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_at=CURRENT_TIMESTAMP`, strconv.Itoa(value))
 	return err
+}
+
+type SSRCustomCommand struct {
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Command  string `json:"command"`
+	Category string `json:"category"`
+}
+
+func ListSSRCustomCommands() ([]SSRCustomCommand, error) {
+	current := currentStore()
+	if current == nil {
+		return nil, errors.New("平台数据库不可用")
+	}
+	rows, err := current.Query(`SELECT id, label, command, category FROM ssh_custom_commands ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []SSRCustomCommand
+	for rows.Next() {
+		var item SSRCustomCommand
+		if err := rows.Scan(&item.ID, &item.Label, &item.Command, &item.Category); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func SaveSSRCustomCommand(id, label, command, category string) (SSRCustomCommand, error) {
+	current := currentStore()
+	if current == nil {
+		return SSRCustomCommand{}, errors.New("平台数据库不可用")
+	}
+	if id == "" {
+		id = fmt.Sprintf("cmd-%d", time.Now().UnixNano())
+		_, err := current.Exec(`INSERT INTO ssh_custom_commands (id, label, command, category) VALUES (?, ?, ?, ?)`, id, label, command, category)
+		if err != nil {
+			return SSRCustomCommand{}, err
+		}
+	} else {
+		_, err := current.Exec(`UPDATE ssh_custom_commands SET label=?, command=?, category=? WHERE id=?`, label, command, category, id)
+		if err != nil {
+			return SSRCustomCommand{}, err
+		}
+	}
+	return SSRCustomCommand{ID: id, Label: label, Command: command, Category: category}, nil
+}
+
+func DeleteSSRCustomCommand(id string) error {
+	current := currentStore()
+	if current == nil {
+		return errors.New("平台数据库不可用")
+	}
+	_, err := current.Exec(`DELETE FROM ssh_custom_commands WHERE id=?`, id)
+	return err
+}
+
+type SSHCommandHistory struct {
+	ID         int64  `json:"id"`
+	SourceID   string `json:"sourceId"`
+	SourceName string `json:"sourceName"`
+	Command    string `json:"command"`
+	ExitCode   int    `json:"exitCode"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+func RecordSSHCommandHistory(sourceID, sourceName, command string, exitCode int) {
+	current := currentStore()
+	if current == nil {
+		return
+	}
+	current.Exec(`INSERT INTO ssh_command_history (source_id, source_name, command, exit_code) VALUES (?, ?, ?, ?)`, sourceID, sourceName, command, exitCode)
+}
+
+func ListSSHCommandHistory(sourceID string, limit int) ([]SSHCommandHistory, error) {
+	current := currentStore()
+	if current == nil {
+		return nil, errors.New("平台数据库不可用")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var rows *sql.Rows
+	var err error
+	if sourceID != "" {
+		rows, err = current.Query(`SELECT id, source_id, source_name, command, exit_code, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') FROM ssh_command_history WHERE source_id = ? ORDER BY id DESC LIMIT ?`, sourceID, limit)
+	} else {
+		rows, err = current.Query(`SELECT id, source_id, source_name, command, exit_code, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') FROM ssh_command_history ORDER BY id DESC LIMIT ?`, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []SSHCommandHistory
+	for rows.Next() {
+		var h SSHCommandHistory
+		if err := rows.Scan(&h.ID, &h.SourceID, &h.SourceName, &h.Command, &h.ExitCode, &h.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, h)
+	}
+	return result, nil
 }

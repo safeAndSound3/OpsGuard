@@ -37,10 +37,6 @@ var (
 	collectionRuleEvaluatorOnce sync.Once
 )
 
-func init() {
-	rules = GetCollectionRules()
-}
-
 func currentStore() *sql.DB {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -281,8 +277,18 @@ func ChangeUserPassword(username string, oldPassword string, newPassword string)
 	if err != nil {
 		return err
 	}
-	_, err = current.ExecContext(ctx, `UPDATE users SET password = ? WHERE username = ?`, hash, username)
-	return err
+	tx, err := current.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET password = ? WHERE username = ?`, hash, username); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM user_sessions WHERE username = ?`, username); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func ListDataSources() []model.DataSource {
@@ -538,6 +544,85 @@ func GetDataSourceByID(id string) (model.DataSource, error) {
 	}
 	_ = json.Unmarshal([]byte(optionsRaw), &ds.Options)
 	return ds, nil
+}
+
+// setDataSourceOption updates a single options_json key (empty value deletes it).
+func setDataSourceOption(id, key, value string) error {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return errors.New("data source store is not initialized")
+	}
+	existing, err := GetDataSourceByID(id)
+	if err != nil {
+		return err
+	}
+	options := existing.Options
+	if options == nil {
+		options = map[string]string{}
+	}
+	if value == "" {
+		delete(options, key)
+	} else {
+		options[key] = value
+	}
+	raw, err := json.Marshal(options)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = current.ExecContext(ctx, `UPDATE data_sources SET options_json = ? WHERE id = ?`, string(raw), id)
+	return err
+}
+
+// RotateAgentToken issues a new agent token for an SSH - Agent data source.
+// The previous token stays valid on the agent side until its TOKEN config is
+// updated (the agent accepts a comma-separated list), so rotation is rolling.
+func RotateAgentToken(id, username string) (string, error) {
+	mu.RLock()
+	current := db
+	mu.RUnlock()
+	if current == nil {
+		return "", errors.New("data source store is not initialized")
+	}
+	existing, err := GetDataSourceByID(id)
+	if err != nil {
+		return "", errors.New("data source not found")
+	}
+	if !isAgentSSH(existing) {
+		return "", errors.New("仅 SSH - Agent 数据源支持令牌轮换")
+	}
+	token, err := generateAgentToken()
+	if err != nil {
+		return "", err
+	}
+	encrypted, err := encryptCredential(token)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = current.ExecContext(ctx, `UPDATE data_sources SET password = ? WHERE id = ?`, encrypted, id)
+	if err != nil {
+		return "", err
+	}
+	RecordOperation(username, "轮换 Agent 令牌", "data-source:"+id, "")
+	return token, nil
+}
+
+// ResetAgentCertFingerprint clears the pinned agent TLS certificate
+// fingerprint so the next connection re-trusts the certificate (TOFU).
+func ResetAgentCertFingerprint(id string) error {
+	existing, err := GetDataSourceByID(id)
+	if err != nil {
+		return errors.New("data source not found")
+	}
+	if !isAgentSSH(existing) {
+		return errors.New("仅 SSH - Agent 数据源支持重置证书指纹")
+	}
+	return setDataSourceOption(id, "agentCertFingerprint", "")
 }
 
 func SetDataSourceEnabled(id string, enabled bool) (model.DataSource, error) {
@@ -2334,14 +2419,20 @@ func validateCollectionRuleSourceEnabled(rule model.CollectionRule) error {
 	return nil
 }
 
-func GetSchemaForDataSource(id string, database string, table string, full bool) map[string]map[string][]string {
+func GetSchemaForDataSource(id string, database string, table string, full bool) (map[string]map[string][]string, error) {
 	ds, err := getRuleDataSourceWithSecret(id)
-	if err != nil || !strings.EqualFold(ds.Type, "mysql") || !ds.Enabled {
-		return map[string]map[string][]string{}
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(ds.Type, "mysql") {
+		return nil, errors.New("该数据源不是 MySQL 类型")
+	}
+	if !ds.Enabled {
+		return nil, errors.New("该数据源已停用")
 	}
 	targetDB, err := openMySQLDataSource(ds)
 	if err != nil {
-		return map[string]map[string][]string{}
+		return nil, err
 	}
 	defer targetDB.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2364,7 +2455,7 @@ func GetSchemaForDataSource(id string, database string, table string, full bool)
 // names in a single query, so the workspace can support full-text search
 // across unexpanded databases. Databases without any table are still listed
 // (with an empty table map) via the LEFT JOIN.
-func listMySQLAllTables(ctx context.Context, targetDB *sql.DB) map[string]map[string][]string {
+func listMySQLAllTables(ctx context.Context, targetDB *sql.DB) (map[string]map[string][]string, error) {
 	rows, err := targetDB.QueryContext(ctx, `SELECT s.schema_name, t.table_name
 		FROM information_schema.schemata s
 		LEFT JOIN information_schema.tables t
@@ -2372,7 +2463,7 @@ func listMySQLAllTables(ctx context.Context, targetDB *sql.DB) map[string]map[st
 		WHERE s.schema_name NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
 		ORDER BY s.schema_name, t.table_name`)
 	if err != nil {
-		return map[string]map[string][]string{}
+		return nil, err
 	}
 	defer rows.Close()
 	result := map[string]map[string][]string{}
@@ -2380,7 +2471,7 @@ func listMySQLAllTables(ctx context.Context, targetDB *sql.DB) map[string]map[st
 		var schemaName string
 		var tableName sql.NullString
 		if err := rows.Scan(&schemaName, &tableName); err != nil {
-			continue
+			return nil, err
 		}
 		if _, ok := result[schemaName]; !ok {
 			result[schemaName] = map[string][]string{}
@@ -2389,64 +2480,64 @@ func listMySQLAllTables(ctx context.Context, targetDB *sql.DB) map[string]map[st
 			result[schemaName][tableName.String] = []string{}
 		}
 	}
-	return result
+	return result, rows.Err()
 }
 
-func listMySQLSchemaDatabases(ctx context.Context, targetDB *sql.DB) map[string]map[string][]string {
+func listMySQLSchemaDatabases(ctx context.Context, targetDB *sql.DB) (map[string]map[string][]string, error) {
 	rows, err := targetDB.QueryContext(ctx, `SELECT schema_name FROM information_schema.schemata
 		WHERE schema_name NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
 		ORDER BY schema_name`)
 	if err != nil {
-		return map[string]map[string][]string{}
+		return nil, err
 	}
 	defer rows.Close()
 	result := map[string]map[string][]string{}
 	for rows.Next() {
 		var databaseName string
 		if err := rows.Scan(&databaseName); err != nil {
-			continue
+			return nil, err
 		}
 		result[databaseName] = map[string][]string{}
 	}
-	return result
+	return result, rows.Err()
 }
 
-func listMySQLSchemaTables(ctx context.Context, targetDB *sql.DB, database string) map[string]map[string][]string {
+func listMySQLSchemaTables(ctx context.Context, targetDB *sql.DB, database string) (map[string]map[string][]string, error) {
 	rows, err := targetDB.QueryContext(ctx, `SELECT table_name FROM information_schema.tables
 		WHERE table_schema = ? AND table_type IN ('BASE TABLE', 'VIEW')
 		ORDER BY table_name`, database)
 	if err != nil {
-		return map[string]map[string][]string{}
+		return nil, err
 	}
 	defer rows.Close()
 	tables := map[string][]string{}
 	for rows.Next() {
 		var tableName string
 		if err := rows.Scan(&tableName); err != nil {
-			continue
+			return nil, err
 		}
 		tables[tableName] = []string{}
 	}
-	return map[string]map[string][]string{database: tables}
+	return map[string]map[string][]string{database: tables}, rows.Err()
 }
 
-func listMySQLSchemaColumns(ctx context.Context, targetDB *sql.DB, database string, table string) map[string]map[string][]string {
+func listMySQLSchemaColumns(ctx context.Context, targetDB *sql.DB, database string, table string) (map[string]map[string][]string, error) {
 	rows, err := targetDB.QueryContext(ctx, `SELECT column_name FROM information_schema.columns
 		WHERE table_schema = ? AND table_name = ?
 		ORDER BY ordinal_position`, database, table)
 	if err != nil {
-		return map[string]map[string][]string{}
+		return nil, err
 	}
 	defer rows.Close()
 	columns := []string{}
 	for rows.Next() {
 		var columnName string
 		if err := rows.Scan(&columnName); err != nil {
-			continue
+			return nil, err
 		}
 		columns = append(columns, columnName)
 	}
-	return map[string]map[string][]string{database: map[string][]string{table: columns}}
+	return map[string]map[string][]string{database: map[string][]string{table: columns}}, rows.Err()
 }
 
 func databaseAllowed(database string, monitoredDatabases []string) bool {

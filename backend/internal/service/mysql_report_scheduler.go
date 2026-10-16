@@ -189,9 +189,76 @@ func launchReport(task model.MySQLReportTask, now time.Time, scheduled bool) err
 		if source, err := GetDataSourceByID(task.SourceID); err == nil && strings.EqualFold(source.Type, "mysql") {
 			recordMySQLSQLHistory(task.SourceID, "", redactSQLForHistory(task.SQL), "报表调度", result, executionErr, time.Since(now))
 		}
+		if task.AlertEnabled && executionErr == nil {
+			checkReportAlert(task, len(result.Rows), id, db)
+		}
 		_, _ = db.Exec(`DELETE FROM mysql_report_runs WHERE finished_at < DATE_SUB(NOW(), INTERVAL 180 DAY)`)
 	}()
 	return nil
+}
+
+func checkReportAlert(task model.MySQLReportTask, rowCount int, currentRunID string, db *sql.DB) {
+	if task.AlertOperator == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var prevRowCount int
+	if task.AlertCompare == "last" {
+		var prevMessage string
+		_ = db.QueryRowContext(ctx, `SELECT message FROM mysql_report_runs WHERE task_id=? AND status='成功' AND id<>? ORDER BY started_at DESC LIMIT 1`, task.ID, currentRunID).Scan(&prevMessage)
+		if prevMessage != "" {
+			if n, err := fmt.Sscanf(prevMessage, "查询完成，共 %d 行", &prevRowCount); err != nil || n != 1 {
+				prevRowCount = 0
+			}
+		}
+	}
+
+	var actual float64
+	if task.AlertCompare == "last" {
+		if prevRowCount == 0 {
+			return
+		}
+		diff := float64(rowCount-prevRowCount) / float64(prevRowCount) * 100
+		actual = diff
+	} else {
+		actual = float64(rowCount)
+	}
+
+	triggered := false
+	switch task.AlertOperator {
+	case ">":
+		triggered = actual > task.AlertThreshold
+	case ">=":
+		triggered = actual >= task.AlertThreshold
+	case "<":
+		triggered = actual < task.AlertThreshold
+	case "<=":
+		triggered = actual <= task.AlertThreshold
+	case "=":
+		triggered = actual == task.AlertThreshold
+	case "empty":
+		triggered = rowCount == 0
+	}
+	if !triggered {
+		return
+	}
+	unit := task.AlertUnit
+	unitLabel := "行"
+	if unit == "pct" {
+		unitLabel = "%"
+	}
+	var msg string
+	if task.AlertCompare == "last" {
+		msg = fmt.Sprintf("报表任务「%s」触发告警：相比上次变化率 %.1f%s，条件 %s %g%s（本次 %d 行，上次 %d 行）", task.Name, actual, unitLabel, task.AlertOperator, task.AlertThreshold, unitLabel, rowCount, prevRowCount)
+	} else if task.AlertOperator == "empty" {
+		msg = fmt.Sprintf("报表任务「%s」触发告警：本次查询结果为空", task.Name)
+	} else {
+		msg = fmt.Sprintf("报表任务「%s」触发告警：本次 %d 行，条件 %s %g%s", task.Name, rowCount, task.AlertOperator, task.AlertThreshold, unitLabel)
+	}
+	alertID := fmt.Sprintf("report-alert-%d", time.Now().UnixNano())
+	_, _ = db.ExecContext(ctx, `INSERT INTO alert_notifications (id, rule_id, rule_name, source, database_name, table_name, field_name, severity, status, message, unread, muted, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?, ?,1,0,NOW(),NOW())`,
+		alertID, task.ID, task.Name, "报表任务", "", "", "", "warning", "alert", msg)
 }
 
 func executeReportSQL(task model.MySQLReportTask) (MySQLStatementResult, error) {
@@ -216,6 +283,8 @@ func executeReportSQL(task model.MySQLReportTask) (MySQLStatementResult, error) 
 	var db *sql.DB
 	if strings.EqualFold(source.Type, "mysql") {
 		db, err = openMySQLDataSource(source)
+	} else if strings.EqualFold(source.Type, "clickhouse") {
+		db, err = openClickHouseDataSource(source)
 	} else {
 		db, err = openPostgreSQLDataSource(source, "")
 	}
@@ -225,12 +294,17 @@ func executeReportSQL(task model.MySQLReportTask) (MySQLStatementResult, error) 
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return result, err
+	var rows *sql.Rows
+	if strings.EqualFold(source.Type, "clickhouse") {
+		rows, err = db.QueryContext(ctx, query)
+	} else {
+		tx, txErr := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if txErr != nil {
+			return result, txErr
+		}
+		defer tx.Rollback()
+		rows, err = tx.QueryContext(ctx, query)
 	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
 		return result, err
 	}
@@ -370,6 +444,16 @@ func reportTimeWindow(mode string, now time.Time) (time.Time, time.Time, error) 
 		return now.AddDate(0, 0, -7), now, nil
 	case "近30天":
 		return now.AddDate(0, 0, -30), now, nil
+	case "上周六到本周五":
+		wd := int(today.Weekday())
+		var thisFriday time.Time
+		if wd <= 5 {
+			thisFriday = today.AddDate(0, 0, 5-wd)
+		} else {
+			thisFriday = today.AddDate(0, 0, -(wd - 5))
+		}
+		saturdayStart := thisFriday.AddDate(0, 0, -6)
+		return saturdayStart, thisFriday.Add(day), nil
 	case "":
 		return time.Time{}, time.Time{}, errors.New("SQL 使用时间变量时必须选择统计时间")
 	}
@@ -445,6 +529,68 @@ func ListReportRuns(taskID string, page, pageSize int) (map[string]any, error) {
 	return map[string]any{"items": items, "page": page, "pageSize": pageSize, "total": total, "totalPages": maxInt(1, (total+pageSize-1)/pageSize)}, nil
 }
 
+type ReportTrendPoint struct {
+	Time     string `json:"time"`
+	RowCount int    `json:"rowCount"`
+	Status   string `json:"status"`
+}
+
+type ReportTrendTask struct {
+	TaskID   string             `json:"taskId"`
+	TaskName string             `json:"taskName"`
+	Points   []ReportTrendPoint `json:"points"`
+}
+
+func ReportTrend(days int, start, end string) ([]ReportTrendTask, error) {
+	db := currentStore()
+	var rows *sql.Rows
+	var err error
+	if start != "" && end != "" {
+		rows, err = db.Query(`SELECT task.id, task.name, run.started_at, run.status, run.result_json
+			FROM mysql_report_runs run JOIN mysql_report_tasks task ON task.id=run.task_id
+			WHERE run.started_at >= ? AND run.started_at <= ?
+			ORDER BY task.id, run.started_at ASC`, start, end)
+	} else {
+		if days < 1 || days > 365 {
+			days = 7
+		}
+		rows, err = db.Query(`SELECT task.id, task.name, run.started_at, run.status, run.result_json
+			FROM mysql_report_runs run JOIN mysql_report_tasks task ON task.id=run.task_id
+			WHERE run.started_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+			ORDER BY task.id, run.started_at ASC`, days)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	taskMap := map[string]*ReportTrendTask{}
+	var order []string
+	for rows.Next() {
+		var taskID, taskName, status, raw string
+		var started time.Time
+		if err := rows.Scan(&taskID, &taskName, &started, &status, &raw); err != nil {
+			return nil, err
+		}
+		t, ok := taskMap[taskID]
+		if !ok {
+			t = &ReportTrendTask{TaskID: taskID, TaskName: taskName, Points: []ReportTrendPoint{}}
+			taskMap[taskID] = t
+			order = append(order, taskID)
+		}
+		point := ReportTrendPoint{Time: started.Format(time.RFC3339), Status: status}
+		var result MySQLStatementResult
+		if json.Unmarshal([]byte(raw), &result) == nil {
+			point.RowCount = len(result.Rows)
+		}
+		t.Points = append(t.Points, point)
+	}
+	out := make([]ReportTrendTask, 0, len(order))
+	for _, id := range order {
+		out = append(out, *taskMap[id])
+	}
+	return out, nil
+}
+
 func ReportRunByID(taskID, runID string) (ReportRun, error) {
 	var result ReportRun
 	var started time.Time
@@ -500,14 +646,14 @@ func reportRunCSV(taskID string, run ReportRun) ([]byte, string, error) {
 	var buffer bytes.Buffer
 	buffer.WriteString("\xEF\xBB\xBF")
 	writer := csv.NewWriter(&buffer)
-	if err = writer.Write(run.Result.Columns); err != nil {
+	if err = writer.Write(safeCSVRecord(run.Result.Columns)); err != nil {
 		return nil, "", err
 	}
 	for _, row := range run.Result.Rows {
 		values := make([]string, len(row))
 		for i, value := range row {
 			if value != nil {
-				values[i] = fmt.Sprint(value)
+				values[i] = safeCSVCell(fmt.Sprint(value))
 			}
 		}
 		if err = writer.Write(values); err != nil {

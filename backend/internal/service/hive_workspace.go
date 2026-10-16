@@ -380,6 +380,7 @@ func ExecuteHiveStatement(sourceID, database, statement string) (HiveStatementRe
 		}
 		columns, rows, err := hiveQuery(sourceID, item, maxHiveQueryRows)
 		if err != nil {
+			recordSQLHistory(sourceID, database, statement, "failed", 0, 0, 0, err.Error(), "")
 			return HiveStatementResult{}, err
 		}
 		last = HiveStatementResult{Columns: columns, Rows: rows, Truncated: len(rows) >= maxHiveQueryRows}
@@ -393,5 +394,6 @@ func ExecuteHiveStatement(sourceID, database, statement string) (HiveStatementRe
 	if len(last.Columns) == 0 && len(last.Rows) == 0 {
 		last.Message = "执行成功"
 	}
+	recordSQLHistory(sourceID, database, statement, "success", len(last.Rows), 0, 0, "", "")
 	return last, nil
 }

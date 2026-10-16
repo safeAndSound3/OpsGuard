@@ -16,7 +16,7 @@ func ListMySQLReportTasks(sourceID string) []model.MySQLReportTask {
 	if current == nil {
 		return []model.MySQLReportTask{}
 	}
-	query := `SELECT task.id, task.name, task.source_id, COALESCE(source.name, '已删除数据源'), task.sql_text, task.time_range, task.schedule, task.enabled, task.status, task.last_run_at, task.last_message, task.created_at, task.updated_at
+	query := `SELECT task.id, task.name, task.source_id, COALESCE(source.name, '已删除数据源'), task.sql_text, task.time_range, task.schedule, task.enabled, task.status, task.last_run_at, task.last_message, COALESCE(task.alert_enabled, 0), COALESCE(task.alert_compare, ''), COALESCE(task.alert_operator, ''), COALESCE(task.alert_threshold, 0), COALESCE(task.alert_unit, ''), task.created_at, task.updated_at
 		FROM mysql_report_tasks task LEFT JOIN data_sources source ON source.id = task.source_id`
 	args := []any{}
 	if strings.TrimSpace(sourceID) != "" {
@@ -33,7 +33,7 @@ func ListMySQLReportTasks(sourceID string) []model.MySQLReportTask {
 	for rows.Next() {
 		var item model.MySQLReportTask
 		var lastRun sqlNullTime
-		if rows.Scan(&item.ID, &item.Name, &item.SourceID, &item.SourceName, &item.SQL, &item.TimeRange, &item.Schedule, &item.Enabled, &item.Status, &lastRun, &item.LastMessage, &item.CreatedAt, &item.UpdatedAt) == nil {
+		if rows.Scan(&item.ID, &item.Name, &item.SourceID, &item.SourceName, &item.SQL, &item.TimeRange, &item.Schedule, &item.Enabled, &item.Status, &lastRun, &item.LastMessage, &item.AlertEnabled, &item.AlertCompare, &item.AlertOperator, &item.AlertThreshold, &item.AlertUnit, &item.CreatedAt, &item.UpdatedAt) == nil {
 			if lastRun.Valid {
 				value := lastRun.Time.Format(time.RFC3339)
 				item.LastRunAt = &value
@@ -123,12 +123,12 @@ func SaveMySQLReportTask(task model.MySQLReportTask) (model.MySQLReportTask, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = current.ExecContext(ctx, `INSERT INTO mysql_report_tasks (id, name, source_id, sql_text, time_range, schedule, enabled, status, last_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err = current.ExecContext(ctx, `INSERT INTO mysql_report_tasks (id, name, source_id, sql_text, time_range, schedule, enabled, status, last_message, alert_enabled, alert_compare, alert_operator, alert_threshold, alert_unit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		status=IF(source_id<>VALUES(source_id) OR sql_text<>VALUES(sql_text) OR time_range<>VALUES(time_range), '待执行', status),
 		last_run_at=IF(source_id<>VALUES(source_id) OR sql_text<>VALUES(sql_text) OR time_range<>VALUES(time_range), NULL, last_run_at),
 		last_message=IF(source_id<>VALUES(source_id) OR sql_text<>VALUES(sql_text) OR time_range<>VALUES(time_range), '配置已修改，请重新执行', last_message),
-		name=VALUES(name), source_id=VALUES(source_id), sql_text=VALUES(sql_text), time_range=VALUES(time_range), schedule=VALUES(schedule), enabled=VALUES(enabled), updated_at=CURRENT_TIMESTAMP`, task.ID, task.Name, task.SourceID, task.SQL, task.TimeRange, task.Schedule, boolInt(task.Enabled), task.Status, task.LastMessage)
+		name=VALUES(name), source_id=VALUES(source_id), sql_text=VALUES(sql_text), time_range=VALUES(time_range), schedule=VALUES(schedule), enabled=VALUES(enabled), alert_enabled=VALUES(alert_enabled), alert_compare=VALUES(alert_compare), alert_operator=VALUES(alert_operator), alert_threshold=VALUES(alert_threshold), alert_unit=VALUES(alert_unit), updated_at=CURRENT_TIMESTAMP`, task.ID, task.Name, task.SourceID, task.SQL, task.TimeRange, task.Schedule, boolInt(task.Enabled), task.Status, task.LastMessage, boolInt(task.AlertEnabled), task.AlertCompare, task.AlertOperator, task.AlertThreshold, task.AlertUnit)
 	if err != nil {
 		return model.MySQLReportTask{}, err
 	}
@@ -142,7 +142,7 @@ func SaveMySQLReportTask(task model.MySQLReportTask) (model.MySQLReportTask, err
 
 func isReportDataSourceType(sourceType string) bool {
 	switch strings.ToLower(strings.TrimSpace(sourceType)) {
-	case "mysql", "postgresql", "postgres", "hive":
+	case "mysql", "postgresql", "postgres", "hive", "clickhouse":
 		return true
 	default:
 		return false

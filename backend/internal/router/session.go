@@ -66,13 +66,15 @@ func (m *sessionManager) username(r *http.Request) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entry, ok := m.sessions[cookie.Value]
-	if ok && !time.Now().After(entry.expiresAt) {
+	if ok && !time.Now().After(entry.expiresAt) && !service.SessionStoreAvailable() {
 		return entry.username, true
 	}
 	if service.SessionStoreAvailable() {
 		if username, persisted := service.LoadSession(sessionTokenHash(cookie.Value)); persisted {
 			return username, true
 		}
+		delete(m.sessions, cookie.Value)
+		return "", false
 	}
 	if !ok || time.Now().After(entry.expiresAt) {
 		delete(m.sessions, cookie.Value)

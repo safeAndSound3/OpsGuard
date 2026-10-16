@@ -1,14 +1,17 @@
 package router
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +24,9 @@ import (
 
 func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 	if err := service.ConfigureOutboundPolicy(service.OutboundPolicy{AllowedHosts: cfg.OutboundAllowedHosts, AllowedCIDRs: cfg.OutboundAllowedCIDRs, AllowLoopback: cfg.AllowLoopbackTargets}); err != nil {
+		return nil, err
+	}
+	if err := service.ConfigureSSHHostKeyPolicy(service.SSHHostKeyPolicy{Mode: cfg.SSHHostKeyMode, KnownHostsFile: cfg.SSHKnownHosts}); err != nil {
 		return nil, err
 	}
 	mux := http.NewServeMux()
@@ -106,6 +112,15 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/mysql-report-tasks/"), "/"), "/")
 		if len(parts) == 0 || parts[0] == "" {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "报表任务不存在"})
+			return
+		}
+		if parts[0] == "trend" && r.Method == http.MethodGet {
+			points, err := service.ReportTrend(queryInt(r, "days", 7), r.URL.Query().Get("start"), r.URL.Query().Get("end"))
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, points)
 			return
 		}
 		id := parts[0]
@@ -199,6 +214,211 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			return
 		}
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	})
+
+	mux.HandleFunc("/api/knowledge/categories", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": service.ListKnowledgeCategories()})
+	})
+	mux.HandleFunc("/api/knowledge/docs", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, map[string]any{"items": service.ListKnowledgeDocs(r.URL.Query().Get("keyword"), r.URL.Query().Get("category"))})
+		case http.MethodPost:
+			var doc service.KnowledgeDoc
+			if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求内容格式无效"})
+				return
+			}
+			saved, err := service.SaveKnowledgeDoc(&doc)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, saved)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	})
+	mux.HandleFunc("/api/knowledge/docs/import", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if err := r.ParseMultipartForm(50 << 20); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "文件过大或格式无效"})
+			return
+		}
+		files := r.MultipartForm.File["files"]
+		if len(files) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请选择要导入的 MD / ZIP 文件"})
+			return
+		}
+		imports, err := readKnowledgeImports(files)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		created := []*service.KnowledgeDoc{}
+		for _, item := range imports {
+			doc, err := service.ImportKnowledgeDoc(item.name, item.content, "")
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "导入文档失败: " + err.Error()})
+				return
+			}
+			created = append(created, doc)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": created, "count": len(created)})
+	})
+	mux.HandleFunc("/api/knowledge/docs/export-all", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		docs := service.AllKnowledgeDocsForExport()
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="knowledge-base.zip"`)
+		zw := zip.NewWriter(w)
+		seen := map[string]int{}
+		for _, doc := range docs {
+			name := strings.Map(func(r rune) rune {
+				if r == '/' || r == '\\' || r == ':' || r == '*' || r == '?' || r == '"' || r == '<' || r == '>' || r == '|' {
+					return '_'
+				}
+				return r
+			}, doc.Title)
+			if name == "" {
+				name = doc.ID
+			}
+			base := name
+			if n, ok := seen[base]; ok {
+				seen[base] = n + 1
+				name = fmt.Sprintf("%s-%d", base, n+1)
+			} else {
+				seen[base] = 1
+			}
+			f, err := zw.Create(name + ".md")
+			if err != nil {
+				continue
+			}
+			_, _ = f.Write([]byte(doc.Content))
+		}
+		_ = zw.Close()
+	})
+	mux.HandleFunc("/api/knowledge/docs/upload-image", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "图片过大"})
+			return
+		}
+		file, h, err := r.FormFile("image")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请选择图片"})
+			return
+		}
+		defer file.Close()
+		ext := strings.ToLower(filepath.Ext(h.Filename))
+		if ext == "" || len(ext) > 5 {
+			ext = ".png"
+		}
+		allowed := map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+		if allowed[ext] == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "仅支持 png/jpg/gif/webp"})
+			return
+		}
+		var header [512]byte
+		n, err := io.ReadFull(file, header[:])
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "读取图片失败"})
+			return
+		}
+		if http.DetectContentType(header[:n]) != allowed[ext] {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "图片内容与格式不符"})
+			return
+		}
+		id := fmt.Sprintf("%d", time.Now().UnixNano())
+		name := "img-" + id + ext
+		uploadDir := "uploads"
+		_ = os.MkdirAll(uploadDir, 0755)
+		dst, err := os.Create(filepath.Join(uploadDir, name))
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存失败"})
+			return
+		}
+		defer dst.Close()
+		if _, err := dst.Write(header[:n]); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存失败"})
+			return
+		}
+		if _, err := io.Copy(dst, file); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存失败"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"url": "/uploads/" + name})
+	})
+	mux.HandleFunc("/api/knowledge/docs/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/knowledge/docs/"), "/"), "/")
+		if len(parts) == 0 || parts[0] == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "文档不存在"})
+			return
+		}
+		id := parts[0]
+		if len(parts) == 2 && parts[1] == "export" && r.Method == http.MethodGet {
+			doc, err := service.GetKnowledgeDoc(id)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			safeName := strings.Map(func(r rune) rune {
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+					return r
+				}
+				return '_'
+			}, doc.Title)
+			if safeName == "" {
+				safeName = "doc"
+			}
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.md\"; filename*=UTF-8''%s.md", safeName, url.PathEscape(doc.Title)))
+			_, _ = w.Write([]byte(doc.Content))
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			doc, err := service.GetKnowledgeDoc(id)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, doc)
+		case http.MethodPut:
+			var doc service.KnowledgeDoc
+			if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求内容格式无效"})
+				return
+			}
+			doc.ID = id
+			saved, err := service.SaveKnowledgeDoc(&doc)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, saved)
+		case http.MethodDelete:
+			if err := service.DeleteKnowledgeDoc(id); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
 	})
 	mux.HandleFunc("/api/audit-logs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -655,14 +875,16 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		if ds.Password == "" && ds.ID != "" {
 			_ = service.FillDataSourcePassword(&ds)
 		}
+		started := time.Now()
 		ok, msg := service.TestDataSourceConnection(ds)
+		latencyMs := time.Since(started).Milliseconds()
 		databases := []string{}
 		if ok {
 			if names, err := service.ListDataSourceDatabases(ds); err == nil {
 				databases = names
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg, "latencyMs": 42, "databases": databases})
+		writeJSON(w, http.StatusOK, map[string]any{"success": ok, "message": msg, "latencyMs": latencyMs, "databases": databases})
 	})
 
 	mux.HandleFunc("/api/data-sources/health-check", func(w http.ResponseWriter, r *http.Request) {
@@ -861,6 +1083,32 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 				return
 			}
 			writeJSON(w, http.StatusOK, status)
+			return
+		}
+		if len(parts) == 3 && parts[1] == "agent-token" && parts[2] == "rotate" && r.Method == http.MethodPost {
+			username, _ := sessions.username(r)
+			token, err := service.RotateAgentToken(parts[0], username)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"token": token, "message": "Agent 令牌已轮换。请将新令牌追加到 Agent 的 TOKEN 配置（支持逗号分隔多个令牌）并重启 Agent，随后可移除旧令牌。"})
+			return
+		}
+		if len(parts) == 3 && parts[1] == "agent-fingerprint" && parts[2] == "reset" && r.Method == http.MethodPost {
+			if err := service.ResetAgentCertFingerprint(parts[0]); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+			return
+		}
+		if len(parts) == 3 && parts[1] == "ssh-hostkey" && parts[2] == "reset" && r.Method == http.MethodPost {
+			if err := service.ResetSSHHostKeyFingerprint(parts[0]); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 			return
 		}
 		// expecting: /api/data-sources/{id}/schema
@@ -1063,7 +1311,11 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		}
 		if strings.HasSuffix(p, "/schema") {
 			id := strings.TrimSuffix(strings.TrimSuffix(p, "/schema"), "/")
-			schema := service.GetSchemaForDataSource(id, r.URL.Query().Get("database"), r.URL.Query().Get("table"), r.URL.Query().Get("full") == "1")
+			schema, err := service.GetSchemaForDataSource(id, r.URL.Query().Get("database"), r.URL.Query().Get("table"), r.URL.Query().Get("full") == "1")
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 			databases := make([]string, 0, len(schema))
 			for databaseName := range schema {
 				databases = append(databases, databaseName)
@@ -1140,6 +1392,99 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(service.ExportMySQLPrometheusMetrics()))
+	})
+
+	mux.HandleFunc("/api/ssh-custom-commands", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			items, err := service.ListSSRCustomCommands()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		case http.MethodPost:
+			var body struct {
+				ID       string `json:"id"`
+				Label    string `json:"label"`
+				Command  string `json:"command"`
+				Category string `json:"category"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
+				return
+			}
+			if strings.TrimSpace(body.Label) == "" || strings.TrimSpace(body.Command) == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "名称和命令不能为空"})
+				return
+			}
+			item, err := service.SaveSSRCustomCommand(body.ID, strings.TrimSpace(body.Label), strings.TrimSpace(body.Command), strings.TrimSpace(body.Category))
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, item)
+		case http.MethodDelete:
+			id := strings.TrimPrefix(r.URL.Path, "/api/ssh-custom-commands/")
+			if id == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少ID"})
+				return
+			}
+			if err := service.DeleteSSRCustomCommand(id); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	})
+
+	mux.HandleFunc("/api/ssh-exec", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var body struct {
+			SourceID string `json:"sourceId"`
+			Command  string `json:"command"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
+			return
+		}
+		body.SourceID = strings.TrimSpace(body.SourceID)
+		body.Command = strings.TrimSpace(body.Command)
+		if body.SourceID == "" || body.Command == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "节点和命令不能为空"})
+			return
+		}
+		ds, err := service.GetDataSourceByID(body.SourceID)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "数据源不存在"})
+			return
+		}
+		if !strings.EqualFold(ds.Type, "SSH") && !strings.EqualFold(ds.Type, "Agent") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "该节点不是 SSH 类型"})
+			return
+		}
+		out, exitCode, err := service.ExecuteSSHCommandPublic(ds, body.Command)
+		service.RecordSSHCommandHistory(ds.ID, ds.Name, body.Command, exitCode)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"output": out, "exitCode": exitCode, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"output": out, "exitCode": exitCode})
+	})
+
+	mux.HandleFunc("/api/ssh-command-history", func(w http.ResponseWriter, r *http.Request) {
+		sourceID := r.URL.Query().Get("sourceId")
+		items, err := service.ListSSHCommandHistory(sourceID, 100)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	})
 
 	mux.HandleFunc("/api/prometheus/", func(w http.ResponseWriter, r *http.Request) {
@@ -1345,7 +1690,7 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "告警通道测试成功，告警消息已发送"})
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"success": false, "error": "尚未配置告警消息发送通道，未发送测试消息"})
 	})
 
 	root := http.NewServeMux()
@@ -1360,8 +1705,100 @@ func SetupRoutes(cfg config.AppConfig) (*http.ServeMux, error) {
 		writeJSON(w, http.StatusOK, map[string]string{"platformName": service.GetPlatformName()})
 	}))
 	root.Handle("/api/", protected)
+	root.Handle("/uploads/", http.StripPrefix("/uploads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentTypes := map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+		contentType := contentTypes[strings.ToLower(filepath.Ext(r.URL.Path))]
+		if contentType == "" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		http.FileServer(http.Dir("uploads")).ServeHTTP(w, r)
+	})))
 	root.Handle("/", webassets.Handler())
 	return wrapAsServeMux(corsMiddleware(limitRequestBody(root), cfg.CORSAllowedOrigins)), nil
+}
+
+type knowledgeImport struct{ name, content string }
+
+func readKnowledgeImports(files []*multipart.FileHeader) ([]knowledgeImport, error) {
+	const maxArchiveBytes = 20 << 20
+	const maxDocumentBytes = 8 << 20
+	const maxExpandedBytes = 32 << 20
+	const maxEntries = 200
+	items := make([]knowledgeImport, 0)
+	total := int64(0)
+	entries := 0
+	add := func(name string, r io.Reader) error {
+		if entries >= maxEntries {
+			return fmt.Errorf("导入文件数量超过 %d 个", maxEntries)
+		}
+		limit := int64(maxDocumentBytes)
+		if remaining := int64(maxExpandedBytes) - total; remaining < limit {
+			limit = remaining
+		}
+		content, err := io.ReadAll(io.LimitReader(r, limit+1))
+		if err != nil {
+			return fmt.Errorf("读取文档 %s 失败: %w", name, err)
+		}
+		if int64(len(content)) > limit {
+			return fmt.Errorf("文档 %s 超过导入大小限制", name)
+		}
+		total += int64(len(content))
+		entries++
+		items = append(items, knowledgeImport{name: filepath.Base(strings.ReplaceAll(name, "\\", "/")), content: string(content)})
+		return nil
+	}
+	for _, file := range files {
+		if file.Size > maxArchiveBytes {
+			return nil, fmt.Errorf("文件 %s 超过 20 MiB", file.Filename)
+		}
+		body, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		raw, readErr := io.ReadAll(io.LimitReader(body, maxArchiveBytes+1))
+		_ = body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if len(raw) > maxArchiveBytes {
+			return nil, fmt.Errorf("文件 %s 超过 20 MiB", file.Filename)
+		}
+		lower := strings.ToLower(file.Filename)
+		if strings.HasSuffix(lower, ".zip") {
+			archive, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+			if err != nil {
+				return nil, fmt.Errorf("无效 ZIP 文件 %s: %w", file.Filename, err)
+			}
+			if len(archive.File) > maxEntries {
+				return nil, fmt.Errorf("ZIP 条目数量超过 %d 个", maxEntries)
+			}
+			for _, entry := range archive.File {
+				name := strings.ToLower(entry.Name)
+				if entry.FileInfo().IsDir() || (!strings.HasSuffix(name, ".md") && !strings.HasSuffix(name, ".markdown")) {
+					continue
+				}
+				r, err := entry.Open()
+				if err != nil {
+					return nil, err
+				}
+				err = add(entry.Name, r)
+				_ = r.Close()
+				if err != nil {
+					return nil, err
+				}
+			}
+		} else if strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".markdown") {
+			if err := add(file.Filename, bytes.NewReader(raw)); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, fmt.Errorf("不支持文件 %s", file.Filename)
+		}
+	}
+	return items, nil
 }
 
 func wrapAsServeMux(handler http.Handler) *http.ServeMux {
@@ -1463,6 +1900,15 @@ func auditResourceLabel(method, path string, body []byte) string {
 	}
 	if strings.HasSuffix(path, "/execute") {
 		return "执行 SQL"
+	}
+	if strings.Contains(path, "/agent-token/rotate") {
+		return "轮换 Agent 令牌"
+	}
+	if strings.Contains(path, "/agent-fingerprint/reset") {
+		return "重置 Agent 证书指纹"
+	}
+	if strings.Contains(path, "/ssh-hostkey/reset") {
+		return "重置 SSH 主机密钥指纹"
 	}
 	if strings.Contains(path, "/data-sources") {
 		if method == http.MethodPost {

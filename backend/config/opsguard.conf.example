@@ -51,4 +51,10 @@ MYSQL_PASSWORD=replace-with-a-strong-password
 # 随机生成器，并妥善保管，丢失后无法解密已有凭据。
 OPSGUARD_ENCRYPTION_KEY=replace-with-a-base64-encoded-32-byte-key
 
-# 传统 SSH 数据源使用账号密码连接，不需要额外的主机密钥文件。
+# 传统 SSH 数据源的主机密钥校验模式：
+#   tofu   —— 默认。首次连接自动记录主机密钥指纹，之后指纹变化拒绝连接（防中间人攻击）
+#   strict —— 严格校验 SSH_KNOWN_HOSTS 中的指纹，缺失即拒绝（需同时配置 SSH_KNOWN_HOSTS）
+#   off    —— 关闭校验（仅兼容遗留部署，不建议）
+SSH_HOST_KEY_MODE=tofu
+# strict 模式使用的 known_hosts 文件路径，例如 /etc/opsguard/known_hosts。
+# SSH_KNOWN_HOSTS=

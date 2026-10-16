@@ -50,9 +50,14 @@ func ConfigureOutboundPolicy(policy OutboundPolicy) error {
 }
 
 func validateOutboundAddress(host string) error {
+	_, err := resolveOutboundAddresses(context.Background(), host)
+	return err
+}
+
+func resolveOutboundAddresses(ctx context.Context, host string) ([]netip.Addr, error) {
 	host = strings.Trim(strings.TrimSpace(host), "[]")
 	if host == "" {
-		return errors.New("outbound target host is required")
+		return nil, errors.New("outbound target host is required")
 	}
 	outboundPolicy.RLock()
 	hosts, prefixes, loopback := append([]string(nil), outboundPolicy.allowHosts...), append([]netip.Prefix(nil), outboundPolicy.allowCIDRs...), outboundPolicy.loopback
@@ -67,19 +72,25 @@ func validateOutboundAddress(host string) error {
 			}
 		}
 		if !matched {
-			return fmt.Errorf("outbound host %q is not allowlisted", host)
+			return nil, fmt.Errorf("outbound host %q is not allowlisted", host)
 		}
 	}
-	addresses, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip", host)
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
-		return fmt.Errorf("resolve outbound host %q: %w", host, err)
+		return nil, fmt.Errorf("resolve outbound host %q: %w", host, err)
+	}
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("outbound host %q has no IP address", host)
+	}
+	for i := range addresses {
+		addresses[i] = addresses[i].Unmap()
 	}
 	for _, ip := range addresses {
 		if !loopback && ip.IsLoopback() {
-			return fmt.Errorf("outbound loopback target %q is not allowed", host)
+			return nil, fmt.Errorf("outbound loopback target %q is not allowed", host)
 		}
 		if ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("unsafe outbound target %q is not allowed", ip)
+			return nil, fmt.Errorf("unsafe outbound target %q is not allowed", ip)
 		}
 		if len(prefixes) > 0 {
 			matched := false
@@ -90,25 +101,39 @@ func validateOutboundAddress(host string) error {
 				}
 			}
 			if !matched {
-				return fmt.Errorf("outbound IP %q is outside OUTBOUND_ALLOWED_CIDRS", ip)
+				return nil, fmt.Errorf("outbound IP %q is outside OUTBOUND_ALLOWED_CIDRS", ip)
 			}
 		}
 	}
-	return nil
+	return addresses, nil
+}
+
+func dialValidated(ctx context.Context, dialer *net.Dialer, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addresses, err := resolveOutboundAddresses(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	var lastErr error
+	for _, ip := range addresses {
+		connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return connection, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 func safeHTTPClient(timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
 	dialer := &net.Dialer{}
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateOutboundAddress(host); err != nil {
-			return nil, err
-		}
-		return dialer.DialContext(ctx, network, address)
+		return dialValidated(ctx, dialer, network, address)
 	}
 	return &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 		if err := validateOutboundAddress(req.URL.Hostname()); err != nil {
@@ -119,12 +144,7 @@ func safeHTTPClient(timeout time.Duration) *http.Client {
 }
 
 func safeDialTimeout(network, address string, timeout time.Duration) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateOutboundAddress(host); err != nil {
-		return nil, err
-	}
-	return net.DialTimeout(network, address, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return dialValidated(ctx, &net.Dialer{}, network, address)
 }

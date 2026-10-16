@@ -401,6 +401,21 @@ func recordMySQLSQLHistory(sourceID, database, statement, username string, resul
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, sourceID, database, statement, status, len(result.Rows), result.Affected, duration.Milliseconds(), errorMessage, username)
 }
 
+func recordSQLHistory(sourceID, database, statement, status string, resultRows, affected, durationMs int, errorMessage, username string) {
+	current := currentStore()
+	if current == nil {
+		return
+	}
+	if len(errorMessage) > 1000 {
+		errorMessage = errorMessage[:1000]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	current.ExecContext(ctx, `INSERT INTO mysql_sql_history
+		(source_id, database_name, statement_text, status, result_rows, affected_rows, duration_ms, error_message, username)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, sourceID, database, statement, status, resultRows, affected, durationMs, errorMessage, username)
+}
+
 func ListMySQLSQLHistory(sourceID string, page, pageSize int) ([]MySQLSQLHistory, int) {
 	current := currentStore()
 	if current == nil || strings.TrimSpace(sourceID) == "" {

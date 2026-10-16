@@ -66,19 +66,24 @@ type PostgreSQLMenuItem struct {
 }
 
 type MySQLReportTask struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	SourceID    string  `json:"sourceId"`
-	SourceName  string  `json:"sourceName,omitempty"`
-	SQL         string  `json:"sql"`
-	TimeRange   string  `json:"timeRange"`
-	Schedule    string  `json:"schedule"`
-	Enabled     bool    `json:"enabled"`
-	Status      string  `json:"status"`
-	LastRunAt   *string `json:"lastRunAt,omitempty"`
-	LastMessage string  `json:"lastMessage,omitempty"`
-	CreatedAt   string  `json:"createdAt"`
-	UpdatedAt   string  `json:"updatedAt"`
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	SourceID      string  `json:"sourceId"`
+	SourceName    string  `json:"sourceName,omitempty"`
+	SQL           string  `json:"sql"`
+	TimeRange     string  `json:"timeRange"`
+	Schedule      string  `json:"schedule"`
+	Enabled       bool    `json:"enabled"`
+	Status        string  `json:"status"`
+	LastRunAt     *string `json:"lastRunAt,omitempty"`
+	LastMessage   string  `json:"lastMessage,omitempty"`
+	AlertEnabled  bool    `json:"alertEnabled"`
+	AlertCompare  string  `json:"alertCompare,omitempty"`
+	AlertOperator string  `json:"alertOperator,omitempty"`
+	AlertThreshold float64 `json:"alertThreshold,omitempty"`
+	AlertUnit     string  `json:"alertUnit,omitempty"`
+	CreatedAt     string  `json:"createdAt"`
+	UpdatedAt     string  `json:"updatedAt"`
 }
 
 type ConsulKVValue struct {

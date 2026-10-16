@@ -153,19 +153,42 @@ func executeSSHCommandWithExitStatus(ds model.DataSource, command string) (strin
 		return "", 0, err
 	}
 	addr := net.JoinHostPort(host, strings.TrimSpace(ds.Port))
-	// 传统 SSH 数据源不再要求主机指纹文件；Agent 数据源仍使用自身的令牌认证。
-	config := &ssh.ClientConfig{User: ds.Username, Auth: []ssh.AuthMethod{ssh.Password(ds.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 8 * time.Second}
-	client, err := ssh.Dial("tcp", addr, config)
+	// 传统 SSH 数据源按 SSH_HOST_KEY_MODE 校验主机密钥（默认 TOFU，首次连接
+	// 记录指纹、此后指纹变化拒绝）；Agent 数据源仍使用自身的令牌认证。
+	hostKeyCallback, err := hostKeyCallback(ds)
 	if err != nil {
 		return "", 0, err
 	}
+	config := &ssh.ClientConfig{User: ds.Username, Auth: []ssh.AuthMethod{ssh.Password(ds.Password)}, HostKeyCallback: hostKeyCallback, Timeout: 5 * time.Second}
+	connection, err := safeDialTimeout("tcp", addr, config.Timeout)
+	if err != nil {
+		return "", 0, err
+	}
+	sshConnection, channels, requests, err := ssh.NewClientConn(connection, addr, config)
+	if err != nil {
+		connection.Close()
+		return "", 0, err
+	}
+	client := ssh.NewClient(sshConnection, channels, requests)
 	defer client.Close()
 	session, err := client.NewSession()
 	if err != nil {
 		return "", 0, err
 	}
 	defer session.Close()
-	out, err := session.CombinedOutput(command)
+	session.Setenv("LANG", "C")
+	var out []byte
+	done := make(chan struct{})
+	go func() {
+		out, err = session.CombinedOutput(command)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		session.Close()
+		return "", 0, errors.New("命令执行超时(20s)")
+	}
 	if err != nil {
 		if exitError, ok := err.(*ssh.ExitError); ok {
 			return string(out), exitError.ExitStatus(), nil
@@ -190,6 +213,20 @@ func executeLocalShellCommand(command string) (string, int, error) {
 		return string(out), 0, err
 	}
 	return string(out), 0, nil
+}
+
+func ExecuteSSHCommandPublic(ds model.DataSource, command string) (string, int, error) {
+	if strings.TrimSpace(ds.Password) == "" {
+		_ = FillDataSourcePassword(&ds)
+	}
+	if strings.EqualFold(ds.Type, "Agent") || strings.EqualFold(ds.Options["authMode"], "agent") {
+		result, err := runAgentScriptCheck(ds, command, "")
+		if err != nil {
+			return "", 0, err
+		}
+		return result.Details, result.ExitCode, nil
+	}
+	return executeSSHCommandWithExitStatus(ds, command)
 }
 
 func LatestSSHDashboardMetrics(sourceID string) (map[string]float64, time.Time, error) {

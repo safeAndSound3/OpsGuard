@@ -587,37 +587,66 @@ func HadoopContainerLog(sourceID, logURL string) (string, error) {
 	requestURLs := hadoopNodeManagerLogURLs(ds, logURL)
 	client := safeHTTPClient(12 * time.Second)
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	resp, requestURL, err := hadoopLogGetFromCandidates(client, requestURLs)
+	resp, requestURL, err := hadoopLogFromCandidatesWithRedirect(client, ds, requestURLs)
 	if err != nil {
+		nodeManagerErr := err
 		// Completed containers may already have been removed from every
 		// NodeManager without returning the usual redirect. In that case use the
 		// standard JobHistory aggregated-log URL derived from the container URL.
-		resp, requestURL, err = hadoopLogGetFromCandidates(client, hadoopAggregatedLogURLs(ds, logURL))
+		resp, requestURL, err = hadoopLogFromCandidatesWithRedirect(client, ds, hadoopAggregatedLogURLs(ds, logURL))
 		if err != nil {
-			return "", fmt.Errorf("日志服务不可用：%w", err)
-		}
-	}
-	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
-		location, locationErr := resp.Location()
-		_ = resp.Body.Close()
-		if locationErr != nil {
-			return "", locationErr
-		}
-		redirectURLs := hadoopJobHistoryLogURLs(ds, location)
-		resp, requestURL, err = hadoopLogGetFromCandidates(client, redirectURLs)
-		if err != nil {
-			return "", fmt.Errorf("JobHistory 日志服务不可用：%w", err)
+			return "", fmt.Errorf("日志服务不可用（NodeManager: %v；JobHistory: %w）", nodeManagerErr, err)
 		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", errors.New(resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := readHadoopLogBody(resp.Body)
 	if err != nil {
 		return "", err
 	}
 	return readableHadoopLogFromDirectory(client, ds, base, requestURL, body)
+}
+
+func hadoopLogFromCandidatesWithRedirect(client *http.Client, hadoop model.DataSource, candidates []string) (*http.Response, string, error) {
+	var lastErr error
+	var redirectURLs []string
+	seenRedirects := make(map[string]struct{})
+	for _, candidate := range candidates {
+		resp, requestURL, err := hadoopLogGetFromCandidates(client, []string{candidate})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+			location, locationErr := resp.Location()
+			_ = resp.Body.Close()
+			if locationErr != nil {
+				lastErr = locationErr
+				continue
+			}
+			for _, target := range hadoopJobHistoryLogURLs(hadoop, location) {
+				if _, seen := seenRedirects[target]; !seen {
+					seenRedirects[target] = struct{}{}
+					redirectURLs = append(redirectURLs, target)
+				}
+			}
+			continue
+		}
+		return resp, requestURL, nil
+	}
+	if len(redirectURLs) > 0 {
+		resp, requestURL, err := hadoopLogGetFromCandidates(client, redirectURLs)
+		if err == nil {
+			return resp, requestURL, nil
+		}
+		lastErr = fmt.Errorf("JobHistory 日志服务不可用：%w", err)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的 Hadoop 日志地址")
+	}
+	return nil, "", lastErr
 }
 
 func hadoopLogGetFromCandidates(client *http.Client, candidates []string) (*http.Response, string, error) {
@@ -637,7 +666,7 @@ func hadoopLogGetFromCandidates(client *http.Client, candidates []string) (*http
 		// HTML page containing this message. It is not a usable log response;
 		// continue through the configured NodeManager allowlist instead.
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
-			body, readErr := io.ReadAll(resp.Body)
+			body, readErr := readHadoopLogBody(resp.Body)
 			_ = resp.Body.Close()
 			if readErr != nil {
 				lastErr = readErr
@@ -655,6 +684,19 @@ func hadoopLogGetFromCandidates(client *http.Client, candidates []string) (*http
 		lastErr = errors.New("没有可用的 Hadoop 日志地址")
 	}
 	return nil, "", lastErr
+}
+
+const maxHadoopLogResponseBytes = 16 << 20
+
+func readHadoopLogBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxHadoopLogResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxHadoopLogResponseBytes {
+		return nil, fmt.Errorf("容器日志超过 %d MiB 读取上限", maxHadoopLogResponseBytes>>20)
+	}
+	return data, nil
 }
 
 func hadoopContainerLogUnavailable(body []byte) bool {
@@ -748,22 +790,33 @@ func readableHadoopLogFromDirectory(client *http.Client, hadoop model.DataSource
 		return readableHadoopLog(body), nil
 	}
 	sections := make([]string, 0, len(files))
+	var lastErr error
+	const maxCombinedLogBytes = 32 << 20
+	combinedBytes := 0
 	for _, fileURL := range files {
 		if !hadoopLogURLBelongsToSource(hadoop, base, fileURL) {
+			lastErr = errors.New("日志文件地址不属于当前 Hadoop 数据源")
 			continue
 		}
 		resp, _, getErr := hadoopLogGetFromCandidates(client, hadoopNodeManagerLogURLs(hadoop, fileURL))
 		if getErr != nil {
+			lastErr = getErr
 			continue
 		}
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			lastErr = errors.New(resp.Status)
 			_ = resp.Body.Close()
 			continue
 		}
-		content, readErr := io.ReadAll(resp.Body)
+		content, readErr := readHadoopLogBody(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
+			lastErr = readErr
 			continue
+		}
+		combinedBytes += len(content)
+		if combinedBytes > maxCombinedLogBytes {
+			return "", errors.New("容器日志总量超过 32 MiB 读取上限")
 		}
 		value := readableHadoopLog(content)
 		if strings.Contains(strings.ToLower(string(content)), "<pre") && len(hadoopLogPreBlocks.FindAllStringSubmatch(string(content), -1)) > 0 && strings.Contains(strings.ToLower(value), "<html") {
@@ -780,6 +833,9 @@ func readableHadoopLogFromDirectory(client *http.Client, hadoop model.DataSource
 		sections = append(sections, section)
 	}
 	if len(sections) == 0 {
+		if lastErr != nil {
+			return "", fmt.Errorf("容器日志目录中的文件读取失败: %w", lastErr)
+		}
 		return "容器日志目录存在，但暂未生成可读取的 stdout、stderr 或 syslog。", nil
 	}
 	result := strings.Join(sections, "\n\n")
@@ -910,9 +966,21 @@ func hadoopAggregatedLogURLs(hadoop model.DataSource, logURL string) []string {
 		return nil
 	}
 	items := make([]string, 0)
+	nodeHosts := []string{endpoint.Host}
+	for _, configured := range hadoopEndpointURLs(hadoop.Options["nodeManagerUrl"]) {
+		if node, parseErr := url.Parse(configured); parseErr == nil && !strings.EqualFold(node.Host, endpoint.Host) {
+			nodeHosts = append(nodeHosts, node.Host)
+		}
+	}
+	seen := make(map[string]struct{})
 	for _, base := range hadoopEndpointURLs(hadoop.Options["jobHistoryUrl"]) {
-		value := base + "/jobhistory/logs/" + url.PathEscape(endpoint.Host) + "/" + url.PathEscape(containerID) + "/" + url.PathEscape(containerID) + "/" + url.PathEscape(user)
-		items = append(items, value)
+		for _, host := range nodeHosts {
+			value := base + "/jobhistory/logs/" + url.PathEscape(host) + "/" + url.PathEscape(containerID) + "/" + url.PathEscape(containerID) + "/" + url.PathEscape(user)
+			if _, exists := seen[value]; !exists {
+				seen[value] = struct{}{}
+				items = append(items, value)
+			}
+		}
 	}
 	return items
 }

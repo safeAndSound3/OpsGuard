@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent, KeyboardEvent, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import DOMPurify from 'dompurify'
 import './App.css'
 import './DashboardWater.css'
 import ConsulWorkspace from './ConsulWorkspace'
@@ -12,7 +13,7 @@ type PrometheusRule = { name: string; type: string; query: string; duration: num
 type NotificationItem = { id: string; ruleId?: string; ruleName: string; source?: string; database?: string; table?: string; field?: string; status: string; message: string; unread: boolean; muted?: boolean; firstSeenAt: string; lastSeenAt: string; resolvedAt?: string }
 type MySQLAsyncJob = { id: string; sourceId: string; kind: string; status: string; progress: number; message: string; result?: any; fileName?: string; createdAt: string; finishedAt?: string }
 type SQLHistoryItem = { id: number; database: string; statement: string; status: string; resultRows: number; affected: number; durationMs: number; error?: string; username: string; createdAt: string }
-type MySQLReportTask = { id: string; name: string; sourceId: string; sourceName?: string; sql: string; timeRange: string; schedule: string; enabled: boolean; status: string; lastRunAt?: string; lastMessage?: string; createdAt: string; updatedAt: string }
+type MySQLReportTask = { id: string; name: string; sourceId: string; sourceName?: string; sql: string; timeRange: string; schedule: string; enabled: boolean; status: string; lastRunAt?: string; lastMessage?: string; alertEnabled?: boolean; alertCompare?: string; alertOperator?: string; alertThreshold?: number; alertUnit?: string; createdAt: string; updatedAt: string }
 type NotificationGroup = { key: string; ruleName: string; status: string; unread: boolean; muted: boolean; message: string; alertMessage: string; firstSeenAt: string; lastSeenAt: string; latestAlertAt?: string; resolvedAt?: string; representative: NotificationItem }
 type CollectionRule = { id: string; name: string; source: string; database: string; table: string; field: string; allowEmpty?: boolean; condition: string; threshold?: string; timeWindow: string; frequency?: string; remark?: string; lastRun: string; lastEvaluatedAt?: string; resultDetails?: string; status: string }
 type DashboardItem = { id: string; name: string; sourceId: string; sourceName: string; sourceType: string; createdAt: string }
@@ -31,7 +32,7 @@ type RefreshSetting = { value: number; unit: 's' | 'm' | 'h'; configured?: boole
 type UpdateFrequencyScope = 'general' | 'datasource' | 'hadoop' | 'dashboard' | 'consul' | 'mysql' | 'prometheus'
 
 function DataSourceDeleteDialog({ sourceName, onClose, onConfirm }: { sourceName: string; onClose: () => void; onConfirm: () => void }) {
-  return <div className="modal-backdrop source-delete-backdrop" role="presentation" onClick={onClose}><section className="surface source-delete-modal" role="dialog" aria-modal="true" aria-labelledby="source-delete-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="source-delete-title">删除数据源</h2><p>{sourceName}</p></div><button className="close-button" type="button" aria-label="关闭" onClick={onClose}>×</button></header><div className="source-delete-content"><b>删除后无法恢复</b><span>该数据源配置、关联告警规则和导入的大屏将一并删除。</span></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={onClose}>取消</button><button className="button danger-button" type="button" onClick={onConfirm}>确认删除</button></footer></section></div>
+  return <div className="modal-backdrop source-delete-backdrop" role="presentation"><section className="surface source-delete-modal" role="dialog" aria-modal="true" aria-labelledby="source-delete-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="source-delete-title">删除数据源</h2><p>{sourceName}</p></div><button className="close-button" type="button" aria-label="关闭" onClick={onClose}>×</button></header><div className="source-delete-content"><b>删除后无法恢复</b><span>该数据源配置、关联告警规则和导入的大屏将一并删除。</span></div><footer className="modal-actions"><button className="button secondary" type="button" onClick={onClose}>取消</button><button className="button danger-button" type="button" onClick={onConfirm}>确认删除</button></footer></section></div>
 }
 
 const api = '/api'
@@ -167,6 +168,7 @@ function LineIcon({ name }: { name: string }) {
     operations: <><path d="M12 3l6.5 2.6V12c0 3.8-2.7 6.2-6.5 8-3.8-1.8-6.5-4.2-6.5-8V5.6z" /><path d="M12 8.6v4" /><circle cx="12" cy="15" r="1" /></>,
     settings: <><circle cx="12" cy="12" r="3.4" /><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7" /></>,
     report: <><path d="M6 3.5h8l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 20V5a1.5 1.5 0 0 1 1-1.5z" /><path d="M14 3.5V8h4" /><path d="M8.5 13v4M11.5 11v6M14.5 14v3" /></>,
+    book: <><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5.5A1.5 1.5 0 0 1 4 18.5z" /><path d="M4 18.5A1.5 1.5 0 0 1 5.5 17H19" /><path d="M9 8h6M9 11h4" /></>,
   }
   return <svg className="sidebar-line-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{shapes[name]}</svg>
 }
@@ -341,9 +343,17 @@ function App() {
 	const [authed, setAuthed] = useState<boolean | null>(null)
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem('opsguard-sidebar-collapsed') === 'true')
 	useEffect(() => {
-		void fetch(`${api}/session`)
-			.then(response => setAuthed(response.ok))
-			.catch(() => setAuthed(false))
+		let active = true
+		const checkSession = () => {
+			void fetch(`${api}/session`, { cache: 'no-store' })
+				.then(response => { if (active) setAuthed(current => response.ok ? true : response.status === 401 || current === null ? false : current) })
+				.catch(() => { if (active) setAuthed(current => current === null ? false : current) })
+		}
+		checkSession()
+		const interval = window.setInterval(checkSession, 30_000)
+		const onVisibilityChange = () => { if (document.visibilityState === 'visible') checkSession() }
+		document.addEventListener('visibilitychange', onVisibilityChange)
+		return () => { active = false; window.clearInterval(interval); document.removeEventListener('visibilitychange', onVisibilityChange) }
 	}, [])
   const logout = async () => {
     await fetch(`${api}/logout`, { method: 'POST' }).catch(() => {})
@@ -352,7 +362,7 @@ function App() {
 	if (authed === null) return <div className="login-page"><section className="surface login-panel"><p>正在验证登录状态...</p></section></div>
   if (!authed) return <Login onLogin={() => setAuthed(true)} />
 	const toggleSidebar = () => setSidebarCollapsed(current => { const next = !current; window.localStorage.setItem('opsguard-sidebar-collapsed', String(next)); return next })
-  return <BrowserRouter><ModalScrollLock /><div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}><Sidebar collapsed={sidebarCollapsed} onToggle={toggleSidebar} /><main className="workspace"><TopNav onLogout={logout} /><Routes><Route path="/" element={<Dashboards />} /><Route path="/metrics" element={<MetricQuery />} /><Route path="/hadoop" element={<HadoopYarn />} /><Route path="/ambari" element={<Ambari />} /><Route path="/mysql" element={<MySQLWorkspace />} /><Route path="/mysql-reports" element={<MySQLReportTasks />} /><Route path="/hive" element={<HiveWorkspace />} /><Route path="/postgresql" element={<PostgreSQLWorkspace />} /><Route path="/consul" element={<ConsulWorkspace />} /><Route path="/datasources" element={<DataSources />} /><Route path="/alerts" element={<Alerts />} /><Route path="/notifications" element={<Notifications />} /><Route path="/logs" element={<AuditLogs />} /><Route path="/config" element={<Settings />} /></Routes></main></div></BrowserRouter>
+  return <BrowserRouter><ModalScrollLock /><div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}><Sidebar collapsed={sidebarCollapsed} onToggle={toggleSidebar} /><main className="workspace"><TopNav onLogout={logout} /><Routes><Route path="/" element={<Dashboards />} /><Route path="/metrics" element={<MetricQuery />} /><Route path="/hadoop" element={<HadoopYarn />} /><Route path="/ambari" element={<Ambari />} /><Route path="/mysql" element={<MySQLWorkspace />} /><Route path="/mysql-reports" element={<MySQLReportTasks />} /><Route path="/ssh-terminal" element={<SSHTerminal />} /><Route path="/knowledge" element={<KnowledgeBase />} /><Route path="/hive" element={<HiveWorkspace />} /><Route path="/postgresql" element={<PostgreSQLWorkspace />} /><Route path="/consul" element={<ConsulWorkspace />} /><Route path="/datasources" element={<DataSources />} /><Route path="/alerts" element={<Alerts />} /><Route path="/notifications" element={<Notifications />} /><Route path="/logs" element={<AuditLogs />} /><Route path="/config" element={<Settings />} /></Routes></main></div></BrowserRouter>
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
@@ -383,7 +393,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
 function TopNav({ onLogout }: { onLogout: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
-  const titles: Record<string, string> = { '/': '监控大屏', '/metrics': '指标查询', '/mysql': 'MySQL 工作台', '/mysql-reports': '报表任务', '/hive': 'Hive 工作台', '/consul': 'Consul KV 工作台', '/hadoop': 'Hadoop / YARN', '/ambari': 'Ambari', '/datasources': '数据节点', '/alerts': '告警规则', '/notifications': '通知中心', '/logs': '日志中心', '/config': '系统设置' }
+  const titles: Record<string, string> = { '/': '监控大屏', '/metrics': '指标查询', '/mysql': 'MySQL 工作台', '/mysql-reports': '报表任务', '/ssh-terminal': '命令执行', '/knowledge': '知识库', '/hive': 'Hive 工作台', '/consul': 'Consul KV 工作台', '/hadoop': 'Hadoop / YARN', '/ambari': 'Ambari', '/datasources': '数据节点', '/alerts': '告警规则', '/notifications': '通知中心', '/logs': '日志中心', '/config': '系统设置' }
   const [unread, setUnread] = useState(0)
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
@@ -581,7 +591,8 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
   const importedHiveSources = hiveMenus.map(item => ({ item, source: sources.find(source => source.id === item.sourceId && source.type === 'Hive' && source.enabled) })).filter((entry): entry is { item: HiveMenuItem; source: Source } => Boolean(entry.source))
   const importedPostgreSQLSources = postgresqlMenus.map(item => ({ item, source: sources.find(source => (source.type === 'PostgreSQL' || source.type === 'Postgres') && source.id === item.sourceId && source.enabled) })).filter((entry): entry is { item: PostgreSQLMenuItem; source: Source } => Boolean(entry.source))
   type SidebarItem = [string, string, string]
-  const primaryItems: SidebarItem[] = [['dashboard', '监控大屏', '/'], ['report', '报表任务', '/mysql-reports']]
+  const primaryItems: SidebarItem[] = [['dashboard', '监控大屏', '/'], ['book', '知识库', '/knowledge']]
+  const reportItems: SidebarItem[] = [['list', '任务列表', '/mysql-reports'], ['chart', '结果大屏', '/mysql-reports?view=dashboard']]
   const workspaceItems: SidebarItem[] = [
     ...importedMySQLSources.map(({ item, source }) => ['mysql', item.name || source.name, `/mysql?source=${encodeURIComponent(source.id)}`] as SidebarItem),
     ...(importedHiveSources.map(({ item, source }) => ['hive', item.name || source.name, `/hive?source=${encodeURIComponent(source.id)}`] as SidebarItem)),
@@ -590,7 +601,7 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
     ...importedHadoopSources.map(({ item, source }) => ['hadoop', item.name || source.name, `/hadoop?source=${encodeURIComponent(source.id)}`] as SidebarItem),
     ...importedAmbariSources.map(({ item, source }) => ['ambari', item.name || source.name, `/ambari?source=${encodeURIComponent(source.id)}`] as SidebarItem),
   ]
-  const operationsItems: SidebarItem[] = [['query', '指标查询', '/metrics'], ['alert', '告警规则', '/alerts'], ['notify', '通知中心', '/notifications'], ['audit', '日志中心', '/logs']]
+  const operationsItems: SidebarItem[] = [['query', '指标查询', '/metrics'], ['terminal', '命令执行', '/ssh-terminal'], ['alert', '告警规则', '/alerts'], ['notify', '通知中心', '/notifications'], ['audit', '日志中心', '/logs']]
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
   const openGroupsPathRef = useRef('')
   useEffect(() => {
@@ -599,6 +610,7 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
     openGroupsPathRef.current = pathKey
     const target = location.pathname.split('?')[0]
     const groups: [string, SidebarItem[]][] = [
+      ['报表任务', reportItems],
       ['工作台', workspaceItems],
       ['运维中心', operationsItems],
       ['系统管理', [['data', '数据节点', '/datasources'], ['settings', '系统设置', '/config']]],
@@ -623,16 +635,16 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
     const currentView = new URLSearchParams(location.search).get('view') || ''
     const consulSourceID = path.startsWith('/consul?source=') ? new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('source') : ''
     const hiveSourceID = path.startsWith('/hive?source=') ? new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('source') : ''
-    const active = hadoopSourceID ? location.pathname === '/hadoop' && selectedHadoopSourceID === hadoopSourceID : ambariSourceID ? location.pathname === '/ambari' && selectedAmbariSourceID === ambariSourceID : reportScene ? location.pathname === '/mysql' && currentView === 'reports' : mysqlSourceID ? location.pathname === '/mysql' && currentView !== 'reports' && selectedMySQLSourceID === mysqlSourceID : hiveSourceID ? location.pathname === '/hive' && selectedHiveSourceID === hiveSourceID : consulSourceID ? location.pathname === '/consul' && selectedConsulSourceID === consulSourceID : path === '/mysql' ? location.pathname === '/mysql' && currentView !== 'reports' : isActive
+    const active = hadoopSourceID ? location.pathname === '/hadoop' && selectedHadoopSourceID === hadoopSourceID : ambariSourceID ? location.pathname === '/ambari' && selectedAmbariSourceID === ambariSourceID : reportScene ? location.pathname === '/mysql' && currentView === 'reports' : mysqlSourceID ? location.pathname === '/mysql' && currentView !== 'reports' && selectedMySQLSourceID === mysqlSourceID : hiveSourceID ? location.pathname === '/hive' && selectedHiveSourceID === hiveSourceID : consulSourceID ? location.pathname === '/consul' && selectedConsulSourceID === consulSourceID : path === '/mysql' ? location.pathname === '/mysql' && currentView !== 'reports' : path === '/mysql-reports' ? location.pathname === '/mysql-reports' && currentView !== 'dashboard' : path === '/mysql-reports?view=dashboard' ? location.pathname === '/mysql-reports' && currentView === 'dashboard' : isActive
     return `nav-link ${active ? 'active' : ''}`
   }}>{showIcon && icon ? <LineIcon name={icon} /> : null}<span>{label}</span></NavLink>
   const toggleGroup = (label: string) => setOpenGroups(current => {
-    const next = { 工作台: false, 运维中心: false, 系统管理: false } as Record<string, boolean>
+    const next = { 报表任务: false, 工作台: false, 运维中心: false, 系统管理: false } as Record<string, boolean>
     next[label] = !current[label]
     return next
   })
   const renderGroup = (label: string, items: SidebarItem[], icon: string) => <section className={`sidebar-group ${openGroups[label] ? 'open' : ''}`} key={label}><button className="sidebar-group-toggle" type="button" onClick={() => toggleGroup(label)}><span className="sidebar-group-toggle-label"><LineIcon name={icon} /><em>{label}</em></span><b aria-hidden="true">{openGroups[label] ? '−' : '+'}</b></button><div className="sidebar-group-items"><div className="sidebar-group-items-inner">{items.map(item => renderItem(item))}</div></div></section>
-  return <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>{platformName}</b><small>巡检平台</small></div></div><nav>{primaryItems.map(item => renderItem(item, true))}{renderGroup('工作台', workspaceItems, 'workspace')}{renderGroup('运维中心', operationsItems, 'operations')}{renderGroup('系统管理', [['data', '数据节点', '/datasources'], ['settings', '系统设置', '/config']], 'settings')}</nav><div className="sidebar-bottom-actions"><div className="sidebar-footer"><span className="online-dot" /><span>{online} / {sources.length} 数据源在线</span></div><button className="sidebar-collapse" type="button" aria-label={collapsed ? '展开菜单' : '折叠菜单'} title={collapsed ? '展开菜单' : '折叠菜单'} onClick={onToggle}><span aria-hidden="true">{collapsed ? '›' : '‹'}</span></button></div></aside>
+  return <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}><div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /><div><b>{platformName}</b><small>巡检平台</small></div></div><nav>{primaryItems.map(item => renderItem(item, true))}{renderGroup('报表任务', reportItems, 'report')}{renderGroup('工作台', workspaceItems, 'workspace')}{renderGroup('运维中心', operationsItems, 'operations')}{renderGroup('系统管理', [['data', '数据节点', '/datasources'], ['settings', '系统设置', '/config']], 'settings')}</nav><div className="sidebar-bottom-actions"><div className="sidebar-footer"><span className="online-dot" /><span>{online} / {sources.length} 数据源在线</span></div><button className="sidebar-collapse" type="button" aria-label={collapsed ? '展开菜单' : '折叠菜单'} title={collapsed ? '展开菜单' : '折叠菜单'} onClick={onToggle}><span aria-hidden="true">{collapsed ? '›' : '‹'}</span></button></div></aside>
 }
 
 function PageHead({ action, onAction, actionNode }: { title: string; description: string; action?: string; onAction?: () => void; actionNode?: any }) {
@@ -711,10 +723,10 @@ function SQLResultView({ columns, rows, page, pageSize, total, totalPages, trunc
   return <><section className="mysql-sql-result-view"><header className="mysql-sql-result-head"><span>查询结果</span><button className="button secondary" type="button" onClick={() => setFullscreen(true)}>全屏查看</button></header>{resultTable}{pagination}</section>{fullscreen && <div className="sql-result-fullscreen" role="dialog" aria-modal="true"><header><div><b>SQL 查询结果</b><span>共 {total}{truncated ? '+' : ''} 条</span></div><button className="close-button" type="button" aria-label="关闭全屏结果" onClick={() => setFullscreen(false)}>×</button></header>{resultTable}{pagination}</div>}</>
 }
 
-function UnifiedPagination({ total, page, totalPages, onPageChange, ariaLabel, truncated = false }: { total: number; page: number; totalPages: number; onPageChange: (page: number) => void; ariaLabel: string; truncated?: boolean }) {
+function UnifiedPagination({ total, page, totalPages, onPageChange, ariaLabel, truncated = false, pageSize, onPageSizeChange }: { total: number; page: number; totalPages: number; onPageChange: (page: number) => void; ariaLabel: string; truncated?: boolean; pageSize?: number; onPageSizeChange?: (size: number) => void }) {
   const pages = Math.max(1, totalPages)
   const current = Math.min(Math.max(1, page), pages)
-  return <footer className="mysql-pagination platform-pagination"><div><span>共 {total}{truncated ? '+' : ''} 条</span></div><nav aria-label={ariaLabel}><button type="button" disabled={current <= 1} onClick={() => onPageChange(1)}>首页</button><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span className="mysql-page-current">{current} / {pages}</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button><button type="button" disabled={current >= pages} onClick={() => onPageChange(pages)}>尾页</button></nav></footer>
+  return <footer className="mysql-pagination platform-pagination"><div><span>共 {total}{truncated ? '+' : ''} 条</span>{pageSize && onPageSizeChange && <select className="platform-page-size" value={pageSize} onChange={e => onPageSizeChange(Number(e.target.value))} aria-label="每页条数"><option value={10}>10 条/页</option><option value={20}>20 条/页</option><option value={50}>50 条/页</option><option value={100}>100 条/页</option></select>}</div><nav aria-label={ariaLabel}><button type="button" disabled={current <= 1} onClick={() => onPageChange(1)}>首页</button><button type="button" disabled={current <= 1} onClick={() => onPageChange(current - 1)}>上一页</button><span className="mysql-page-current">{current} / {pages}</span><button type="button" disabled={current >= pages} onClick={() => onPageChange(current + 1)}>下一页</button><button type="button" disabled={current >= pages} onClick={() => onPageChange(pages)}>尾页</button></nav></footer>
 }
 
 function downloadCSV(filename: string, columns: string[], rows: any[][]) {
@@ -853,6 +865,7 @@ function dashboardPercent(value?: string) {
 }
 
 function Dashboards() {
+  const navigate = useNavigate()
   const [items, setItems] = useState<DashboardItem[]>([])
   const [values, setValues] = useState<Record<string, Record<string, string>>>({})
   const [filesystemValues, setFilesystemValues] = useState<Record<string, DashboardFilesystem[]>>({})
@@ -946,7 +959,7 @@ function Dashboards() {
     })
     return () => frames.forEach(frame => cancelAnimationFrame(frame))
   }, [activeNotifications.length, totalRules, enabledSources.length, unreadNotifications, values])
-  return <div className="page"><section className="overview-stat-grid"><article className="overview-stat alert"><span>当前告警</span><b>{activeNotifications.length}</b><small>未恢复的告警事件</small></article><article className="overview-stat rule"><span>告警规则</span><b>{totalRules}</b><small>自定义 {customRuleCount} · Prometheus {prometheusRuleCount}</small></article><article className="overview-stat source"><span>启用数据源</span><b>{enabledSources.length}</b><small>接入 {sources.length} 个</small></article><article className="overview-stat notice"><span>未读通知</span><b>{unreadNotifications}</b><small>全部通知 {notifications.length} 条</small></article></section><section className="overview-section-title"><div><h2>数据源运行指标</h2><p>数据库、中间件与主机采集指标</p></div><span>{dashboards.length} 个数据源</span></section>{dashboards.length === 0 ? <section className="surface empty-state"><b>暂无数据源运行指标</b><span>可在数据节点中将支持的数据源导入监控大屏。</span></section> : <section className="dashboard-list">{dashboards.map(item => { const v = values[item.sourceId] || {}; const isHost = item.sourceType === 'SSH' || item.sourceType === 'Agent'; const cards: DashboardMetricCard[] = isHost ? [{ label: '状态', value: v.up === '1' ? '正常' : '采集中' }, { label: 'CPU 使用率', value: formatPercent100(v.cpu), progress: dashboardPercent(v.cpu) }, { label: '内存使用率', value: formatPercent100(v.memory), progress: dashboardPercent(v.memory) }, { label: '根分区 / 使用率', value: formatPercent100(v.disk), progress: dashboardPercent(v.disk) }, { label: '1 分钟负载', value: v.load1 || '-' }, { label: '5 分钟负载', value: v.load5 || '-' }] : [{ label: '状态', value: v.up === '1' ? '正常' : '采集中' }, { label: '连接数', value: formatInteger(v.threads || v.connected_clients) }, { label: '内存使用率', value: formatPercent(v.memory_usage_ratio) }, { label: '命中率', value: formatPercent(v.hit_ratio || v.hit) }]; return <section className="surface mysql-dashboard-card" key={item.id}><header><div><h3>{item.name}</h3><span>{item.sourceName} · {item.sourceType === 'Agent' ? 'SSH - Agent' : item.sourceType}</span></div><div className="dashboard-card-actions">{item.sourceType === 'MySQL' && <button className="text-button" type="button" onClick={() => void openSQL(item)}>更多</button>}<button className="text-button danger" type="button" onClick={() => void remove(item.id)}>删除</button></div></header><div className="dashboard-metrics">{cards.map(card => <div className={`dashboard-metric ${card.tone || 'neutral'} ${card.label === '根分区 / 使用率' ? 'clickable' : ''}`} key={card.label} role={card.label === '根分区 / 使用率' ? 'button' : undefined} tabIndex={card.label === '根分区 / 使用率' ? 0 : undefined} onClick={card.label === '根分区 / 使用率' ? () => setFilesystemSource(item) : undefined} onKeyDown={card.label === '根分区 / 使用率' ? (event) => { if (event.key === 'Enter' || event.key === ' ') setFilesystemSource(item) } : undefined}><span>{card.label}</span><b>{card.value}</b>{card.progress !== undefined && <i className="dashboard-water"><i style={{ width: `${card.progress}%` }} /></i>}</div>)}</div></section> })}</section>}{sqlSource && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setSQLSource(null) }}><section className="surface sql-insight-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{sqlMode === 'slow' ? '慢查询 SQL' : '耗时最高 SQL'}</h2><p>{sqlSource.sourceName}</p></div><button className="close-button" type="button" onClick={() => setSQLSource(null)}>×</button></header>{sqlLoading ? <div className="empty-state"><b>正在加载 SQL 明细</b></div> : sqlError ? <div className="empty-state"><b>加载失败</b><span>{sqlError}</span></div> : <><div className="sql-insight-list">{pageItems.map((entry, index) => <article key={`${entry.digest || entry.queryText}-${index}`}><header><span>{(sqlPage - 1) * 10 + index + 1}</span><b>{entry.schemaName || '未指定库'}</b><small>{formatMilliseconds(entry.maxLatencyMs)}</small></header><code>{entry.queryText}</code></article>)}</div><footer className="sql-pagination"><button type="button" disabled={sqlPage === 1} onClick={() => setSQLPage(current => current - 1)}>上一页</button><span>{sqlPage} / {pages}</span><button type="button" disabled={sqlPage === pages} onClick={() => setSQLPage(current => current + 1)}>下一页</button></footer></>}</section></div>}{filesystemSource && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setFilesystemSource(null) }}><section className="surface filesystem-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>分区使用率</h2><p>{filesystemSource.name} · 已排除 Docker、Kubernetes kubelet 及临时文件系统</p></div><button className="close-button" type="button" onClick={() => setFilesystemSource(null)}>×</button></header><div className="filesystem-modal-list">{(filesystemValues[filesystemSource.sourceId] || []).length === 0 ? <div className="empty-state"><b>暂未采集到可展示的挂载分区</b><span>采集完成后将自动显示。</span></div> : (filesystemValues[filesystemSource.sourceId] || []).map(fs => <article className="filesystem-modal-row" key={`${fs.filesystem}-${fs.mountPoint}`}><header><div><b title={fs.mountPoint}>{fs.mountPoint}</b><span>{formatBytes(fs.usedBytes)} / {formatBytes(fs.totalBytes)}</span></div><strong>{fs.usedPercent.toFixed(1)}%</strong></header><i className="dashboard-water"><i style={{ width: `${Math.max(0, Math.min(100, fs.usedPercent))}%` }} /></i></article>)}</div></section></div>}</div>
+  return <div className="page"><section className="overview-stat-grid"><article className="overview-stat alert overview-stat-clickable" onClick={() => navigate('/notifications')}><span>当前告警</span><b>{activeNotifications.length}</b><small>未恢复的告警事件</small></article><article className="overview-stat rule overview-stat-clickable" onClick={() => navigate('/alerts')}><span>告警规则</span><b>{totalRules}</b><small>自定义 {customRuleCount} · Prometheus {prometheusRuleCount}</small></article><article className="overview-stat source overview-stat-clickable" onClick={() => navigate('/datasources')}><span>启用数据源</span><b>{enabledSources.length}</b><small>接入 {sources.length} 个</small></article><article className="overview-stat notice overview-stat-clickable" onClick={() => navigate('/notifications')}><span>未读通知</span><b>{unreadNotifications}</b><small>全部通知 {notifications.length} 条</small></article></section><section className="overview-section-title"><div><h2>数据源运行指标</h2><p>数据库、中间件与主机采集指标</p></div><span>{dashboards.length} 个数据源</span></section>{dashboards.length === 0 ? <section className="surface empty-state"><b>暂无数据源运行指标</b><span>可在数据节点中将支持的数据源导入监控大屏。</span></section> : <section className="dashboard-list">{dashboards.map(item => { const v = values[item.sourceId] || {}; const isHost = item.sourceType === 'SSH' || item.sourceType === 'Agent'; const cards: DashboardMetricCard[] = isHost ? [{ label: '状态', value: v.up === '1' ? '正常' : '采集中' }, { label: 'CPU 使用率', value: formatPercent100(v.cpu), progress: dashboardPercent(v.cpu) }, { label: '内存使用率', value: formatPercent100(v.memory), progress: dashboardPercent(v.memory) }, { label: '根分区 / 使用率', value: formatPercent100(v.disk), progress: dashboardPercent(v.disk) }, { label: '1 分钟负载', value: v.load1 || '-' }, { label: '5 分钟负载', value: v.load5 || '-' }] : [{ label: '状态', value: v.up === '1' ? '正常' : '采集中' }, { label: '连接数', value: formatInteger(v.threads || v.connected_clients) }, { label: '内存使用率', value: formatPercent(v.memory_usage_ratio) }, { label: '命中率', value: formatPercent(v.hit_ratio || v.hit) }]; return <section className="surface mysql-dashboard-card" key={item.id}><header><div><h3>{item.name}</h3><span>{item.sourceName} · {item.sourceType === 'Agent' ? 'SSH - Agent' : item.sourceType}</span></div><div className="dashboard-card-actions">{item.sourceType === 'MySQL' && <button className="text-button" type="button" onClick={() => void openSQL(item)}>更多</button>}<button className="text-button danger" type="button" onClick={() => void remove(item.id)}>删除</button></div></header><div className="dashboard-metrics">{cards.map(card => <div className={`dashboard-metric ${card.tone || 'neutral'} ${card.label === '根分区 / 使用率' ? 'clickable' : ''}`} key={card.label} role={card.label === '根分区 / 使用率' ? 'button' : undefined} tabIndex={card.label === '根分区 / 使用率' ? 0 : undefined} onClick={card.label === '根分区 / 使用率' ? () => setFilesystemSource(item) : undefined} onKeyDown={card.label === '根分区 / 使用率' ? (event) => { if (event.key === 'Enter' || event.key === ' ') setFilesystemSource(item) } : undefined}><span>{card.label}</span><b>{card.value}</b>{card.progress !== undefined && <i className="dashboard-water"><i style={{ width: `${card.progress}%` }} /></i>}</div>)}</div></section> })}</section>}{sqlSource && <div className="modal-backdrop" role="presentation"><section className="surface sql-insight-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{sqlMode === 'slow' ? '慢查询 SQL' : '耗时最高 SQL'}</h2><p>{sqlSource.sourceName}</p></div><button className="close-button" type="button" onClick={() => setSQLSource(null)}>×</button></header>{sqlLoading ? <div className="empty-state"><b>正在加载 SQL 明细</b></div> : sqlError ? <div className="empty-state"><b>加载失败</b><span>{sqlError}</span></div> : <><div className="sql-insight-list">{pageItems.map((entry, index) => <article key={`${entry.digest || entry.queryText}-${index}`}><header><span>{(sqlPage - 1) * 10 + index + 1}</span><b>{entry.schemaName || '未指定库'}</b><small>{formatMilliseconds(entry.maxLatencyMs)}</small></header><code>{entry.queryText}</code></article>)}</div><footer className="sql-pagination"><button type="button" disabled={sqlPage === 1} onClick={() => setSQLPage(current => current - 1)}>上一页</button><span>{sqlPage} / {pages}</span><button type="button" disabled={sqlPage === pages} onClick={() => setSQLPage(current => current + 1)}>下一页</button></footer></>}</section></div>}{filesystemSource && <div className="modal-backdrop" role="presentation"><section className="surface filesystem-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>分区使用率</h2><p>{filesystemSource.name} · 已排除 Docker、Kubernetes kubelet 及临时文件系统</p></div><button className="close-button" type="button" onClick={() => setFilesystemSource(null)}>×</button></header><div className="filesystem-modal-list">{(filesystemValues[filesystemSource.sourceId] || []).length === 0 ? <div className="empty-state"><b>暂未采集到可展示的挂载分区</b><span>采集完成后将自动显示。</span></div> : (filesystemValues[filesystemSource.sourceId] || []).map(fs => <article className="filesystem-modal-row" key={`${fs.filesystem}-${fs.mountPoint}`}><header><div><b title={fs.mountPoint}>{fs.mountPoint}</b><span>{formatBytes(fs.usedBytes)} / {formatBytes(fs.totalBytes)}</span></div><strong>{fs.usedPercent.toFixed(1)}%</strong></header><i className="dashboard-water"><i style={{ width: `${Math.max(0, Math.min(100, fs.usedPercent))}%` }} /></i></article>)}</div></section></div>}</div>
 }
 async function loadMySQLMenus(): Promise<MySQLMenuItem[]> { try { const response = await fetch(`${api}/mysql-menu`); const data = await response.json(); return response.ok && Array.isArray(data.items) ? data.items : [] } catch { return [] } }
 async function saveMySQLMenuItem(sourceID: string, name: string): Promise<MySQLMenuItem> { const response = await fetch(`${api}/mysql-menu`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: sourceID, name }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '导入 MySQL 工作台失败'); window.dispatchEvent(new Event('opsguard-mysql-menus-change')); return data as MySQLMenuItem }
@@ -959,11 +972,11 @@ async function savePostgreSQLMenuItem(sourceID: string, name: string): Promise<P
 
 function AgentTokenDialog({ token, host, port, onClose }: { token: string; host: string; port: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false)
-  const config = `# OpsGuard Agent 配置\nLISTEN=0.0.0.0:${port || '4001'}\nTOKEN=${token}\n# 请填写平台实际来源 IP\nALLOWED_PLATFORM_IPS=填写平台来源IP/32\nCOMMAND_TIMEOUT_SECONDS=30\nMAX_OUTPUT_BYTES=65536`
+  const config = `# 将以下配置追加到安装脚本生成的 agent.conf；保留原有 LOG_FILE\nLISTEN=0.0.0.0:${port || '4001'}\nTOKEN=${token}\n# 改成 Agent 实际看到的平台来源 IP，例如 192.0.2.10/32\nALLOWED_PLATFORM_IPS=填写平台来源IP/32\nTLS_ENABLED=true\nCOMMAND_TIMEOUT_SECONDS=30\nMAX_OUTPUT_BYTES=65536`
   const copy = async () => {
     try { await navigator.clipboard.writeText(config); setCopied(true) } catch { setCopied(false) }
   }
-  return <div className="modal-backdrop" role="presentation" onClick={onClose}><section className="surface import-name-modal" role="dialog" aria-modal="true" aria-labelledby="agent-token-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="agent-token-title">Agent 配置</h2><p>{host}:{port || '4001'} 的令牌只生成一次，请保存下面配置。</p></div><button className="close-button" type="button" onClick={onClose}>×</button></header><label className="import-name-field">agent.conf 配置<textarea value={config} readOnly rows={8} onFocus={(event) => event.currentTarget.select()} /></label><footer className="modal-actions"><button className="button secondary" type="button" onClick={() => void copy()}>{copied ? '已复制配置' : '复制完整配置'}</button><button className="button" type="button" onClick={onClose}>确认</button></footer></section></div>
+  return <div className="modal-backdrop" role="presentation"><section className="surface import-name-modal agent-config-modal" role="dialog" aria-modal="true" aria-labelledby="agent-token-title" onClick={(event) => event.stopPropagation()}><header className="modal-head"><div><h2 id="agent-token-title">Agent 配置</h2><p>{host}:{port || '4001'} 的令牌只生成一次，请保存后复制到目标节点。</p></div><button className="close-button" type="button" onClick={onClose}>×</button></header><label className="import-name-field">追加到 agent.conf 的配置<textarea value={config} readOnly rows={10} onFocus={(event) => event.currentTarget.select()} /></label><p className="form-hint">先在目标节点解压 Agent ZIP，并进入 opsguard 目录运行 sudo sh install/install-agent.sh。安装脚本会创建只含 LOG_FILE 的 agent/config/agent.conf；把复制的配置粘贴到文件末尾，将 ALLOWED_PLATFORM_IPS 改成平台实际来源 IP，保存后运行 sudo systemctl enable --now opsguard-agent。已有节点只修改需要更新的字段，保留证书设置。</p><footer className="modal-actions"><button className="button secondary" type="button" onClick={() => void copy()}>{copied ? '已复制待追加配置' : '复制待追加配置'}</button><button className="button" type="button" onClick={onClose}>确认</button></footer></section></div>
 }
 
 function formatPercent(value?: string) {
@@ -1288,13 +1301,16 @@ function HadoopYarn() {
 		const vcores = details.reduce((total: number, container: any) => total + (Number(container.allocatedVCores) || 0), 0)
 		return `节点 ${nodes.length ? nodes.join('、') : '-'} · 内存 ${memory || '-'} MB · CPU ${vcores || '-'} vCores`
 	}
-  return <div className="page"><PageHead title="Hadoop / YARN" description="应用运行状态与容器日志" actionNode={actions} />{sources.length === 0 ? <section className="surface empty-state"><b>暂无 Hadoop 数据源</b><span>请先在数据节点新增 Hadoop Web 地址。</span></section> : <section className="surface">{message && <div className="form-error">{message}</div>}<div className="hadoop-filter-bar"><input value={keyword} onChange={(event) => { setKeyword(event.target.value); setAppPage(1) }} placeholder="搜索名称、ID、用户或状态" /><AppSelect value={userFilter} placeholder="全部用户" onChange={(value) => { setUserFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部用户' }, ...valuesFor('user').map(value => ({ value, label: value }))]} /><AppSelect value={typeFilter} placeholder="全部类型" onChange={(value) => { setTypeFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部类型' }, ...valuesFor('applicationType').map(value => ({ value, label: value }))]} /><AppSelect value={stateFilter} placeholder="全部状态" onChange={(value) => { setStateFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部状态' }, ...valuesFor('state').map(value => ({ value, label: value }))]} /><AppSelect value={finalStatusFilter} placeholder="全部最终状态" onChange={(value) => { setFinalStatusFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部最终状态' }, ...valuesFor('finalStatus').map(value => ({ value, label: value }))]} /><button className="hadoop-filter-reset" type="button" onClick={resetFilters}>重置</button></div><div className="prometheus-rule-list">{visibleApps.map(app => { const note = containerPerformanceNote(app.id); return <article className="prometheus-rule-row compact hadoop-app-row" key={app.id}><i className="rule-icon">Y</i><div><header><b>{formatHadoopApplicationName(app.name, app.id)}<code className="hadoop-application-id">{app.id}</code></b><div className="hadoop-app-actions"><button className="text-button" type="button" onClick={() => void loadContainers(app.id)}>查看日志</button><button className="text-button hadoop-app-detail" type="button" onClick={() => openApplicationDetails(app)}>任务详情</button></div></header><div className="hadoop-app-meta"><span>{app.user || '-'}</span><span>{app.queue || 'default'}</span><span>{app.applicationType || '-'}</span><span>进度 {Number(app.progress || 0).toFixed(0)}%</span>{note && <span className="hadoop-container-progress-note">{note}</span>}<span>{formatHadoopTimeRange(app)}</span><span className={`hadoop-status ${hadoopStatusTone(app.state)}`}>状态 {app.state || '-'}</span><span className={`hadoop-status ${hadoopStatusTone(app.finalStatus)}`}>最终状态 {app.finalStatus || '-'}</span></div></div></article> })}</div>{appPagination}{filteredApps.length > 0 && visibleApps.length === 0 && <div className="hadoop-filter-empty">没有匹配的应用</div>}</section>}{logModalOpen && <div className={`modal-backdrop ${logFullscreen ? 'hadoop-log-fullscreen-backdrop' : ''}`} role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setLogModalOpen(false) }}><section className={`surface hadoop-log-modal ${logFullscreen ? 'fullscreen' : ''}`} role="dialog" aria-modal="true"><header className="modal-head"><div><h2>容器日志</h2><p>{selectedAppID}</p></div><button className="button secondary hadoop-log-download" type="button" disabled={downloadingLog} onClick={() => void downloadAllLogs()}>{downloadingLog ? '下载中...' : '下载全部'}</button><button className="button secondary hadoop-log-fullscreen" type="button" aria-label={logFullscreen ? '退出全屏' : '全屏查看'} title={logFullscreen ? '退出全屏' : '全屏查看'} onClick={() => setLogFullscreen(value => !value)}><span aria-hidden="true">{logFullscreen ? '↙' : '↗'}</span><em>{logFullscreen ? '退出全屏' : '全屏'}</em></button><button className="close-button" type="button" aria-label="关闭" onClick={() => setLogModalOpen(false)}>×</button></header>{containers.length > 1 && <div className="hadoop-container-tabs">{containers.map(container => <button className={container.id === selectedContainerID ? 'active' : ''} type="button" key={container.id} onClick={() => container.logUrl && void loadLog(container.logUrl, container.id)}>{hadoopContainerLabel(container, selectedApplication?.applicationType)}</button>)}</div>}{selectedContainer && <div className="hadoop-container-resource">Attempt：{selectedContainer.attemptId || '-'} · 节点：{selectedContainer.nodeHttpAddress || '-'} · 内存：{selectedContainer.allocatedMB || '-'} MB · vCores：{selectedContainer.allocatedVCores || '-'}</div>}<div className="hadoop-log">{log}</div></section></div>}</div>
+  return <div className="page"><PageHead title="Hadoop / YARN" description="应用运行状态与容器日志" actionNode={actions} />{sources.length === 0 ? <section className="surface empty-state"><b>暂无 Hadoop 数据源</b><span>请先在数据节点新增 Hadoop Web 地址。</span></section> : <section className="surface">{message && <div className="form-error">{message}</div>}<div className="hadoop-filter-bar"><input value={keyword} onChange={(event) => { setKeyword(event.target.value); setAppPage(1) }} placeholder="搜索名称、ID、用户或状态" /><AppSelect value={userFilter} placeholder="全部用户" onChange={(value) => { setUserFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部用户' }, ...valuesFor('user').map(value => ({ value, label: value }))]} /><AppSelect value={typeFilter} placeholder="全部类型" onChange={(value) => { setTypeFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部类型' }, ...valuesFor('applicationType').map(value => ({ value, label: value }))]} /><AppSelect value={stateFilter} placeholder="全部状态" onChange={(value) => { setStateFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部状态' }, ...valuesFor('state').map(value => ({ value, label: value }))]} /><AppSelect value={finalStatusFilter} placeholder="全部最终状态" onChange={(value) => { setFinalStatusFilter(value); setAppPage(1) }} options={[{ value: '', label: '全部最终状态' }, ...valuesFor('finalStatus').map(value => ({ value, label: value }))]} /><button className="hadoop-filter-reset" type="button" onClick={resetFilters}>重置</button></div><div className="prometheus-rule-list">{visibleApps.map(app => { const note = containerPerformanceNote(app.id); return <article className="prometheus-rule-row compact hadoop-app-row" key={app.id}><i className="rule-icon">Y</i><div><header><b>{formatHadoopApplicationName(app.name, app.id)}<code className="hadoop-application-id">{app.id}</code></b><div className="hadoop-app-actions"><button className="text-button" type="button" onClick={() => void loadContainers(app.id)}>查看日志</button><button className="text-button hadoop-app-detail" type="button" onClick={() => openApplicationDetails(app)}>任务详情</button></div></header><div className="hadoop-app-meta"><span>{app.user || '-'}</span><span>{app.queue || 'default'}</span><span>{app.applicationType || '-'}</span><span>进度 {Number(app.progress || 0).toFixed(0)}%</span>{note && <span className="hadoop-container-progress-note">{note}</span>}<span>{formatHadoopTimeRange(app)}</span><span className={`hadoop-status ${hadoopStatusTone(app.state)}`}>状态 {app.state || '-'}</span><span className={`hadoop-status ${hadoopStatusTone(app.finalStatus)}`}>最终状态 {app.finalStatus || '-'}</span></div></div></article> })}</div>{appPagination}{filteredApps.length > 0 && visibleApps.length === 0 && <div className="hadoop-filter-empty">没有匹配的应用</div>}</section>}{logModalOpen && <div className={`modal-backdrop ${logFullscreen ? 'hadoop-log-fullscreen-backdrop' : ''}`} role="presentation"><section className={`surface hadoop-log-modal ${logFullscreen ? 'fullscreen' : ''}`} role="dialog" aria-modal="true"><header className="modal-head"><div><h2>容器日志</h2><p>{selectedAppID}</p></div><button className="button secondary hadoop-log-download" type="button" disabled={downloadingLog} onClick={() => void downloadAllLogs()}>{downloadingLog ? '下载中...' : '下载全部'}</button><button className="button secondary hadoop-log-fullscreen" type="button" aria-label={logFullscreen ? '退出全屏' : '全屏查看'} title={logFullscreen ? '退出全屏' : '全屏查看'} onClick={() => setLogFullscreen(value => !value)}><span aria-hidden="true">{logFullscreen ? '↙' : '↗'}</span><em>{logFullscreen ? '退出全屏' : '全屏'}</em></button><button className="close-button" type="button" aria-label="关闭" onClick={() => setLogModalOpen(false)}>×</button></header>{containers.length > 1 && <div className="hadoop-container-tabs">{containers.map(container => <button className={container.id === selectedContainerID ? 'active' : ''} type="button" key={container.id} onClick={() => container.logUrl && void loadLog(container.logUrl, container.id)}>{hadoopContainerLabel(container, selectedApplication?.applicationType)}</button>)}</div>}{selectedContainer && <div className="hadoop-container-resource">Attempt：{selectedContainer.attemptId || '-'} · 节点：{selectedContainer.nodeHttpAddress || '-'} · 内存：{selectedContainer.allocatedMB || '-'} MB · vCores：{selectedContainer.allocatedVCores || '-'}</div>}<div className="hadoop-log">{log}</div></section></div>}</div>
 }
 
 function HiveWorkspace() {
+  // v10: multi-database expand
   const sourceID = new URLSearchParams(useLocation().search).get('source') || ''
   const [databases, setDatabases] = useState<string[]>([])
-  const [tables, setTables] = useState<string[]>([])
+  const [tablesByDb, setTablesByDb] = useState<Record<string, string[]>>({})
+  const [expandedDatabases, setExpandedDatabases] = useState<string[]>([])
+  const [loadingDatabase, setLoadingDatabase] = useState<string>('')
   const [partitions, setPartitions] = useState<string[]>([])
   const [activeView, setActiveView] = useState<'data' | 'sql'>('data')
   const [sqlText, setSQLText] = useState('')
@@ -1315,18 +1331,52 @@ function HiveWorkspace() {
   const [filter, setFilter] = useState('')
   const [treeCollapsed, setTreeCollapsed] = useState(false)
   const { treeWidth, treeResizeStart } = useTreeResize()
+  const [sqlHistory, setSQLHistory] = useState<SQLHistoryItem[]>([])
+  const [sqlHistoryLoading, setSQLHistoryLoading] = useState(false)
+  const [sqlHistoryPage, setSQLHistoryPage] = useState(1)
+  const [sqlHistoryTotal, setSQLHistoryTotal] = useState(0)
   useLayoutEffect(() => { setTable(''); setPartitions([]); setPartition(''); setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true })); setPage(1) }, [database])
   useEffect(() => { if (!sourceID) return; setLoading(true); fetch(`${api}/data-sources/${sourceID}/databases`).then(r => r.json().then(data => ({ r, data }))).then(({ r, data }) => { if (!r.ok) throw new Error(data.error || '读取 Hive 数据库失败'); setDatabases(data.databases || []) }).catch(err => setError(err.message || '读取 Hive 数据库失败')).finally(() => setLoading(false)) }, [sourceID])
-  useEffect(() => { if (!sourceID || !database) { setTables([]); return }; setLoading(true); fetch(`${api}/data-sources/${sourceID}/tables?database=${encodeURIComponent(database)}`).then(r => r.json().then(data => ({ r, data }))).then(({ r, data }) => { if (!r.ok) throw new Error(data.error || '读取 Hive 表失败'); setTables(data.tables || []); setPartitions([]); setPartition(''); setPreview({ columns: [], rows: [], page: 1, pageSize, total: 0, totalExact: true }) }).catch(err => setError(err.message || '读取 Hive 表失败')).finally(() => setLoading(false)) }, [sourceID, database])
+  useEffect(() => {
+    if (!sourceID) return
+    const toLoad = expandedDatabases.find(db => !(db in tablesByDb))
+    if (!toLoad) return
+    setLoadingDatabase(toLoad)
+    fetch(`${api}/data-sources/${sourceID}/tables?database=${encodeURIComponent(toLoad)}`)
+      .then(r => r.json().then(data => ({ r, data })))
+      .then(({ r, data }) => {
+        if (!r.ok) throw new Error(data.error || '读取 Hive 表失败')
+        setTablesByDb(prev => ({ ...prev, [toLoad]: data.tables || [] }))
+      })
+      .catch(err => setError(err.message || '读取 Hive 表失败'))
+      .finally(() => setLoadingDatabase(''))
+  }, [sourceID, expandedDatabases, tablesByDb])
   useEffect(() => { if (!sourceID || !database || !table) { setPartitions([]); return }; setLoading(true); fetch(`${api}/data-sources/${sourceID}/partitions?database=${encodeURIComponent(database)}&table=${encodeURIComponent(table)}`).then(r => r.json().then(data => ({ r, data }))).then(({ r, data }) => { if (!r.ok) throw new Error(data.error || '读取 Hive 分区失败'); setPartitions(data.partitions || []); setPartition(''); setPage(1) }).catch(err => { const msg = err && err.message ? String(err.message) : ''; if (!/not a partitioned table/i.test(msg)) setError(msg || '读取 Hive 分区失败') }).finally(() => setLoading(false)) }, [sourceID, database, table])
   useEffect(() => { if (!sourceID || !database || !table) return; setPreviewLoading(true); const params = new URLSearchParams({ database, table, partition, page: String(page), pageSize: String(pageSize) }); fetch(`${api}/data-sources/${sourceID}/preview?${params}`).then(r => r.json().then(data => ({ r, data }))).then(({ r, data }) => { if (!r.ok) throw new Error(data.error || '读取 Hive 数据失败'); setPreview(data) }).catch(err => setError(err.message || '读取 Hive 数据失败')).finally(() => setPreviewLoading(false)) }, [sourceID, database, table, partition, page, pageSize])
   const totalPages = Math.max(1, preview.totalExact ? Math.ceil(preview.total / pageSize) : preview.rows.length < pageSize ? page : page + 1)
   const sqlResultTotal = sqlResult?.rows.length || 0
   const sqlResultTotalPages = Math.max(1, Math.ceil(sqlResultTotal / sqlResultPageSize))
   const visibleSQLRows = sqlResult?.rows.slice((sqlResultPage - 1) * sqlResultPageSize, sqlResultPage * sqlResultPageSize) || []
+  const loadSQLHistory = async (page = 1) => {
+    setSQLHistoryLoading(true)
+    try {
+      const res = await fetch(`${api}/data-sources/${sourceID}/sql-history?page=${page}&pageSize=10`)
+      const data = await res.json()
+      setSQLHistory(data.items || [])
+      setSQLHistoryTotal(data.total || 0)
+      setSQLHistoryPage(page)
+    } catch { /* ignore */ } finally { setSQLHistoryLoading(false) }
+  }
   const query = filter.trim().toLowerCase()
-  const visibleDatabases = databases.filter(name => !query || name.toLowerCase().includes(query) || (name === database && tables.some(t => t.toLowerCase().includes(query))))
-  const visibleTables = tables.filter(name => !query || database.toLowerCase().includes(query) || name.toLowerCase().includes(query))
+  const visibleDatabases = databases.filter(name => !query || name.toLowerCase().includes(query))
+  const toggleDatabaseExpand = (name: string) => {
+    setExpandedDatabases(cur => cur.includes(name) ? cur.filter(d => d !== name) : [...cur, name])
+  }
+  const selectTableForDb = (dbName: string, tableName: string) => {
+    setDatabase(dbName); setTable(tableName); setPartitions([]); setPartition('')
+    setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true }))
+    setPage(1)
+  }
   const executeHiveSQL = async () => {
     if (!sqlText.trim() || sqlRunning) return
     setSQLRunning(true)
@@ -1339,11 +1389,377 @@ function HiveWorkspace() {
       if (!response.ok) throw new Error(data.error || '执行失败')
       setSQLResult(data)
     } catch (err) { setSQLError(err instanceof Error ? err.message : '执行失败') }
-    finally { setSQLRunning(false) }
+    finally { setSQLRunning(false); void loadSQLHistory(1) }
   }
-  const sqlWorkspace = <div className="mysql-sql-panel"><div className="mysql-sql-layout"><section className="mysql-sql-workspace" style={{ padding: 0 }}><textarea className="mysql-sql-editor" value={sqlText} spellCheck={false} placeholder={'SELECT * FROM database.table LIMIT 100\n-- 仅支持只读查询：SELECT / SHOW / DESC / EXPLAIN'} onChange={event => { setSQLText(event.target.value); setSQLError('') }} />{sqlError && <div className="form-error">{sqlError}</div>}<div className="mysql-sql-actions"><span>{sqlResult ? (sqlResult.columns.length > 0 ? `${sqlResult.rows.length}${sqlResult.truncated ? '+' : ''} 行结果` : sqlResult.message || '执行成功') : ''}</span><div>{sqlResult && sqlResult.columns.length > 0 ? <button className="button secondary" type="button" onClick={() => downloadCSV(`hive-sql-result-${Date.now()}.csv`, sqlResult.columns, sqlResult.rows)}>下载 CSV</button> : null}<button className="button" type="button" disabled={sqlRunning || !sqlText.trim()} onClick={() => void executeHiveSQL()}>{sqlRunning ? '执行中...' : '执行'}</button></div></div>{sqlResult && (sqlResult.columns.length > 0 ? <SQLResultView columns={sqlResult.columns} rows={visibleSQLRows} page={sqlResultPage} pageSize={sqlResultPageSize} total={sqlResultTotal} totalPages={sqlResultTotalPages} truncated={sqlResult.truncated} onPageChange={setSQLResultPage} onPageSizeChange={value => { setSQLResultPageSize(value); setSQLResultPage(1) }} /> : <div className="mysql-sql-result mysql-sql-success">{sqlResult.message || '执行成功'}</div>)}</section></div></div>
+  const sqlWorkspace = <div className="mysql-sql-panel"><div className="mysql-sql-layout"><aside className="mysql-sql-history"><header><b>最近执行</b><span>最近 10 条</span></header><div>{sqlHistoryLoading ? <span className="mysql-sql-history-empty">正在加载...</span> : sqlHistory.length === 0 ? <span className="mysql-sql-history-empty">暂无执行记录</span> : sqlHistory.map(item => <button type="button" key={item.id} onClick={() => { setSQLText(item.statement); setSQLError(''); setSQLResult(null); setSQLResultPage(1) }}><span><i className={item.status === 'success' ? 'success' : 'failed'} />{item.database || '默认数据库'}<time>{item.createdAt}</time></span><code>{item.statement}</code><small>{item.status === 'success' ? `${item.resultRows > 0 ? `${item.resultRows} 行结果` : `影响 ${item.affected} 行`}` : item.error || '执行失败'} · {item.durationMs}ms</small></button>)}</div></aside><section className="mysql-sql-workspace" style={{ padding: 0 }}><textarea className="mysql-sql-editor" value={sqlText} spellCheck={false} placeholder={'SELECT * FROM database.table LIMIT 100\n-- 仅支持只读查询：SELECT / SHOW / DESC / EXPLAIN'} onChange={event => { setSQLText(event.target.value); setSQLError('') }} />{sqlError && <div className="form-error">{sqlError}</div>}<div className="mysql-sql-actions"><span>{sqlResult ? (sqlResult.columns.length > 0 ? `${sqlResult.rows.length}${sqlResult.truncated ? '+' : ''} 行结果` : sqlResult.message || '执行成功') : ''}</span><div>{sqlResult && sqlResult.columns.length > 0 ? <button className="button secondary" type="button" onClick={() => downloadCSV(`hive-sql-result-${Date.now()}.csv`, sqlResult.columns, sqlResult.rows)}>下载 CSV</button> : null}<button className="button" type="button" disabled={sqlRunning || !sqlText.trim()} onClick={() => void executeHiveSQL()}>{sqlRunning ? '执行中...' : '执行'}</button><SQLHistoryControl items={sqlHistory} loading={sqlHistoryLoading} total={sqlHistoryTotal} page={sqlHistoryPage} onOpen={() => void loadSQLHistory(sqlHistoryPage)} onPageChange={value => void loadSQLHistory(value)} onCopy={sql => { void navigator.clipboard.writeText(sql) }} onSelect={item => { setSQLText(item.statement) }} /></div></div>{sqlResult && (sqlResult.columns.length > 0 ? <SQLResultView columns={sqlResult.columns} rows={visibleSQLRows} page={sqlResultPage} pageSize={sqlResultPageSize} total={sqlResultTotal} totalPages={sqlResultTotalPages} truncated={sqlResult.truncated} onPageChange={setSQLResultPage} onPageSizeChange={value => { setSQLResultPageSize(value); setSQLResultPage(1) }} /> : <div className="mysql-sql-result mysql-sql-success">{sqlResult.message || '执行成功'}</div>)}</section></div></div>
   if (!sourceID) return <div className="page"><section className="overview-section-title"><div><h2>Hive 工作台</h2><p>用于浏览 HiveServer2 数据，只读查询。</p></div></section><section className="surface empty-state"><b>暂无 Hive 数据源</b><span>请先在“数据节点”中新增 Hive 数据源，再导入或打开对应工作台。</span></section></div>
-  return <div className="page mysql-workspace"><section className="overview-section-title"><div><h2>Hive 工作台</h2><p>按数据库、数据表和分区逐级浏览 HiveServer2 数据，只读查询。</p></div></section>{error && <div className="form-error">{error}</div>}<section className={`surface mysql-workspace-grid ${treeCollapsed ? 'tree-collapsed' : ''}`} style={{ gridTemplateColumns: treeCollapsed ? '44px minmax(0,1fr)' : `${treeWidth}px minmax(0,1fr)` }}><div className="mysql-tree-resizer" style={{ left: treeCollapsed ? 41 : treeWidth - 3, display: treeCollapsed ? 'none' : 'block' }} onMouseDown={treeResizeStart} /><button className="mysql-tree-collapse-control" type="button" style={{ left: treeCollapsed ? 4 : treeWidth - 66 }} onClick={() => setTreeCollapsed(value => !value)} title={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'} aria-label={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'}>{treeCollapsed ? '›' : '‹'}</button><aside className="mysql-tree-panel"><header><b>Hive 数据库</b><span>{databases.length} 个库</span></header><input value={filter} placeholder="筛选数据库或表" onChange={event => setFilter(event.target.value)} />{loading && databases.length === 0 ? <span className="mysql-tree-status">正在加载...</span> : <div className="mysql-tree">{visibleDatabases.map(item => { const expanded = database === item; return <div className="mysql-tree-database" key={item}><button className={database === item ? 'selected' : ''} type="button" onClick={() => { if (database === item) { setDatabase(''); setTable(''); setPartitions([]); setPartition(''); setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true })); setPage(1); return } setTable(''); setPartitions([]); setPartition(''); setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true })); setPage(1); setDatabase(item) }}><span className={`mysql-tree-toggle ${expanded ? 'expanded' : ''}`} aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg></span><span className="mysql-tree-icon" aria-hidden="true" /><b>{item}</b><small>{expanded ? tables.length : ''}</small></button><div className={`mysql-tree-tables ${expanded ? 'open' : ''}`}><div className="mysql-tree-tables-inner">{expanded && tables.length === 0 && loading ? <span className="mysql-tree-status">正在读取表...</span> : visibleTables.length > 0 ? visibleTables.map(t => <button className={table === t ? 'active' : ''} type="button" key={t} onClick={() => { setTable(t); setPartitions([]); setPartition(''); setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true })); setPage(1) }}><span aria-hidden="true" /><b>{t}</b></button>) : <span className="mysql-tree-status">暂无数据表</span>}</div></div></div> })}{!loading && visibleDatabases.length === 0 && <span className="mysql-tree-status">没有匹配的对象</span>}</div>}</aside><section className="mysql-table-workspace"><header className="mysql-table-head"><div><b>{table || '请选择数据表'}</b><span>{database ? `${database}${table ? ` / ${table}` : ''}` : '先选择数据库'}</span></div><div className="mysql-table-actions"><button className="secondary" type="button" onClick={() => { setActiveView('sql'); setSQLError('') }}>执行 SQL</button><AppSelect className="hive-partition-select" menuClassName="partition-select-menu" value={partition} placeholder={partitions.length ? '选择分区' : '无分区'} disabled={!table || partitions.length === 0} onChange={value => { setPartition(value); setPage(1) }} options={partitions.map(item => ({ value: item, label: item }))} /></div></header><nav className="mysql-view-tabs" aria-label="Hive 工作区视图"><button className={activeView === 'data' ? 'active' : ''} type="button" onClick={() => setActiveView('data')}>数据</button><button className={activeView === 'sql' ? 'active' : ''} type="button" onClick={() => { setActiveView('sql'); setSQLError('') }}>SQL</button></nav>{activeView === 'sql' ? sqlWorkspace : !table ? <div className="empty-state"><b style={{ color: "#d94b5d" }}>提示</b><span>若数据库数据量较大，建议通过「执行 SQL」方式查看所需数据，以免影响服务。</span></div> : <>{preview.columns.length === 0 ? <div className="empty-state"><b>{previewLoading ? '正在读取数据...' : '暂无数据'}</b></div> : <div className="mysql-data-table-wrap"><table className="mysql-data-table hive-data-table"><thead><tr>{preview.columns.map(column => <th key={column}>{column.includes(".") ? column.split(".").slice(-1)[0] : column}</th>)}</tr></thead><tbody>{preview.rows.map((row, index) => <tr key={index}>{preview.columns.map((_, columnIndex) => <td key={columnIndex}>{row[columnIndex] === null ? <i>NULL</i> : String(row[columnIndex] ?? '')}</td>)}</tr>)}</tbody></table></div>}<footer className="mysql-pagination"><div><span>共 {preview.total} 条</span><span className="mysql-page-size">每页 <AppSelect value={String(pageSize)} onChange={value => { setPageSize(Number(value)); setPage(1) }} options={[50,100,200,500].map(v => ({ value: String(v), label: String(v) }))} /> 条</span></div><nav aria-label="Hive 数据分页"><button type="button" disabled={page <= 1} onClick={() => setPage(1)}>首页</button><button type="button" disabled={page <= 1} onClick={() => setPage(v => v - 1)}>上一页</button><span className="mysql-page-current">{page} / {totalPages}</span><button type="button" disabled={page >= totalPages} onClick={() => setPage(v => v + 1)}>下一页</button><button type="button" disabled={page >= totalPages} onClick={() => setPage(totalPages)}>尾页</button></nav></footer></>}</section></section></div>
+  return <div className="page mysql-workspace"><section className="overview-section-title"><div><h2>Hive 工作台</h2><p>按数据库、数据表和分区逐级浏览 HiveServer2 数据，只读查询。</p></div></section>{error && <div className="form-error">{error}</div>}<section className={`surface mysql-workspace-grid ${treeCollapsed ? 'tree-collapsed' : ''}`} style={{ gridTemplateColumns: treeCollapsed ? '44px minmax(0,1fr)' : `${treeWidth}px minmax(0,1fr)` }}><div className="mysql-tree-resizer" style={{ left: treeCollapsed ? 41 : treeWidth - 3, display: treeCollapsed ? 'none' : 'block' }} onMouseDown={treeResizeStart} /><button className="mysql-tree-collapse-control" type="button" style={{ left: treeCollapsed ? 4 : treeWidth - 66 }} onClick={() => setTreeCollapsed(value => !value)} title={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'} aria-label={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'}>{treeCollapsed ? '›' : '‹'}</button><aside className="mysql-tree-panel"><header><b>Hive 数据库</b><span>{databases.length} 个库</span></header><input value={filter} placeholder="筛选数据库或表" onChange={event => setFilter(event.target.value)} />{loading && databases.length === 0 ? <span className="mysql-tree-status">正在加载...</span> : <div className="mysql-tree">{visibleDatabases.map(item => { const expanded = expandedDatabases.includes(item); const dbTables = tablesByDb[item] || []; const visibleDbTables = dbTables.filter(t => !query || item.toLowerCase().includes(query) || t.toLowerCase().includes(query)); return <div className="mysql-tree-database" key={item}><button className={database === item ? 'selected' : ''} type="button" onClick={() => toggleDatabaseExpand(item)}><span className={`mysql-tree-toggle ${expanded ? 'expanded' : ''}`} aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg></span><span className="mysql-tree-icon" aria-hidden="true" /><b>{item}</b><small>{dbTables.length || ''}</small></button><div className={`mysql-tree-tables ${expanded ? 'open' : ''}`}><div className="mysql-tree-tables-inner">{loadingDatabase === item ? <span className="mysql-tree-status">正在读取表...</span> : visibleDbTables.length > 0 ? visibleDbTables.map(t => <button className={database === item && table === t ? 'active' : ''} type="button" key={t} onClick={() => selectTableForDb(item, t)}><span aria-hidden="true" /><b>{t}</b></button>) : <span className="mysql-tree-status">暂无数据表</span>}</div></div></div> })}{!loading && visibleDatabases.length === 0 && <span className="mysql-tree-status">没有匹配的对象</span>}</div>}</aside><section className="mysql-table-workspace"><header className="mysql-table-head"><div><b>{table || '请选择数据表'}</b><span>{database ? `${database}${table ? ` / ${table}` : ''}` : '先选择数据库'}</span></div><div className="mysql-table-actions"><button className="secondary" type="button" onClick={() => { setActiveView('sql'); setSQLError('') }}>执行 SQL</button><AppSelect className="hive-partition-select" menuClassName="partition-select-menu" value={partition} placeholder={partitions.length ? '选择分区' : '无分区'} disabled={!table || partitions.length === 0} onChange={value => { setPartition(value); setPage(1) }} options={partitions.map(item => ({ value: item, label: item }))} /></div></header><nav className="mysql-view-tabs" aria-label="Hive 工作区视图"><button className={activeView === 'data' ? 'active' : ''} type="button" onClick={() => setActiveView('data')}>数据</button><button className={activeView === 'sql' ? 'active' : ''} type="button" onClick={() => { setActiveView('sql'); setSQLError('') }}>SQL</button></nav>{activeView === 'sql' ? sqlWorkspace : !table ? <div className="empty-state"><b style={{ color: "#d94b5d" }}>提示</b><span>若数据库数据量较大，建议通过「执行 SQL」方式查看所需数据，以免影响服务。</span></div> : <>{preview.columns.length === 0 ? <div className="empty-state"><b>{previewLoading ? '正在读取数据...' : '暂无数据'}</b></div> : <div className="mysql-data-table-wrap"><table className="mysql-data-table hive-data-table"><thead><tr>{preview.columns.map(column => <th key={column}>{column.includes(".") ? column.split(".").slice(-1)[0] : column}</th>)}</tr></thead><tbody>{preview.rows.map((row, index) => <tr key={index}>{preview.columns.map((_, columnIndex) => <td key={columnIndex}>{row[columnIndex] === null ? <i>NULL</i> : String(row[columnIndex] ?? '')}</td>)}</tr>)}</tbody></table></div>}<footer className="mysql-pagination"><div><span>共 {preview.total} 条</span><span className="mysql-page-size">每页 <AppSelect value={String(pageSize)} onChange={value => { setPageSize(Number(value)); setPage(1) }} options={[50,100,200,500].map(v => ({ value: String(v), label: String(v) }))} /> 条</span></div><nav aria-label="Hive 数据分页"><button type="button" disabled={page <= 1} onClick={() => setPage(1)}>首页</button><button type="button" disabled={page <= 1} onClick={() => setPage(v => v - 1)}>上一页</button><span className="mysql-page-current">{page} / {totalPages}</span><button type="button" disabled={page >= totalPages} onClick={() => setPage(v => v + 1)}>下一页</button><button type="button" disabled={page >= totalPages} onClick={() => setPage(totalPages)}>尾页</button></nav></footer></>}</section></section></div>
+}
+
+// Markdown 渲染
+declare const marked: any
+function renderMarkdown(src: string): string {
+  if (!src) return ''
+  try {
+    const renderer = new marked.Renderer()
+    const origCode = renderer.code.bind(renderer)
+    renderer.code = (code: string, infostring: string) => {
+      const lang = (infostring || '').trim().split(/\s+/)[0]
+      const raw = origCode(code, infostring)
+      if (!lang) return raw
+      return `<div class="md-code-block"><div class="md-code-lang">${lang}</div>${raw}</div>`
+    }
+    const origHeading = renderer.heading.bind(renderer)
+    renderer.heading = (text: string, level: number) => {
+      const raw = origHeading(text, level)
+      const slug = String(text).toLowerCase().trim().replace(/[^\w\-\u4e00-\u9fa5\s]/g, '').replace(/\s+/g, '-')
+      return raw.replace(/^<h(\d)>/, `<h$1 id="${slug}">`)
+    }
+    return DOMPurify.sanitize(marked.parse(src, { breaks: true, gfm: true, renderer }) as string, {
+      FORBID_TAGS: ['svg', 'math', 'form', 'iframe', 'object', 'embed'],
+      FORBID_ATTR: ['style'],
+    })
+  } catch {
+    return src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br/>')
+  }
+}
+
+interface KnowledgeDoc { id: string; title: string; content?: string; sourceName?: string; category?: string; createdAt: string; updatedAt: string }
+interface KnowledgeCategory { name: string; count: number }
+
+function KnowledgeEditor({ doc, onClose, onSaved }: { doc: KnowledgeDoc | null; onClose: () => void; onSaved: () => void }) {
+  const [title, setTitle] = useState(doc?.title || '')
+  const [category, setCategory] = useState(doc?.category || '')
+  const [content, setContent] = useState(doc?.content || '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
+  const imgRef = useRef<HTMLInputElement>(null)
+
+  const insertImage = async (file: File) => {
+    const fd = new FormData()
+    fd.append('image', file)
+    try {
+      const res = await fetch(`${api}/knowledge/docs/upload-image`, { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '上传失败')
+      const md = `![${file.name}](${data.url})\n`
+      const ta = textareaRef.current
+      if (ta) {
+        const start = ta.selectionStart || 0
+        const end = ta.selectionEnd || 0
+        setContent(content.slice(0, start) + md + content.slice(end))
+      } else {
+        setContent(content + md)
+      }
+    } catch (e) { setError(e instanceof Error ? e.message : '上传失败') }
+  }
+
+  const save = async () => {
+    if (!title.trim()) { setError('请填写文档标题'); return }
+    setSaving(true)
+    try {
+      const url = doc?.id ? `${api}/knowledge/docs/${doc.id}` : `${api}/knowledge/docs`
+      const method = doc?.id ? 'PUT' : 'POST'
+      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: title.trim(), content, category: category.trim() || '基础' }) })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '保存失败')
+      onSaved()
+    } catch (e) { setError(e instanceof Error ? e.message : '保存失败') } finally { setSaving(false) }
+  }
+  return <div className="modal-backdrop">
+    <section className="surface source-modal knowledge-editor-modal" role="dialog" aria-modal="true">
+      <header className="modal-head"><div><h2>{doc ? '编辑文档' : '新建文档'}</h2></div><button className="close-button" type="button" onClick={onClose}>×</button></header>
+      {error && <div className="form-error">{error}</div>}
+      <div className="knowledge-editor-body">
+        <div className="knowledge-editor-pane">
+          <div className="knowledge-title-row">
+            <input className="knowledge-title-input" value={title} onChange={e => setTitle(e.target.value)} placeholder="文档标题" />
+            <input className="knowledge-cat-input" value={category} onChange={e => setCategory(e.target.value)} placeholder="分类（可选）" />
+            <button type="button" className="knowledge-img-btn" onClick={() => imgRef.current?.click()}>插入图片</button>
+            <input ref={imgRef} type="file" accept="image/*" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void insertImage(f); e.target.value = '' }} />
+          </div>
+          <textarea
+            ref={textareaRef}
+            className="knowledge-md-input"
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            onScroll={e => {
+              const ta = e.currentTarget
+              const modal = ta.closest('.knowledge-editor-modal') as HTMLElement | null
+              const pv = modal?.querySelector('.knowledge-preview-content') as HTMLElement | null
+              if (!pv) return
+              if (ta.scrollHeight <= ta.clientHeight) return
+              const ratio = ta.scrollTop / (ta.scrollHeight - ta.clientHeight)
+              const maxScroll = pv.scrollHeight - pv.clientHeight
+              if (maxScroll > 0) {
+                pv.scrollTop = ratio * maxScroll
+              }
+            }}
+            placeholder="支持 Markdown 语法..." rows={16}
+          />
+        </div>
+        <div className="knowledge-preview-pane">
+          <small className="knowledge-preview-label">实时预览</small>
+          <div ref={previewRef} className="knowledge-preview-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(content) || '<p style="color:#99a5b7">输入内容后此处实时预览</p>' }} />
+        </div>
+      </div>
+      <footer className="modal-actions"><button className="button secondary" type="button" onClick={onClose}>取消</button><button className="button" type="button" disabled={saving} onClick={() => void save()}>{saving ? '保存中...' : '保存'}</button></footer>
+    </section>
+  </div>
+}
+
+function SSHTerminal() {
+  const [sources, setSources] = useState<Source[]>([])
+  const [selectedSource, setSelectedSource] = useState('')
+  const [command, setCommand] = useState('')
+  const [output, setOutput] = useState<{ cmd: string; text: string; code: number }[]>([])
+  const [running, setRunning] = useState(false)
+  const [filter, setFilter] = useState('全部')
+  const [search, setSearch] = useState('')
+  const [customCommands, setCustomCommands] = useState<{ id: string; label: string; cmd: string; desc: string; category: string }[]>([])
+  const [showAdd, setShowAdd] = useState(false)
+  const [newLabel, setNewLabel] = useState('')
+  const [newCmd, setNewCmd] = useState('')
+  const [newCategory, setNewCategory] = useState('系统信息')
+  const [editCmd, setEditCmd] = useState('')
+  const [history, setHistory] = useState<{ id: number; sourceName: string; command: string; exitCode: number; createdAt: string }[]>([])
+
+  const loadHistory = (sourceId?: string) => {
+    const q = sourceId ? `?sourceId=${encodeURIComponent(sourceId)}` : ''
+    fetch(`${api}/ssh-command-history${q}`).then(r => r.json()).then(data => {
+      setHistory(data.items || [])
+    }).catch(() => {})
+  }
+
+  useEffect(() => {
+    loadHistory(selectedSource)
+  }, [selectedSource])
+
+  useEffect(() => {
+    fetch(`${api}/ssh-custom-commands`).then(r => r.json()).then(data => {
+      const items = data.items || []
+      setCustomCommands(items.map((item: any) => ({ id: item.id, label: item.label, cmd: item.command, desc: item.label, category: item.category })))
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    fetch(`${api}/data-sources`).then(r => r.json()).then(data => {
+      const list = Array.isArray(data) ? data : (data.dataSources || data.items || [])
+      setSources(list.filter((s: Source) => (s.type === 'SSH' || s.type === 'Agent') && s.enabled))
+    }).catch(() => {})
+  }, [])
+
+  const currentSource = sources.find(s => s.id === selectedSource)
+  const categories = ['全部', ...Array.from(new Set(customCommands.map(c => c.category)))]
+
+  const run = async (cmd?: string) => {
+    const finalCmd = (cmd ?? command).trim()
+    if (!selectedSource || !finalCmd) return
+    setRunning(true)
+    setCommand('')
+    try {
+      const res = await fetch(`${api}/ssh-exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceId: selectedSource, command: finalCmd }),
+      })
+      const data = await res.json()
+      const out = data.output || ''
+      const err = data.error || ''
+      setOutput(prev => [...prev, { cmd: finalCmd, text: out + (err ? (out ? '\n' : '') + '错误: ' + err : ''), code: data.exitCode ?? -1 }])
+    } catch (e: any) {
+      setOutput(prev => [...prev, { cmd: finalCmd, text: '执行失败: ' + (e.message || ''), code: -1 }])
+    } finally {
+      setRunning(false)
+      loadHistory(selectedSource)
+    }
+  }
+
+  return <div className="page ssh-terminal-page">
+    <PageHead title="命令执行" description="在已配置的 SSH 节点上执行只读诊断命令" />
+    <div className="ssh-terminal-layout">
+      <aside className="ssh-terminal-sidebar">
+        <div className="ssh-cmd-toolbar">
+          <AppSelect menuClassName="ssh-category-menu" value={filter} onChange={setFilter} options={categories.map(c => ({ value: c, label: c }))} />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索命令" />
+          <button className="button secondary ssh-add-btn" type="button" onClick={() => { setEditCmd(''); setNewLabel(''); setNewCmd(''); setNewCategory('系统信息'); setShowAdd(true) }}>+ 新增</button>
+        </div>
+        {showAdd && <div className="modal-backdrop" role="presentation">
+          <section className="surface ssh-add-modal" role="dialog" aria-modal="true">
+            <header className="modal-head"><div><h2>{editCmd ? '编辑自定义命令' : '新增自定义命令'}</h2></div><button className="close-button" type="button" onClick={() => setShowAdd(false)}>×</button></header>
+            <div className="ssh-add-form-modal">
+              <label>分类<AppSelect value={newCategory} onChange={setNewCategory} options={categories.filter(c => c !== '全部').map(c => ({ value: c, label: c }))} /></label>
+              <label>名称<input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="如：查看磁盘" /></label>
+              <label>命令<textarea value={newCmd} onChange={e => setNewCmd(e.target.value)} placeholder="如：df -h" rows={2} /></label>
+            </div>
+            <footer className="modal-actions">
+              <button className="button secondary" type="button" onClick={() => setShowAdd(false)}>取消</button>
+              <button className="button" type="button" onClick={async () => { if (newLabel.trim() && newCmd.trim()) { const id = editCmd || ''; const res = await fetch(`${api}/ssh-custom-commands`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, label: newLabel.trim(), command: newCmd.trim(), category: newCategory }) }); const data = await res.json(); if (res.ok) { setCustomCommands(prev => { if (id) { return prev.map(c => c.id === data.id ? { id: data.id, label: data.label, cmd: data.command, desc: data.label, category: data.category } : c) } return [...prev, { id: data.id, label: data.label, cmd: data.command, desc: data.label, category: data.category }] }); setNewLabel(''); setNewCmd(''); setEditCmd(''); setShowAdd(false) } } }}>保存</button>
+            </footer>
+          </section>
+        </div>}
+        <div className="ssh-cmd-list">
+          {customCommands.filter(item => (filter === '全部' || item.category === filter) && (!search || item.label.toLowerCase().includes(search.toLowerCase()) || item.cmd.toLowerCase().includes(search.toLowerCase()))).map(item => <div className="ssh-cmd-item" key={item.id}>
+            <div className="ssh-cmd-row">
+              <code>{item.cmd}</code>
+              <div className="ssh-cmd-actions">
+                <button type="button" className="ssh-edit-btn" onClick={() => { setEditCmd(item.id); setNewLabel(item.label); setNewCmd(item.cmd); setNewCategory(item.category); setShowAdd(true) }}>编辑</button>
+                <button type="button" onClick={() => setCommand(item.cmd)}>填入</button>
+              </div>
+            </div>
+            <small>{item.desc}</small>
+          </div>)}
+        </div>
+      </aside>
+      <section className="ssh-terminal-main">
+        <div className="ssh-terminal-titlebar">
+          <span className="ssh-terminal-host">{currentSource ? `${currentSource.username || 'user'}@${currentSource.host}` : '未选择节点'}</span>
+          <AppSelect className="ssh-node-select" value={selectedSource} placeholder="选择节点" onChange={setSelectedSource} options={sources.map(s => ({ value: s.id, label: s.name }))} />
+        </div>
+        <div className="ssh-terminal-screen">
+          <div className="ssh-terminal-hint"># 回车运行 · 仅允许只读诊断命令，危险操作请手工到目标机执行</div>
+          {output.map((o, i) => <div key={i} className="ssh-output-block">
+            <div className="ssh-output-cmd"><span className="ssh-prompt">$</span> {o.cmd}</div>
+            <pre>{o.text}</pre>
+            {o.code !== 0 && <div className="ssh-output-code">exit code: {o.code}</div>}
+          </div>)}
+          {running && <div className="ssh-output-block"><span className="ssh-prompt">$</span> 执行中...</div>}
+        </div>
+        <div className="ssh-history-bar">
+          <div className="ssh-history-title">执行历史（最近100条）</div>
+          <div className="ssh-history-list">
+            {history.length === 0 && <span className="ssh-history-empty">暂无历史记录</span>}
+            {history.slice(0, 20).map(h => <div key={h.id} className="ssh-history-item" onClick={() => setCommand(h.command)}>
+              <code>{h.command}</code>
+              <small>{h.createdAt} · {h.sourceName}{h.exitCode !== 0 && <em className="ssh-history-fail"> 失败</em>}</small>
+            </div>)}
+          </div>
+        </div>
+        <div className="ssh-terminal-inputbar">
+          <span className="ssh-prompt">$</span>
+          <input value={command} onChange={e => setCommand(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void run() }} placeholder="输入命令后回车执行" />
+        </div>
+      </section>
+    </div>
+  </div>
+}
+
+function KnowledgeBase() {
+  const [docs, setDocs] = useState<KnowledgeDoc[]>([])
+  const [categories, setCategories] = useState<KnowledgeCategory[]>([])
+  const [activeCategory, setActiveCategory] = useState('全部')
+  const [selected, setSelected] = useState<KnowledgeDoc | null>(null)
+  const [detail, setDetail] = useState<KnowledgeDoc | null>(null)
+  const [keyword, setKeyword] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editing, setEditing] = useState<KnowledgeDoc | null>(null)
+  const [message, setMessage] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const loadCats = async () => {
+    try {
+      const res = await fetch(`${api}/knowledge/categories`)
+      const data = await res.json()
+      setCategories(data.items || [])
+    } catch { /* ignore */ }
+  }
+  const load = async (kw = '', cat = activeCategory) => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${api}/knowledge/docs?keyword=${encodeURIComponent(kw)}&category=${encodeURIComponent(cat)}`)
+      const data = await res.json()
+      setDocs(data.items || [])
+    } finally { setLoading(false) }
+  }
+  useEffect(() => { void loadCats(); void load() }, [])
+  useEffect(() => { const t = setTimeout(() => void load(keyword, activeCategory), 300); return () => clearTimeout(t) }, [keyword, activeCategory])
+
+  const select = async (doc: KnowledgeDoc) => {
+    setSelected(doc)
+    try {
+      const res = await fetch(`${api}/knowledge/docs/${doc.id}`)
+      const data = await res.json()
+      setDetail(data)
+    } catch { setDetail(doc) }
+  }
+
+  const importFiles = async (files: FileList | null) => {
+    if (!files || !files.length) return
+    const fd = new FormData()
+    Array.from(files).forEach(f => fd.append('files', f))
+    try {
+      const res = await fetch(`${api}/knowledge/docs/import`, { method: 'POST', body: fd })
+      const data = await res.json()
+      setMessage(`成功导入 ${data.count || 0} 个文档`)
+      void loadCats(); void load()
+    } catch { setMessage('导入失败') }
+  }
+
+  const remove = async (doc: KnowledgeDoc) => {
+    if (!window.confirm(`确认删除"${doc.title}"？`)) return
+    await fetch(`${api}/knowledge/docs/${doc.id}`, { method: 'DELETE' })
+    if (selected?.id === doc.id) { setSelected(null); setDetail(null) }
+    void loadCats(); void load()
+  }
+
+  return <div className="page knowledge-page">
+    <section className="overview-section-title">
+      <div><h2>知识库</h2><p>沉淀运维手册、排查 SOP 和应急方案，支持 Markdown 导入导出。</p></div>
+    </section>
+    {message && <div className="toast">{message}</div>}
+    <div className="knowledge-toolbar-bar">
+      <input value={keyword} placeholder="搜索标题..." onChange={e => setKeyword(e.target.value)} />
+      <button className="secondary" type="button" onClick={() => { alert('支持单个/多个 .md 文件，或打包为 .zip 批量导入'); fileRef.current?.click() }}>导入</button>
+      <input ref={fileRef} type="file" accept=".md,.markdown,.zip" multiple hidden onChange={e => void importFiles(e.target.files)} />
+      <a className="button secondary" href={`${api}/knowledge/docs/export-all`} download="knowledge-base.zip">整库导出</a>
+      <button className="button" type="button" onClick={() => { setEditing(null); setEditorOpen(true) }}>新建文档</button>
+    </div>
+    <section className="surface knowledge-grid">
+      <aside className="knowledge-list">
+        <div className="knowledge-cat-bar">
+          <button type="button" className={activeCategory === '全部' ? 'active' : ''} onClick={() => setActiveCategory('全部')}>全部</button>
+          {categories.map(c =>
+            <button key={c.name} type="button" className={activeCategory === c.name ? 'active' : ''} onClick={() => setActiveCategory(c.name)}>
+              {c.name}<em>{c.count}</em>
+            </button>
+          )}
+        </div>
+        {loading ? <span className="mysql-tree-status">正在加载...</span> : docs.length === 0 ? <div className="empty-state"><b>暂无文档</b><span>点击"导入 MD"或"新建文档"开始</span></div> : docs.map(doc =>
+          <button key={doc.id} type="button" className={selected?.id === doc.id ? 'active' : ''} onClick={() => void select(doc)}>
+            <b>{doc.title}</b>
+            <small>{doc.category || '基础'} · {new Date(doc.updatedAt).toLocaleString('zh-CN')}</small>
+          </button>
+        )}
+      </aside>
+      <section className="knowledge-content">
+        {!detail ? <div className="empty-state"><b>选择文档查看内容</b><span>从左侧选择一篇文档，或新建/导入文档</span></div>
+          : <>
+            <header className="knowledge-content-head">
+              <div><h3>{detail.title}</h3><small>更新于 {new Date(detail.updatedAt).toLocaleString('zh-CN')}</small></div>
+              <div className="knowledge-content-actions">
+                <a className="text-button" href={`${api}/knowledge/docs/${detail.id}/export`} download={`${detail.title}.md`}>导出 MD</a>
+                <button className="text-button" type="button" onClick={() => { setEditing(detail); setEditorOpen(true) }}>编辑</button>
+                <button className="text-button danger" type="button" onClick={() => void remove(detail)}>删除</button>
+              </div>
+            </header>
+            <article className="knowledge-body" onClick={(e) => {
+              const link = (e.target as HTMLElement).closest('a') as HTMLAnchorElement | null
+              if (link && link.hash && link.getAttribute('href')?.startsWith('#')) {
+                e.preventDefault()
+                const id = decodeURIComponent(link.hash.slice(1))
+                const container = e.currentTarget as HTMLElement
+                const target = container.querySelector(`#${CSS.escape(id)}`) || container.querySelector(`[id="${id}"]`)
+                if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }
+            }} dangerouslySetInnerHTML={{ __html: renderMarkdown(detail.content || '') }} />
+          </>}
+      </section>
+    </section>
+    {editorOpen && <KnowledgeEditor doc={editing} onClose={() => setEditorOpen(false)} onSaved={() => { setEditorOpen(false); void loadCats(); void load(); if (editing?.id) void select(editing) }} />}
+  </div>
 }
 
 function ReportTaskWizard({ sources, initialSourceID, editing, onClose, onSaved }: { sources: Source[]; initialSourceID: string; editing?: MySQLReportTask | null; onClose: () => void; onSaved: () => void }) {
@@ -1354,9 +1770,25 @@ function ReportTaskWizard({ sources, initialSourceID, editing, onClose, onSaved 
   const [customStart, setCustomStart] = useState(() => editing?.timeRange?.startsWith('自定义|') ? editing.timeRange.split('|')[1].slice(0, 16).replace(' ', 'T') : '')
   const [customEnd, setCustomEnd] = useState(() => editing?.timeRange?.startsWith('自定义|') ? editing.timeRange.split('|')[2].slice(0, 16).replace(' ', 'T') : '')
   const scheduleParts = (editing?.schedule || '').split(/\s+/)
-  const [scheduleMode, setScheduleMode] = useState<'手动' | 'cron'>(editing && editing.schedule !== '手动' ? 'cron' : '手动')
-  const [cron, setCron] = useState({ second: scheduleParts[0] || '0', minute: scheduleParts[1] || '0', hour: scheduleParts[2] || '8', day: scheduleParts[3] || '*', week: scheduleParts[5] || '?', month: scheduleParts[4] || '*' })
+  const isManual = !editing || editing.schedule === '手动'
+  const [scheduleMode, setScheduleMode] = useState<'手动' | 'cron'>(isManual ? '手动' : 'cron')
+  const [cron, setCron] = useState(isManual ? { second: '0', minute: '0', hour: '8', day: '*', week: '?', month: '*' } : { second: scheduleParts[0] || '0', minute: scheduleParts[1] || '0', hour: scheduleParts[2] || '8', day: scheduleParts[3] || '*', week: scheduleParts[5] || '?', month: scheduleParts[4] || '*' })
+  const detectTemplate = (): 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom' => {
+    if (isManual) return 'daily'
+    const c = { second: scheduleParts[0] || '0', minute: scheduleParts[1] || '0', hour: scheduleParts[2] || '8', day: scheduleParts[3] || '*', week: scheduleParts[5] || '?', month: scheduleParts[4] || '*' }
+    if (c.second === '0' && c.hour === '*' && c.day === '*' && c.month === '*' && c.week === '?') return 'hourly'
+    if (c.second === '0' && c.day === '*' && c.month === '*' && c.week === '?') return 'daily'
+    if (c.second === '0' && c.day === '?' && c.month === '*' && /^\d+$/.test(c.week)) return 'weekly'
+    if (c.second === '0' && /^\d+$/.test(c.day) && c.month === '*' && c.week === '?') return 'monthly'
+    return 'custom'
+  }
+  const [cronTemplate, setCronTemplate] = useState(detectTemplate)
   const [sql, setSQL] = useState(editing?.sql || '')
+  const [alertEnabled, setAlertEnabled] = useState(editing?.alertEnabled || false)
+  const [alertCompare, setAlertCompare] = useState(editing?.alertCompare || 'current')
+  const [alertOperator, setAlertOperator] = useState(editing?.alertOperator || '>')
+  const [alertThreshold, setAlertThreshold] = useState(String(editing?.alertThreshold ?? ''))
+  const [alertUnit, setAlertUnit] = useState(editing?.alertUnit || 'row')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const save = async () => {
@@ -1370,13 +1802,13 @@ function ReportTaskWizard({ sources, initialSourceID, editing, onClose, onSaved 
       const selectedTimeRange = timeRange === '自定义' ? `自定义|${customStart.replace('T', ' ')}:00|${customEnd.replace('T', ' ')}:00` : timeRange
       if (sql.includes('${') && !selectedTimeRange) { setError('SQL 使用 ${start} 或 ${end} 时必须选择统计时间'); return }
       if (timeRange === '自定义' && (!customStart || !customEnd || customStart >= customEnd)) { setError('请填写有效的自定义起止时间'); return }
-      const response = await fetch(`${api}/mysql-report-tasks`, { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: editing?.id || '', name: name.trim(), sourceId: sourceID, sql: sql.trim(), timeRange: selectedTimeRange, schedule, enabled: editing?.enabled !== false, status: editing?.status || '待执行' }) })
+      const response = await fetch(`${api}/mysql-report-tasks`, { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: editing?.id || '', name: name.trim(), sourceId: sourceID, sql: sql.trim(), timeRange: selectedTimeRange, schedule, enabled: editing?.enabled !== false, status: editing?.status || '待执行', alertEnabled, alertCompare, alertOperator, alertThreshold: alertThreshold === '' ? 0 : Number(alertThreshold), alertUnit }) })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || '保存报表任务失败')
       onSaved()
     } catch (err) { setError(err instanceof Error ? err.message : '保存报表任务失败') } finally { setSaving(false) }
   }
-  const steps = ['基本信息', '执行方式', '编写 SQL']
+  const steps = ['基本信息', '执行方式', '编写 SQL', '告警通知']
   const cronFields = [{ key: 'second', label: '秒', placeholder: '0-59', min: 0, max: 59 }, { key: 'minute', label: '分', placeholder: '0-59', min: 0, max: 59 }, { key: 'hour', label: '时', placeholder: '0-23', min: 0, max: 23 }, { key: 'day', label: '日', placeholder: '1-31 或 *', min: 1, max: 31 }, { key: 'month', label: '月', placeholder: '1-12 或 *', min: 1, max: 12 }, { key: 'week', label: '周', placeholder: '1-7 或 ?', min: 1, max: 7 }] as const
   const cronExpression = `${cron.second} ${cron.minute} ${cron.hour} ${cron.day} ${cron.month} ${cron.week}`
   const cronErrors = Object.fromEntries(cronFields.map(field => [field.key, validateCronField(cron[field.key], field.min, field.max, field.key === 'day' || field.key === 'week')])) as Record<string, string>
@@ -1384,7 +1816,19 @@ function ReportTaskWizard({ sources, initialSourceID, editing, onClose, onSaved 
   const cronTime = `${String(cron.hour).padStart(2, '0')}:${String(cron.minute).padStart(2, '0')}:${String(cron.second).padStart(2, '0')}`
   const fixedTime = [cron.hour, cron.minute, cron.second].every(value => /^\d+$/.test(value))
   const cronDescription = !cronValid ? '请修正无效配置' : fixedTime && cron.day === '*' && cron.month === '*' && cron.week === '?' ? `每天 ${cronTime} 执行` : fixedTime && /^\d+$/.test(cron.day) && cron.month === '*' && cron.week === '?' ? `每月 ${cron.day} 日 ${cronTime} 执行` : cronFields.map(field => describeCronField(cron[field.key], field.label, field.min)).join('；')
-  return <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget) onClose() }}>
+  const applyTemplate = (t: 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom') => {
+    setCronTemplate(t)
+    if (t === 'hourly') setCron(c => ({ ...c, second: '0', hour: '*', day: '*', month: '*', week: '?' }))
+    if (t === 'daily') setCron(c => ({ ...c, second: '0', day: '*', month: '*', week: '?' }))
+    if (t === 'weekly') setCron(c => ({ ...c, second: '0', day: '?', month: '*' }))
+    if (t === 'monthly') setCron(c => ({ ...c, second: '0', month: '*', week: '?' }))
+  }
+  const templateTime = fixedTime ? `${String(cron.hour).padStart(2, '0')}:${String(cron.minute).padStart(2, '0')}` : '08:00'
+  const setTemplateTime = (value: string) => {
+    const [hh, mm] = value.split(':')
+    setCron(c => ({ ...c, hour: hh || '8', minute: mm || '0' }))
+  }
+  return <div className="modal-backdrop" role="presentation">
     <section className="surface source-modal report-task-wizard" role="dialog" aria-modal="true">
       <header className="modal-head"><div><h2>{editing ? '编辑报表任务' : '新增报表任务'}</h2><p>按步骤配置只读报表任务</p></div><button className="close-button" type="button" onClick={onClose}>×</button></header>
       <div className="wizard-steps">{steps.map((label, index) => <div className={step === index + 1 ? 'active' : step > index + 1 ? 'done' : ''} key={label}><b>{index + 1}</b><span>{label}</span></div>)}</div>
@@ -1392,12 +1836,40 @@ function ReportTaskWizard({ sources, initialSourceID, editing, onClose, onSaved 
         {step === 1 && <div className="modal-form"><label>任务名称 <span className="required-mark">*</span><input value={name} onChange={event => setName(event.target.value)} placeholder="例如：每日订单统计" /></label><label>数据源 <span className="required-mark">*</span><AppSelect value={sourceID} onChange={setSourceID} options={sources.map(source => ({ value: source.id, label: `${source.name} (${source.type})` }))} /></label></div>}
         {step === 2 && <div className="modal-form">
           <label>执行方式<AppSelect value={scheduleMode} onChange={value => setScheduleMode(value as '手动' | 'cron')} options={[{ value: '手动', label: '仅手动运行' }, { value: 'cron', label: '定时运行' }]} /></label>
-          {scheduleMode === 'cron' && <div className="cron-config"><b>Cron 调度表达式</b><div className="cron-fields">{cronFields.map(field => <label className={cronErrors[field.key] ? 'invalid' : ''} key={field.key}>{field.label}<input value={cron[field.key]} placeholder={field.placeholder} aria-invalid={Boolean(cronErrors[field.key])} onChange={event => setCron(current => ({ ...current, [field.key]: event.target.value }))} />{cronErrors[field.key] && <small>{cronErrors[field.key]}</small>}</label>)}</div><code>{cronExpression}</code><small className="wizard-help">{cronDescription}。按“秒 分 时 日 月 周”填写，支持 *、?、范围、逗号和步长（如 */30）。</small><dl className="cron-symbol-help"><div><dt>*</dt><dd>表示该字段的所有值。例如“时”填 *，表示每小时。</dd></div><div><dt>*/n</dt><dd>表示从该字段最小值起，每隔 n 个单位匹配一次。分钟填 */30，表示每小时第 0、30 分钟；不能只写 */。</dd></div><div><dt>?</dt><dd>表示不指定，仅用于“日”和“周”。指定日时将周设为 ?，指定周时将日设为 ?。</dd></div><div><dt>-</dt><dd>表示连续范围。例如“时”填 8-18，表示 8 至 18 时（含两端）。</dd></div><div><dt>,</dt><dd>表示多个指定值。例如“分”填 0,30，表示第 0、30 分钟。</dd></div><div><dt>日期步长</dt><dd>“日”填 */3，表示每月 1、4、7……日，跨月重新计算，并非持续每隔 72 小时。</dd></div></dl>{!cronValid && <div className="cron-error">{Object.values(cronErrors).some(Boolean) ? '请修正上方字段错误。' : '日期和星期不能同时指定，请将其中一项设为 ?。'}</div>}</div>}
+          {scheduleMode === 'cron' && <div className="cron-config">
+            <b>调度模板</b>
+            <div className="cron-tpl-grid">
+              <button type="button" className={cronTemplate === 'hourly' ? 'active' : ''} onClick={() => applyTemplate('hourly')}>每小时<small>每小时整点</small></button>
+              <button type="button" className={cronTemplate === 'daily' ? 'active' : ''} onClick={() => applyTemplate('daily')}>每天<small>指定时间</small></button>
+              <button type="button" className={cronTemplate === 'weekly' ? 'active' : ''} onClick={() => applyTemplate('weekly')}>每周<small>指定星期</small></button>
+              <button type="button" className={cronTemplate === 'monthly' ? 'active' : ''} onClick={() => applyTemplate('monthly')}>每月<small>指定日期</small></button>
+              <button type="button" className={cronTemplate === 'custom' ? 'active' : ''} onClick={() => applyTemplate('custom')}>自定义<small>写 cron</small></button>
+            </div>
+            {cronTemplate !== 'custom' && <div className="cron-tpl-options">
+              <label className="cron-time-label">执行时间<div className="cron-time-row"><AppSelect value={templateTime.split(':')[0]} onChange={v => setTemplateTime(`${v}:${templateTime.split(':')[1]}`)} options={Array.from({ length: 24 }, (_, i) => ({ value: String(i).padStart(2, '0'), label: `${String(i).padStart(2, '0')} 时` }))} /><span className="cron-time-colon">:</span><AppSelect value={templateTime.split(':')[1]} onChange={v => setTemplateTime(`${templateTime.split(':')[0]}:${v}`)} options={Array.from({ length: 60 }, (_, i) => ({ value: String(i).padStart(2, '0'), label: `${String(i).padStart(2, '0')} 分` }))} /></div></label>
+              {cronTemplate === 'weekly' && <label className="cron-week-label">星期<AppSelect value={cron.week} onChange={v => setCron(c => ({ ...c, week: v }))} options={[{ value: '1', label: '周日' }, { value: '2', label: '周一' }, { value: '3', label: '周二' }, { value: '4', label: '周三' }, { value: '5', label: '周四' }, { value: '6', label: '周五' }, { value: '7', label: '周六' }]} /></label>}
+              {cronTemplate === 'monthly' && <label className="cron-week-label">每月几日<AppSelect value={/^\d+$/.test(cron.day) ? cron.day : '1'} onChange={v => setCron(c => ({ ...c, day: v }))} options={Array.from({ length: 31 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} 日` }))} /></label>}
+            </div>}
+            <code className="cron-preview-bar">{cronExpression}</code>
+            <div className="cron-desc-line">✓ {cronDescription}</div>
+            {cronTemplate === 'custom' && <div className="cron-fields">{cronFields.map(field => <label className={cronErrors[field.key] ? 'invalid' : ''} key={field.key}>{field.label}<input value={cron[field.key]} placeholder={field.placeholder} aria-invalid={Boolean(cronErrors[field.key])} onChange={event => setCron(current => ({ ...current, [field.key]: event.target.value }))} />{cronErrors[field.key] && <small>{cronErrors[field.key]}</small>}</label>)}</div>}
+            {cronTemplate === 'custom' && !cronValid && <div className="cron-error">{Object.values(cronErrors).some(Boolean) ? '请修正上方字段错误。' : '日期和星期不能同时指定，请将其中一项设为 ?。'}</div>}
+          </div>}
         </div>}
-        {step === 3 && <div className="modal-form"><label className="wide">只读 SQL <span className="required-mark">*</span><textarea value={sql} onChange={event => setSQL(event.target.value)} rows={12} placeholder="SELECT * FROM 数据库.表名 LIMIT 100" /><label>统计时间 <AppSelect value={timeRange} onChange={setTimeRange} options={[{ value: '', label: '不使用时间变量' }, ...['昨天', '今天', '上周', '本周', '上月', '本月', '近7天', '近30天', '自定义'].map(value => ({ value, label: value }))]} /></label>{timeRange === '自定义' && <div className="report-custom-time"><label>开始时间<input type="datetime-local" value={customStart} onChange={event => setCustomStart(event.target.value)} /></label><label>结束时间<input type="datetime-local" value={customEnd} onChange={event => setCustomEnd(event.target.value)} /></label></div>}<small className="wizard-help">仅支持 SELECT、SHOW、DESCRIBE、EXPLAIN 和只读 WITH 查询。时间变量会按统计时间替换。</small><p className="wizard-help">SQL 中可使用 ${'{'}start{'}'} 和 ${'{'}end{'}'}。</p></label></div>}
+        {step === 3 && <div className="modal-form"><label className="wide">只读 SQL <span className="required-mark">*</span><textarea value={sql} onChange={event => setSQL(event.target.value)} rows={12} placeholder="SELECT * FROM 数据库.表名 LIMIT 100" /><label>统计时间 <AppSelect value={timeRange} onChange={setTimeRange} options={[{ value: '', label: '不使用时间变量' }, { value: '上周六到本周五', label: '上周六到本周五' }, ...['昨天', '今天', '上周', '本周', '上月', '本月', '近7天', '近30天', '自定义'].map(value => ({ value, label: value }))]} /></label>{timeRange === '自定义' && <div className="report-custom-time"><label>开始时间<input type="datetime-local" value={customStart} onChange={event => setCustomStart(event.target.value)} /></label><label>结束时间<input type="datetime-local" value={customEnd} onChange={event => setCustomEnd(event.target.value)} /></label></div>}<small className="wizard-help">仅支持 SELECT、SHOW、DESCRIBE、EXPLAIN 和只读 WITH 查询。时间变量会按统计时间替换。</small><p className="wizard-help">SQL 中可使用 ${'{'}start{'}'} 和 ${'{'}end{'}'}。</p></label></div>}
+        {step === 4 && <div className="modal-form">
+          <label className="wide">是否配置告警<AppSelect value={alertEnabled ? 'yes' : 'no'} onChange={v => setAlertEnabled(v === 'yes')} options={[{ value: 'no', label: '否（不告警）' }, { value: 'yes', label: '是（满足条件时推送告警中心）' }]} /></label>
+          {alertEnabled && <div className="alert-config-row">
+            <label>监控对象<AppSelect value={alertCompare} onChange={setAlertCompare} options={[{ value: 'current', label: '本次运行行数' }, { value: 'last', label: '相比上次变化率（%）' }]} /></label>
+            <label>比较符<AppSelect value={alertOperator} onChange={setAlertOperator} options={[{ value: '>', label: '>' }, { value: '>=', label: '≥' }, { value: '<', label: '<' }, { value: '<=', label: '≤' }, { value: '=', label: '=' }, { value: 'empty', label: '为空' }]} /></label>
+            {alertOperator !== 'empty' && <label>阈值<input type="number" value={alertThreshold} onChange={e => setAlertThreshold(e.target.value)} placeholder="例如 500" /></label>}
+            {alertOperator !== 'empty' && <label>单位<AppSelect value={alertUnit} onChange={setAlertUnit} options={alertCompare === 'last' ? [{ value: 'pct', label: '%' }] : [{ value: 'row', label: '行' }]} /></label>}
+          </div>}
+          <small className="wizard-help">任务执行完成后自动判断条件，满足时写入告警中心。</small>
+        </div>}
       </div>
       {error && <div className="form-error">{error}</div>}
-      <footer className="modal-actions"><button className="button secondary" type="button" onClick={step === 1 ? onClose : () => { setError(''); setStep(value => value - 1) }}>{step === 1 ? '取消' : '上一步'}</button>{step < 3 ? <button className="button" type="button" disabled={(step === 1 && (!name.trim() || !sourceID)) || (step === 2 && scheduleMode === 'cron' && !cronValid)} onClick={() => { setError(''); if (step === 1 && !name.trim()) { setError('请填写任务名称'); return } if (step === 1 && !sourceID) { setError('请选择数据源'); return } setStep(value => value + 1) }}>下一步</button> : <button className="button" type="button" onClick={() => void save()}>保存任务</button>}</footer>
+      <footer className="modal-actions"><button className="button secondary" type="button" onClick={step === 1 ? onClose : () => { setError(''); setStep(value => value - 1) }}>{step === 1 ? '取消' : '上一步'}</button>{step < 4 ? <button className="button" type="button" disabled={(step === 1 && (!name.trim() || !sourceID)) || (step === 2 && scheduleMode === 'cron' && !cronValid)} onClick={() => { setError(''); if (step === 1 && !name.trim()) { setError('请填写任务名称'); return } if (step === 1 && !sourceID) { setError('请选择数据源'); return } setStep(value => value + 1) }}>下一步</button> : <button className="button" type="button" onClick={() => void save()}>保存任务</button>}</footer>
     </section>
   </div>
 }
@@ -1409,6 +1881,24 @@ function MySQLReportTasks() {
   const [resultPage, setResultPage] = useState(1)
   const [resultPageSize, setResultPageSize] = useState(50)
   const [starting, setStarting] = useState<string[]>([])
+  const viewParam = new URLSearchParams(useLocation().search).get('view')
+  const view: 'list' | 'dashboard' = viewParam === 'dashboard' ? 'dashboard' : 'list'
+  const [trend, setTrend] = useState<any[]>([])
+  const [trendDays, setTrendDays] = useState(7)
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState('')
+  const [selectedTaskIDs, setSelectedTaskIDs] = useState<string[]>([])
+  const loadTrend = async (days: number, start?: string, end?: string) => {
+    try {
+      const url = start && end ? `${api}/mysql-report-tasks/trend?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}` : `${api}/mysql-report-tasks/trend?days=${days}`
+      const response = await fetch(url)
+      const data = await response.json()
+      if (response.ok) {
+        setTrend(data)
+        setSelectedTaskIDs(data.slice(0, 5).map((t: any) => t.taskId))
+      }
+    } catch { /* ignore */ }
+  }
   const runNow = async (id: string) => {
     setStarting(current => [...current, id])
     try {
@@ -1465,6 +1955,7 @@ function MySQLReportTasks() {
     } catch (err) { setMessage(err instanceof Error ? err.message : '报表任务加载失败') }
   }
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 3000); return () => window.clearInterval(timer) }, [sourceID])
+  useEffect(() => { if (view === 'dashboard') { if (trendDays === -1 && customStart && customEnd) { void loadTrend(7, customStart, customEnd) } else if (trendDays !== -1) { void loadTrend(trendDays) } if (selectedTaskIDs.length === 0 && tasks.length > 0) setSelectedTaskIDs(tasks.slice(0, 5).map((t: any) => t.id)) } }, [view, trendDays, customStart, customEnd])
   useEffect(() => { if (!message) return; const timer = window.setTimeout(() => setMessage(''), 3000); return () => window.clearTimeout(timer) }, [message])
   const [toggling, setToggling] = useState<string[]>([])
   const toggle = async (task: MySQLReportTask) => {
@@ -1482,13 +1973,75 @@ function MySQLReportTasks() {
   const filteredTasks = tasks.filter(task => (!keyword.trim() || `${task.name} ${task.sourceName || ''} ${task.sql}`.toLowerCase().includes(keyword.trim().toLowerCase())) && (!statusFilter || task.status === statusFilter))
   const taskTotalPages = Math.max(1, Math.ceil(filteredTasks.length / taskPageSize))
   const visible = filteredTasks.slice((taskPage - 1) * taskPageSize, taskPage * taskPageSize)
-return <div className="page"><section className="overview-section-title"><div><h2>报表任务</h2><p>手动或定时执行只读报表，查看最近执行结果。</p></div><div className="mysql-table-actions"><AppSelect value={sourceID} placeholder="全部数据源" onChange={setSourceID} options={[{ value: '', label: '全部数据源' }, ...sources.map(source => ({ value: source.id, label: `${source.name} (${source.type})` }))]} /></div></section>{message && <div className="toast">{message}</div>}<section className="surface report-task-list"><header className="table-toolbar report-toolbar"><div className="report-toolbar-title"><b>任务列表</b><small>共 {filteredTasks.length} 个任务</small></div><div className="report-toolbar-controls"><AppSelect className="report-status-select" value={statusFilter} placeholder="全部状态" onChange={value => { setStatusFilter(value); setTaskPage(1) }} options={[{ value: '', label: '全部状态' }, { value: '待执行', label: '待执行' }, { value: '执行中', label: '执行中' }, { value: '成功', label: '成功' }, { value: '失败', label: '失败' }]} /><input className="report-search" value={keyword} placeholder="搜索任务名称或 SQL" onChange={event => { setKeyword(event.target.value); setTaskPage(1) }} /></div><button className="button report-create-button" type="button" onClick={() => { setEditing(null); setWizardOpen(true) }}>新增报表任务</button></header>{visible.length === 0 ? <div className="empty-state"><b>暂无报表任务</b><span>点击“新增报表任务”配置第一条只读报表。</span></div> : visible.map(task => <article className="report-task-row" key={task.id}><div><b>{task.name}</b><span>{task.schedule}</span><span>{task.sourceName || '未指定数据源'}</span><Tooltip content={task.sql}><code className="report-table-ref">{extractMainTable(task.sql) || task.sql.replace(/\s+/g, ' ').slice(0, 60)}</code></Tooltip></div><span className={`tag ${task.status === '失败' ? 'pending' : 'running'}`}>{task.status || '待执行'}</span><small>{task.lastRunAt ? `最近执行 ${new Date(task.lastRunAt).toLocaleString('zh-CN')}` : '当前配置尚未执行'}</small><label className="report-task-switch" title={task.enabled ? '停用任务' : '启用任务'}><input type="checkbox" role="switch" aria-label={`启用报表任务 ${task.name}`} disabled={toggling.includes(task.id)} checked={task.enabled} onChange={() => void toggle(task)} /><span /></label><div className="report-task-actions"><button className="text-button" type="button" disabled={starting.includes(task.id) || task.status === '执行中'} onClick={() => void runNow(task.id)}>立即执行</button>{task.status === '失败' && <button className="text-button" type="button" onClick={() => void runNow(task.id)}>重试</button>}<button className="text-button" type="button" disabled={!task.lastRunAt} onClick={() => void viewResult(task.id)}>查看结果</button><button className="text-button" type="button" onClick={() => void viewHistory(task)}>执行历史</button><button className="text-button" type="button" onClick={() => { setEditing(task); setWizardOpen(true) }}>编辑</button><button className="text-button danger" type="button" onClick={() => void remove(task)}>删除</button></div></article>)}{filteredTasks.length > 0 && <UnifiedPagination total={filteredTasks.length} page={taskPage} totalPages={taskTotalPages} onPageChange={setTaskPage} ariaLabel="报表任务分页" />}</section>{wizardOpen && <ReportTaskWizard sources={sources} initialSourceID={sourceID} editing={editing} onClose={() => { setWizardOpen(false); setEditing(null) }} onSaved={() => { setWizardOpen(false); setEditing(null); setMessage('报表任务已保存'); void load() }} />}{runResult && <div className="modal-backdrop modal-backdrop-above" onClick={event => { if (event.target === event.currentTarget) setRunResult(null) }}><section className="surface source-modal report-result-modal" role="dialog" aria-modal="true"><header className="modal-head"><div className="report-result-actions"><a className="button secondary" href={runResult.id && runResultTaskID ? `${api}/mysql-report-tasks/${runResultTaskID}/runs/${runResult.id}/result/download` : `${api}/mysql-report-tasks/${runResultTaskID}/result/download`} download>下载 CSV</a></div><div><h2>{tasks.find(t => t.id === runResultTaskID)?.name || '报表任务'} 执行结果 · {runResult.status}</h2><p>开始：{new Date(runResult.startedAt).toLocaleString('zh-CN')} · 结束：{runResult.finishedAt ? new Date(runResult.finishedAt).toLocaleString('zh-CN') : '执行中'} · 耗时：{runResult.finishedAt ? `${runResult.durationMs || 0} ms` : '执行中'}</p></div><button className="close-button" onClick={() => setRunResult(null)}>×</button></header><p>{runResult.message}</p>{runResult.result?.columns?.length > 0 && <SQLResultView columns={runResult.result.columns} rows={(runResult.result.rows || []).slice((resultPage - 1) * resultPageSize, resultPage * resultPageSize)} page={resultPage} pageSize={resultPageSize} total={(runResult.result.rows || []).length} totalPages={Math.max(1, Math.ceil((runResult.result.rows || []).length / resultPageSize))} truncated={runResult.result.truncated} onPageChange={setResultPage} onPageSizeChange={value => { setResultPageSize(value); setResultPage(1) }} />}</section></div>}{history && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setHistory(null) }}><section className="surface source-modal report-history-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>执行历史</h2><p>{history.task.name} · 共 {history.total} 次</p></div><button className="close-button" type="button" onClick={() => setHistory(null)}>×</button></header><div className="report-history-table-wrap">{history.items.length === 0 ? <div className="empty-state"><b>暂无执行记录</b></div> : <table className="report-history-table"><thead><tr><th>状态</th><th>开始时间</th><th>结果</th><th>操作</th></tr></thead><tbody>{history.items.map(item => <tr key={item.id}><td><span className={`tag ${item.status === '失败' ? 'pending' : 'running'}`}>{item.status || '待执行'}</span></td><td>{new Date(item.startedAt).toLocaleString('zh-CN')}</td><td className="report-history-msg">{item.message}{item.rowCount ? ` · ${item.rowCount} 行` : ''}{item.durationMs ? ` · 耗时 ${item.durationMs} ms` : ''}{item.truncated ? ' · 已截断' : ''}</td><td><button className="text-button" type="button" onClick={() => void viewHistoricalResult(history.task, item.id)}>查看结果</button>{item.status === '失败' && <button className="text-button" type="button" onClick={() => void runNow(history.task.id)}>重试</button>}</td></tr>)}</tbody></table>}</div><UnifiedPagination total={history.total} page={history.page} totalPages={history.totalPages} onPageChange={(page) => void viewHistory(history.task, page)} ariaLabel="执行历史分页" /></section></div>}</div>
+return <div className="page"><section className="overview-section-title"><div><h2>报表任务</h2><p>手动或定时执行只读报表，查看最近执行结果。</p></div><div className="mysql-table-actions">{view === 'list' && <AppSelect value={sourceID} placeholder="全部数据源" onChange={setSourceID} options={[{ value: '', label: '全部数据源' }, ...sources.map(source => ({ value: source.id, label: `${source.name} (${source.type})` }))]} />}</div></section>{message && <div className="toast">{message}</div>}{view === 'list' && <section className="surface report-task-list"><header className="table-toolbar report-toolbar"><div className="report-toolbar-title"><b>任务列表</b><small>共 {filteredTasks.length} 个任务</small></div><div className="report-toolbar-controls"><AppSelect className="report-status-select" value={statusFilter} placeholder="全部状态" onChange={value => { setStatusFilter(value); setTaskPage(1) }} options={[{ value: '', label: '全部状态' }, { value: '待执行', label: '待执行' }, { value: '执行中', label: '执行中' }, { value: '成功', label: '成功' }, { value: '失败', label: '失败' }]} /><input className="report-search" value={keyword} placeholder="搜索任务名称或 SQL" onChange={event => { setKeyword(event.target.value); setTaskPage(1) }} /></div><button className="button report-create-button" type="button" onClick={() => { setEditing(null); setWizardOpen(true) }}>新增报表任务</button></header>{visible.length === 0 ? <div className="empty-state"><b>暂无报表任务</b><span>点击“新增报表任务”配置第一条只读报表。</span></div> : visible.map(task => <article className="report-task-row" key={task.id}><div><b>{task.name}</b><span>{task.schedule}</span><span>{task.sourceName || '未指定数据源'}</span><Tooltip content={task.sql}><code className="report-table-ref">{extractMainTable(task.sql) || task.sql.replace(/\s+/g, ' ').slice(0, 60)}</code></Tooltip></div><span className={`tag ${task.status === '失败' ? 'pending' : 'running'}`} style={{display:'inline-flex',alignItems:'center',gap:4}}>{task.status || '待执行'}{task.alertEnabled && <Tooltip content={task.alertCompare === 'last' ? `相比上次变化率 ${task.alertOperator} ${task.alertThreshold}%` : task.alertOperator === 'empty' ? '结果为空时告警' : `本次行数 ${task.alertOperator} ${task.alertThreshold} 行`}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#f0a020" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></Tooltip>}</span><small>{task.lastRunAt ? `最近执行 ${new Date(task.lastRunAt).toLocaleString('zh-CN')}` : '当前配置尚未执行'}</small><label className="report-task-switch" title={task.enabled ? '停用任务' : '启用任务'}><input type="checkbox" role="switch" aria-label={`启用报表任务 ${task.name}`} disabled={toggling.includes(task.id)} checked={task.enabled} onChange={() => void toggle(task)} /><span /></label><div className="report-task-actions"><button className="text-button" type="button" disabled={starting.includes(task.id) || task.status === '执行中'} onClick={() => void runNow(task.id)}>立即执行</button>{task.status === '失败' && <button className="text-button" type="button" onClick={() => void runNow(task.id)}>重试</button>}<button className="text-button" type="button" disabled={!task.lastRunAt} onClick={() => void viewResult(task.id)}>查看结果</button><button className="text-button" type="button" onClick={() => void viewHistory(task)}>执行历史</button><button className="text-button" type="button" onClick={() => { setEditing(task); setWizardOpen(true) }}>编辑</button><button className="text-button danger" type="button" onClick={() => void remove(task)}>删除</button></div></article>)}{filteredTasks.length > 0 && <UnifiedPagination total={filteredTasks.length} page={taskPage} totalPages={taskTotalPages} onPageChange={setTaskPage} ariaLabel="报表任务分页" />}</section>}{view === 'dashboard' && <ReportDashboard trend={trend} trendDays={trendDays} setTrendDays={setTrendDays} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd} selectedTaskIDs={selectedTaskIDs} setSelectedTaskIDs={setSelectedTaskIDs} tasks={tasks} />}{wizardOpen && <ReportTaskWizard sources={sources} initialSourceID={sourceID} editing={editing} onClose={() => { setWizardOpen(false); setEditing(null) }} onSaved={() => { setWizardOpen(false); setEditing(null); setMessage('报表任务已保存'); void load() }} />}{runResult && <div className="modal-backdrop modal-backdrop-above"><section className="surface source-modal report-result-modal" role="dialog" aria-modal="true"><header className="modal-head"><div className="report-result-actions"><a className="button secondary" href={runResult.id && runResultTaskID ? `${api}/mysql-report-tasks/${runResultTaskID}/runs/${runResult.id}/result/download` : `${api}/mysql-report-tasks/${runResultTaskID}/result/download`} download>下载 CSV</a></div><div><h2>{tasks.find(t => t.id === runResultTaskID)?.name || '报表任务'} 执行结果 · {runResult.status}</h2><p>开始：{new Date(runResult.startedAt).toLocaleString('zh-CN')} · 结束：{runResult.finishedAt ? new Date(runResult.finishedAt).toLocaleString('zh-CN') : '执行中'} · 耗时：{runResult.finishedAt ? `${runResult.durationMs || 0} ms` : '执行中'}</p></div><button className="close-button" onClick={() => setRunResult(null)}>×</button></header><p>{runResult.message}</p>{runResult.result?.columns?.length > 0 && <SQLResultView columns={runResult.result.columns} rows={(runResult.result.rows || []).slice((resultPage - 1) * resultPageSize, resultPage * resultPageSize)} page={resultPage} pageSize={resultPageSize} total={(runResult.result.rows || []).length} totalPages={Math.max(1, Math.ceil((runResult.result.rows || []).length / resultPageSize))} truncated={runResult.result.truncated} onPageChange={setResultPage} onPageSizeChange={value => { setResultPageSize(value); setResultPage(1) }} />}</section></div>}{history && <div className="modal-backdrop"><section className="surface source-modal report-history-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>执行历史</h2><p>{history.task.name} · 共 {history.total} 次</p></div><button className="close-button" type="button" onClick={() => setHistory(null)}>×</button></header><div className="report-history-table-wrap">{history.items.length === 0 ? <div className="empty-state"><b>暂无执行记录</b></div> : <table className="report-history-table"><thead><tr><th>状态</th><th>开始时间</th><th>结果</th><th>操作</th></tr></thead><tbody>{history.items.map(item => <tr key={item.id}><td><span className={`tag ${item.status === '失败' ? 'pending' : 'running'}`}>{item.status || '待执行'}</span></td><td>{new Date(item.startedAt).toLocaleString('zh-CN')}</td><td className="report-history-msg">{item.message}{item.rowCount ? ` · ${item.rowCount} 行` : ''}{item.durationMs ? ` · 耗时 ${item.durationMs} ms` : ''}{item.truncated ? ' · 已截断' : ''}</td><td><button className="text-button" type="button" onClick={() => void viewHistoricalResult(history.task, item.id)}>查看结果</button>{item.status === '失败' && <button className="text-button" type="button" onClick={() => void runNow(history.task.id)}>重试</button>}</td></tr>)}</tbody></table>}</div><UnifiedPagination total={history.total} page={history.page} totalPages={history.totalPages} onPageChange={(page) => void viewHistory(history.task, page)} ariaLabel="执行历史分页" /></section></div>}</div>
+}
+
+function ReportDashboard({ trend, trendDays, setTrendDays, customStart, setCustomStart, customEnd, setCustomEnd, selectedTaskIDs, setSelectedTaskIDs, tasks }: { trend: any[]; trendDays: number; setTrendDays: (n: number) => void; customStart: string; setCustomStart: (s: string) => void; customEnd: string; setCustomEnd: (s: string) => void; selectedTaskIDs: string[]; setSelectedTaskIDs: (ids: string[]) => void; tasks: any[] }) {
+  const palette = ['#3158d4', '#e0586b', '#2bb673', '#f0a020', '#8a5cd8', '#12a5b0', '#d8457b', '#6b8e23']
+  const toggleTask = (id: string) => setSelectedTaskIDs(selectedTaskIDs.includes(id) ? selectedTaskIDs.filter(x => x !== id) : [...selectedTaskIDs, id])
+  const trendMap = Object.fromEntries(trend.map(t => [t.taskId, t]))
+  const visible = tasks.filter(t => selectedTaskIDs.includes(t.id)).map(t => trendMap[t.id]).filter(Boolean)
+  const colorFor = (taskId: string) => {
+    const idx = tasks.findIndex(t => t.id === taskId)
+    return palette[(idx < 0 ? 0 : idx) % palette.length]
+  }
+  const allPoints = visible.flatMap(t => t.points || [])
+  const times = Array.from(new Set(allPoints.map((p: any) => p.time))).sort()
+  const maxRows = Math.max(10, ...allPoints.map((p: any) => p.rowCount))
+  const W = 900, H = 320, PAD = { l: 50, r: 20, t: 20, b: 40 }
+  const x = (i: number) => PAD.l + (times.length <= 1 ? (W - PAD.l - PAD.r) / 2 : (i * (W - PAD.l - PAD.r)) / (times.length - 1))
+  const y = (v: number) => H - PAD.b - (v * (H - PAD.t - PAD.b)) / maxRows
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  const onMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (times.length === 0) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const sx = ((e.clientX - rect.left) / rect.width) * W
+    let best = 0, dist = Infinity
+    times.forEach((_, i) => { const d = Math.abs(x(i) - sx); if (d < dist) { dist = d; best = i } })
+    setHoverIdx(best)
+  }
+  const hoverTime = hoverIdx !== null ? times[hoverIdx] : null
+  const hoverRows = visible.map((t: any) => ({ task: t, point: (t.points || []).find((p: any) => p.time === hoverTime) })).filter((r: any) => r.point)
+  return <section className="surface report-dashboard">
+    <div className="report-dashboard-bar">
+      <b style={{fontSize:'14px',color:'#152238'}}>结果趋势</b>
+      <div className="report-dashboard-actions">
+        <AppSelect value={String(trendDays)} onChange={v => setTrendDays(Number(v))} options={[{ value: '1', label: '近 1 天' }, { value: '7', label: '近 7 天' }, { value: '30', label: '近 30 天' }, { value: '90', label: '近 90 天' }, { value: '-1', label: '自定义' }]} />
+        {trendDays === -1 && <><input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="report-date-input" /><span style={{color:'#8a96aa',fontSize:12}}>至</span><input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="report-date-input" /></>}
+      </div>
+    </div>
+    <div className="report-dashboard-body">
+      <div><b style={{fontSize:'12px',color:'#65728a',display:'block',marginBottom:'8px'}}>选择任务</b><div className="report-dashboard-task-list">{tasks.map((t: any, i: number) => <label key={t.id}><input type="checkbox" checked={selectedTaskIDs.includes(t.id)} onChange={() => toggleTask(t.id)} /><span style={{ color: palette[i % palette.length] }}>●</span>{t.name}</label>)}</div></div>
+      <div>{visible.length === 0 ? <div className="empty-state"><b>{selectedTaskIDs.length === 0 ? '请选择任务' : '该时间范围内暂无执行记录'}</b><span>{selectedTaskIDs.length === 0 ? '左侧勾选要展示的任务，折线图会自动渲染。' : '任务已勾选，但所选时间范围内没有执行数据。试试切换时间范围或手动执行一次。'}</span></div> : (
+        <svg viewBox={`0 0 ${W} ${H}`} className="report-dashboard-chart" onMouseMove={onMouseMove} onMouseLeave={() => setHoverIdx(null)}>
+          {[0, 0.25, 0.5, 0.75, 1].map(t => <g key={t}><line x1={PAD.l} x2={W - PAD.r} y1={y(maxRows * t)} y2={y(maxRows * t)} stroke="#eef2f8" /><text x={PAD.l - 8} y={y(maxRows * t) + 4} textAnchor="end" fontSize="10" fill="#8a96aa">{Math.round(maxRows * t)}</text></g>)}
+          {times.map((tm, i) => {
+          const showLabel = i === 0 || i === times.length - 1 || new Date(tm).toDateString() !== new Date(times[i - 1]).toDateString()
+          return showLabel ? <text key={tm} x={x(i)} y={H - PAD.b + 16} textAnchor="middle" fontSize="10" fill="#8a96aa">{new Date(tm).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}</text> : null
+        })}
+          {hoverIdx !== null && hoverRows.length > 0 && <g><line x1={x(hoverIdx)} x2={x(hoverIdx)} y1={PAD.t} y2={H - PAD.b} stroke="#b8c4d8" strokeDasharray="4 3" /><line x1={PAD.l} x2={W - PAD.r} y1={y(hoverRows[0].point.rowCount)} y2={y(hoverRows[0].point.rowCount)} stroke="#b8c4d8" strokeDasharray="4 3" /></g>}
+          {visible.map((t: any) => {
+            const color = colorFor(t.taskId)
+            const pts = (t.points || []).map((p: any) => `${x(times.indexOf(p.time))},${y(p.rowCount)}`).join(' ')
+            return <g key={t.taskId}><polyline points={pts} fill="none" stroke={color} strokeWidth="2" />{(t.points || []).map((p: any, i: number) => <circle key={i} cx={x(times.indexOf(p.time))} cy={y(p.rowCount)} r={hoverIdx === i ? 5 : 3} fill={color} stroke="#fff" strokeWidth={hoverIdx === i ? 2 : 0} />)}</g>
+          })}
+          {hoverTime && hoverRows.length > 0 && (() => {
+            const tx = Math.min(Math.max(x(hoverIdx!), 140), W - 180)
+            const ty = PAD.t + 4
+            return <g><rect x={tx - 8} y={ty} width={180} height={hoverRows.length * 18 + 26} rx="6" fill="#152238ee" /><text x={tx} y={ty + 16} fontSize="10" fill="#aebdd2">{new Date(hoverTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</text>{hoverRows.map((r: any, i: number) => <text key={r.task.taskId} x={tx} y={ty + 34 + i * 18} fontSize="11" fill="#fff"><tspan fill={colorFor(r.task.taskId)}>●</tspan> {r.task.taskName}: {r.point.rowCount} 行</text>)}</g>
+          })()}
+        </svg>
+      )}</div>
+    </div>
+  </section>
 }
 
 function PostgreSQLWorkspace() {
   const sourceID = new URLSearchParams(useLocation().search).get('source') || ''
   const [databases, setDatabases] = useState<string[]>([])
-  const [tables, setTables] = useState<string[]>([])
+  const [tablesByDb, setTablesByDb] = useState<Record<string, string[]>>({})
+  const [expandedDatabases, setExpandedDatabases] = useState<string[]>([])
+  const [loadingDatabase, setLoadingDatabase] = useState('')
   const [database, setDatabase] = useState('')
   const [table, setTable] = useState('')
   const [preview, setPreview] = useState<{ columns: string[]; rows: any[][]; page: number; pageSize: number; total: number; totalExact: boolean }>({ columns: [], rows: [], page: 1, pageSize: 50, total: 0, totalExact: true })
@@ -1506,17 +2059,51 @@ function PostgreSQLWorkspace() {
   const [sqlResult, setSQLResult] = useState<{ columns: string[]; rows: any[][]; truncated: boolean } | null>(null)
   const [sqlResultPage, setSQLResultPage] = useState(1)
   const [sqlResultPageSize, setSQLResultPageSize] = useState(100)
+  const [sqlHistory, setSQLHistory] = useState<SQLHistoryItem[]>([])
+  const [sqlHistoryLoading, setSQLHistoryLoading] = useState(false)
+  const [sqlHistoryPage, setSQLHistoryPage] = useState(1)
+  const [sqlHistoryTotal, setSQLHistoryTotal] = useState(0)
   useLayoutEffect(() => { setTable(''); setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true })); setPage(1) }, [database])
   useEffect(() => { if (!sourceID) return; setLoading(true); fetch(`${api}/data-sources/${sourceID}/databases`).then(r => r.json().then(data => ({ r, data }))).then(({ r, data }) => { if (!r.ok) throw new Error(data.error || '读取 PostgreSQL 数据库失败'); setDatabases(data.databases || []) }).catch(err => setMessage(err.message || '读取 PostgreSQL 数据库失败')).finally(() => setLoading(false)) }, [sourceID])
-  useEffect(() => { if (!sourceID || !database) { setTables([]); return }; setLoading(true); fetch(`${api}/data-sources/${sourceID}/tables?database=${encodeURIComponent(database)}`).then(r => r.json().then(data => ({ r, data }))).then(({ r, data }) => { if (!r.ok) throw new Error(data.error || '读取 PostgreSQL 表失败'); setTables(data.tables || []); setTable(''); setPreview({ columns: [], rows: [], page: 1, pageSize: 50, total: 0, totalExact: true }) }).catch(err => setMessage(err.message || '读取 PostgreSQL 表失败')).finally(() => setLoading(false)) }, [sourceID, database])
+  useEffect(() => {
+    if (!sourceID) return
+    const toLoad = expandedDatabases.find(db => !(db in tablesByDb))
+    if (!toLoad) return
+    setLoadingDatabase(toLoad)
+    fetch(`${api}/data-sources/${sourceID}/tables?database=${encodeURIComponent(toLoad)}`)
+      .then(r => r.json().then(data => ({ r, data })))
+      .then(({ r, data }) => {
+        if (!r.ok) throw new Error(data.error || '读取 PostgreSQL 表失败')
+        setTablesByDb(prev => ({ ...prev, [toLoad]: data.tables || [] }))
+      })
+      .catch(err => setMessage(err.message || '读取 PostgreSQL 表失败'))
+      .finally(() => setLoadingDatabase(''))
+  }, [sourceID, expandedDatabases, tablesByDb])
   useEffect(() => { if (!sourceID || !database || !table) return; setLoading(true); fetch(`${api}/data-sources/${sourceID}/preview?database=${encodeURIComponent(database)}&table=${encodeURIComponent(table)}&page=${page}&pageSize=${pageSize}`).then(r => r.json().then(data => ({ r, data }))).then(({ r, data }) => { if (!r.ok) throw new Error(data.error || '读取 PostgreSQL 数据失败'); setPreview(data) }).catch(err => setMessage(err.message || '读取 PostgreSQL 数据失败')).finally(() => setLoading(false)) }, [sourceID, database, table, page, pageSize])
   const totalPages = Math.max(1, preview.totalExact ? Math.ceil(preview.total / preview.pageSize) : preview.rows.length < preview.pageSize ? page : page + 1)
   const query = filter.trim().toLowerCase()
-  const visibleDatabases = databases.filter(name => !query || name.toLowerCase().includes(query) || (name === database && tables.some(t => t.toLowerCase().includes(query))))
-  const visibleTables = tables.filter(name => !query || database.toLowerCase().includes(query) || name.toLowerCase().includes(query))
-  const executePostgreSQLSQL = async () => { const trimmed = sqlText.trim(); if (!trimmed) return; setSQLRunning(true); setSQLError(''); setSQLResult(null); try { const response = await fetch(`${api}/data-sources/${sourceID}/execute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ database, sql: trimmed }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '执行失败'); setSQLResult(data); setSQLResultPage(1) } catch (err) { setSQLError(err instanceof Error ? err.message : '执行失败') } finally { setSQLRunning(false) } }
-  const pgSQLWorkspace = <div className="mysql-sql-panel"><div className="mysql-sql-layout"><section className="mysql-sql-workspace"><textarea className="mysql-sql-editor" value={sqlText} spellCheck={false} placeholder="SELECT * FROM table_name LIMIT 100" onChange={event => setSQLText(event.target.value)} />{sqlError && <div className="form-error">{sqlError}</div>}<div className="mysql-sql-actions"><span>{sqlResult ? (sqlResult.columns.length > 0 ? `${sqlResult.rows.length}${sqlResult.truncated ? '+' : ''} 行结果` : '执行成功') : ''}</span><div><button className="button" type="button" disabled={sqlRunning || !sqlText.trim()} onClick={() => void executePostgreSQLSQL()}>{sqlRunning ? '执行中...' : '执行'}</button></div></div>{sqlResult && (sqlResult.columns.length > 0 ? <SQLResultView columns={sqlResult.columns} rows={sqlResult.rows.slice((sqlResultPage - 1) * sqlResultPageSize, sqlResultPage * sqlResultPageSize)} page={sqlResultPage} pageSize={sqlResultPageSize} total={sqlResult.rows.length} totalPages={Math.max(1, Math.ceil(sqlResult.rows.length / sqlResultPageSize))} truncated={sqlResult.truncated} onPageChange={setSQLResultPage} onPageSizeChange={value => { setSQLResultPageSize(value); setSQLResultPage(1) }} /> : <div className="mysql-sql-result mysql-sql-success">SQL 执行成功</div>)}</section></div></div>
-  return <div className="page mysql-workspace"><section className="overview-section-title"><div><h2>PostgreSQL 工作台</h2><p>按数据库和数据表浏览 PostgreSQL 数据，只读查询。</p></div></section>{message && <div className="form-error">{message}</div>}<section className={`surface mysql-workspace-grid ${treeCollapsed ? 'tree-collapsed' : ''}`} style={{ gridTemplateColumns: treeCollapsed ? '44px minmax(0,1fr)' : `${treeWidth}px minmax(0,1fr)` }}><div className="mysql-tree-resizer" style={{ left: treeCollapsed ? 41 : treeWidth - 3, display: treeCollapsed ? 'none' : 'block' }} onMouseDown={treeResizeStart} /><button className="mysql-tree-collapse-control" type="button" style={{ left: treeCollapsed ? 4 : treeWidth - 66 }} onClick={() => setTreeCollapsed(value => !value)} title={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'} aria-label={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'}>{treeCollapsed ? '›' : '‹'}</button><aside className="mysql-tree-panel"><header><b>PostgreSQL 数据库</b><span>{databases.length} 个库</span></header><input value={filter} placeholder="筛选数据库或表" onChange={event => setFilter(event.target.value)} />{loading && databases.length === 0 ? <span className="mysql-tree-status">正在加载...</span> : <div className="mysql-tree">{visibleDatabases.map(item => { const expanded = database === item; return <div className="mysql-tree-database" key={item}><button className={database === item ? 'selected' : ''} type="button" onClick={() => { if (database === item) { setDatabase(''); setTable(''); setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true })); setPage(1); return } setTable(''); setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true })); setPage(1); setDatabase(item) }}><span className={`mysql-tree-toggle ${expanded ? 'expanded' : ''}`} aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg></span><span className="mysql-tree-icon" aria-hidden="true" /><b>{item}</b><small>{expanded ? tables.length : ''}</small></button><div className={`mysql-tree-tables ${expanded ? 'open' : ''}`}><div className="mysql-tree-tables-inner">{expanded && tables.length === 0 && loading ? <span className="mysql-tree-status">正在读取表...</span> : visibleTables.length > 0 ? visibleTables.map(t => <button className={table === t ? 'active' : ''} type="button" key={t} onClick={() => { setTable(t); setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true })); setPage(1) }}><span aria-hidden="true" /><b>{t}</b></button>) : <span className="mysql-tree-status">暂无数据表</span>}</div></div></div> })}{!loading && visibleDatabases.length === 0 && <span className="mysql-tree-status">没有匹配的对象</span>}</div>}</aside><section className="mysql-table-workspace"><header className="mysql-table-head"><div><b>{table || '请选择数据表'}</b><span>{database ? `${database}${table ? ` / ${table}` : ''}` : '先选择数据库'}</span></div><div className="mysql-table-actions"><button className="secondary" type="button" onClick={() => setActiveView('sql')}>执行 SQL</button></div></header><nav className="mysql-view-tabs" aria-label="PostgreSQL 工作区视图"><button className={activeView === 'data' ? 'active' : ''} type="button" onClick={() => setActiveView('data')}>数据</button><button className={activeView === 'sql' ? 'active' : ''} type="button" onClick={() => setActiveView('sql')}>SQL</button></nav>{activeView === 'sql' ? pgSQLWorkspace : !table ? <div className="empty-state"><b style={{ color: "#d94b5d" }}>提示</b><span>若数据库数据量较大，建议通过「执行 SQL」方式查看所需数据，以免影响服务。</span></div> : <>{preview.columns.length === 0 ? <div className="empty-state"><b>{loading ? '正在读取数据...' : '暂无数据'}</b></div> : <div className="mysql-data-table-wrap"><table className="mysql-data-table hive-data-table"><thead><tr>{preview.columns.map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{preview.rows.map((row, rowIndex) => <tr key={rowIndex}>{preview.columns.map((_, columnIndex) => <td key={columnIndex}>{row[columnIndex] === null ? <i>NULL</i> : String(row[columnIndex] ?? '')}</td>)}</tr>)}</tbody></table></div>}<footer className="mysql-pagination"><div><span>共 {preview.total} 条</span><span className="mysql-page-size">每页 <AppSelect value={String(pageSize)} onChange={value => { setPageSize(Number(value)); setPage(1) }} options={[50,100,200,500].map(v => ({ value: String(v), label: String(v) }))} /> 条</span></div><nav aria-label="PostgreSQL 数据分页"><button type="button" disabled={page <= 1} onClick={() => setPage(1)}>首页</button><button type="button" disabled={page <= 1} onClick={() => setPage(v => v - 1)}>上一页</button><span className="mysql-page-current">{page} / {totalPages}</span><button type="button" disabled={page >= totalPages} onClick={() => setPage(v => v + 1)}>下一页</button><button type="button" disabled={page >= totalPages} onClick={() => setPage(totalPages)}>尾页</button></nav></footer></>}</section></section></div>
+  const visibleDatabases = databases.filter(name => !query || name.toLowerCase().includes(query))
+  const loadSQLHistory = async (page = 1) => {
+    setSQLHistoryLoading(true)
+    try {
+      const res = await fetch(`${api}/data-sources/${sourceID}/sql-history?page=${page}&pageSize=10`)
+      const data = await res.json()
+      setSQLHistory(data.items || [])
+      setSQLHistoryTotal(data.total || 0)
+      setSQLHistoryPage(page)
+    } catch { /* ignore */ } finally { setSQLHistoryLoading(false) }
+  }
+  const toggleDatabaseExpand = (name: string) => {
+    setExpandedDatabases(cur => cur.includes(name) ? cur.filter(d => d !== name) : [...cur, name])
+  }
+  const selectTableForDb = (dbName: string, tableName: string) => {
+    setDatabase(dbName); setTable(tableName)
+    setPreview(current => ({ ...current, columns: [], rows: [], page: 1, total: 0, totalExact: true }))
+    setPage(1)
+  }
+  const executePostgreSQLSQL = async () => { const trimmed = sqlText.trim(); if (!trimmed) return; setSQLRunning(true); setSQLError(''); setSQLResult(null); try { const response = await fetch(`${api}/data-sources/${sourceID}/execute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ database, sql: trimmed }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '执行失败'); setSQLResult(data); setSQLResultPage(1) } catch (err) { setSQLError(err instanceof Error ? err.message : '执行失败') } finally { setSQLRunning(false); void loadSQLHistory(1) } }
+  const pgSQLWorkspace = <div className="mysql-sql-panel"><div className="mysql-sql-layout"><aside className="mysql-sql-history"><header><b>最近执行</b><span>最近 10 条</span></header><div>{sqlHistoryLoading ? <span className="mysql-sql-history-empty">正在加载...</span> : sqlHistory.length === 0 ? <span className="mysql-sql-history-empty">暂无执行记录</span> : sqlHistory.map(item => <button type="button" key={item.id} onClick={() => { setSQLText(item.statement); setSQLError(''); setSQLResult(null); setSQLResultPage(1) }}><span><i className={item.status === 'success' ? 'success' : 'failed'} />{item.database || '默认数据库'}<time>{item.createdAt}</time></span><code>{item.statement}</code><small>{item.status === 'success' ? `${item.resultRows > 0 ? `${item.resultRows} 行结果` : `影响 ${item.affected} 行`}` : item.error || '执行失败'} · {item.durationMs}ms</small></button>)}</div></aside><section className="mysql-sql-workspace"><textarea className="mysql-sql-editor" value={sqlText} spellCheck={false} placeholder="SELECT * FROM table_name LIMIT 100" onChange={event => setSQLText(event.target.value)} />{sqlError && <div className="form-error">{sqlError}</div>}<div className="mysql-sql-actions"><span>{sqlResult ? (sqlResult.columns.length > 0 ? `${sqlResult.rows.length}${sqlResult.truncated ? '+' : ''} 行结果` : '执行成功') : ''}</span><div>{sqlResult && sqlResult.columns.length > 0 ? <button className="button secondary" type="button" onClick={() => downloadCSV(`pg-sql-result-${Date.now()}.csv`, sqlResult.columns, sqlResult.rows)}>下载 CSV</button> : null}<button className="button" type="button" disabled={sqlRunning || !sqlText.trim()} onClick={() => void executePostgreSQLSQL()}>{sqlRunning ? '执行中...' : '执行'}</button><SQLHistoryControl items={sqlHistory} loading={sqlHistoryLoading} total={sqlHistoryTotal} page={sqlHistoryPage} onOpen={() => void loadSQLHistory(sqlHistoryPage)} onPageChange={value => void loadSQLHistory(value)} onCopy={sql => { void navigator.clipboard.writeText(sql) }} onSelect={item => { setSQLText(item.statement) }} /></div></div>{sqlResult && (sqlResult.columns.length > 0 ? <SQLResultView columns={sqlResult.columns} rows={sqlResult.rows.slice((sqlResultPage - 1) * sqlResultPageSize, sqlResultPage * sqlResultPageSize)} page={sqlResultPage} pageSize={sqlResultPageSize} total={sqlResult.rows.length} totalPages={Math.max(1, Math.ceil(sqlResult.rows.length / sqlResultPageSize))} truncated={sqlResult.truncated} onPageChange={setSQLResultPage} onPageSizeChange={value => { setSQLResultPageSize(value); setSQLResultPage(1) }} /> : <div className="mysql-sql-result mysql-sql-success">SQL 执行成功</div>)}</section></div></div>
+  return <div className="page mysql-workspace"><section className="overview-section-title"><div><h2>PostgreSQL 工作台</h2><p>按数据库和数据表浏览 PostgreSQL 数据，只读查询。</p></div></section>{message && <div className="form-error">{message}</div>}<section className={`surface mysql-workspace-grid ${treeCollapsed ? 'tree-collapsed' : ''}`} style={{ gridTemplateColumns: treeCollapsed ? '44px minmax(0,1fr)' : `${treeWidth}px minmax(0,1fr)` }}><div className="mysql-tree-resizer" style={{ left: treeCollapsed ? 41 : treeWidth - 3, display: treeCollapsed ? 'none' : 'block' }} onMouseDown={treeResizeStart} /><button className="mysql-tree-collapse-control" type="button" style={{ left: treeCollapsed ? 4 : treeWidth - 66 }} onClick={() => setTreeCollapsed(value => !value)} title={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'} aria-label={treeCollapsed ? '展开数据库对象' : '折叠数据库对象'}>{treeCollapsed ? '›' : '‹'}</button><aside className="mysql-tree-panel"><header><b>PostgreSQL 数据库</b><span>{databases.length} 个库</span></header><input value={filter} placeholder="筛选数据库或表" onChange={event => setFilter(event.target.value)} />{loading && databases.length === 0 ? <span className="mysql-tree-status">正在加载...</span> : <div className="mysql-tree">{visibleDatabases.map(item => { const expanded = expandedDatabases.includes(item); const dbTables = tablesByDb[item] || []; const visibleDbTables = dbTables.filter(t => !query || item.toLowerCase().includes(query) || t.toLowerCase().includes(query)); return <div className="mysql-tree-database" key={item}><button className={database === item ? 'selected' : ''} type="button" onClick={() => toggleDatabaseExpand(item)}><span className={`mysql-tree-toggle ${expanded ? 'expanded' : ''}`} aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg></span><span className="mysql-tree-icon" aria-hidden="true" /><b>{item}</b><small>{dbTables.length || ''}</small></button><div className={`mysql-tree-tables ${expanded ? 'open' : ''}`}><div className="mysql-tree-tables-inner">{loadingDatabase === item ? <span className="mysql-tree-status">正在读取表...</span> : visibleDbTables.length > 0 ? visibleDbTables.map(t => <button className={database === item && table === t ? 'active' : ''} type="button" key={t} onClick={() => selectTableForDb(item, t)}><span aria-hidden="true" /><b>{t}</b></button>) : <span className="mysql-tree-status">暂无数据表</span>}</div></div></div> })}{!loading && visibleDatabases.length === 0 && <span className="mysql-tree-status">没有匹配的对象</span>}</div>}</aside><section className="mysql-table-workspace"><header className="mysql-table-head"><div><b>{table || '请选择数据表'}</b><span>{database ? `${database}${table ? ` / ${table}` : ''}` : '先选择数据库'}</span></div><div className="mysql-table-actions"><button className="secondary" type="button" onClick={() => setActiveView('sql')}>执行 SQL</button></div></header><nav className="mysql-view-tabs" aria-label="PostgreSQL 工作区视图"><button className={activeView === 'data' ? 'active' : ''} type="button" onClick={() => setActiveView('data')}>数据</button><button className={activeView === 'sql' ? 'active' : ''} type="button" onClick={() => setActiveView('sql')}>SQL</button></nav>{activeView === 'sql' ? pgSQLWorkspace : !table ? <div className="empty-state"><b style={{ color: "#d94b5d" }}>提示</b><span>若数据库数据量较大，建议通过「执行 SQL」方式查看所需数据，以免影响服务。</span></div> : <>{preview.columns.length === 0 ? <div className="empty-state"><b>{loading ? '正在读取数据...' : '暂无数据'}</b></div> : <div className="mysql-data-table-wrap"><table className="mysql-data-table hive-data-table"><thead><tr>{preview.columns.map(column => <th key={column}>{column}</th>)}</tr></thead><tbody>{preview.rows.map((row, rowIndex) => <tr key={rowIndex}>{preview.columns.map((_, columnIndex) => <td key={columnIndex}>{row[columnIndex] === null ? <i>NULL</i> : String(row[columnIndex] ?? '')}</td>)}</tr>)}</tbody></table></div>}<footer className="mysql-pagination"><div><span>共 {preview.total} 条</span><span className="mysql-page-size">每页 <AppSelect value={String(pageSize)} onChange={value => { setPageSize(Number(value)); setPage(1) }} options={[50,100,200,500].map(v => ({ value: String(v), label: String(v) }))} /> 条</span></div><nav aria-label="PostgreSQL 数据分页"><button type="button" disabled={page <= 1} onClick={() => setPage(1)}>首页</button><button type="button" disabled={page <= 1} onClick={() => setPage(v => v - 1)}>上一页</button><span className="mysql-page-current">{page} / {totalPages}</span><button type="button" disabled={page >= totalPages} onClick={() => setPage(v => v + 1)}>下一页</button><button type="button" disabled={page >= totalPages} onClick={() => setPage(totalPages)}>尾页</button></nav></footer></>}</section></section></div>
 }
 
 function MySQLWorkspace() {
@@ -1708,7 +2295,7 @@ function MySQLTransferDialog({ mode, sourceID, database, table, onClose, onImpor
 	// Cancellation is kept with the task state for the next dialog interaction update.
 	void cancelJob
   const title = mode === 'export' ? '导出数据库对象' : '导入数据库文件'
-  return <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget && !running) onClose() }}><section className="surface mysql-transfer-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{title}</h2><p>{database && table ? `${database}.${table}` : database ? `${database}（整个数据库）` : '请先选择目标库'}</p></div><button className="close-button" type="button" disabled={running} onClick={onClose}>×</button></header>{mode === 'export' ? <div className="mysql-transfer-form"><label>导出格式<AppSelect value={format} onChange={setFormat} options={[{ value: 'sql', label: 'SQL' }, { value: 'csv', label: 'CSV' }, { value: 'json', label: 'JSON' }]} /></label><label>导出内容<AppSelect value={scope} onChange={setScope} options={[{ value: 'structure', label: '仅表结构' }, { value: 'schema', label: '库和表结构' }, { value: 'data', label: '库表数据' }]} /></label><p>{format === 'csv' ? 'CSV 导出包含所选表的全部数据和字段表头。' : scope === 'data' ? '导出建库、建表语句及表数据。' : scope === 'schema' ? '导出建库和建表语句。' : '仅导出所选表的建表语句。'}</p></div> : <div className="mysql-transfer-form"><label>选择文件<span className="mysql-transfer-file-picker"><input type="file" accept=".sql,.csv,.json,application/sql,text/csv,application/json" onChange={event => setFile(event.target.files?.[0] || null)} /><b>选择文件</b><em>{file?.name || '未选择任何文件'}</em></span></label><p>SQL 按文件中的语句执行；CSV 和 JSON 写入当前选择的 <strong className="mysql-transfer-target-name">{database && table ? `${database}.${table}` : '目标表'}</strong>。</p><label className="mysql-transfer-confirm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /> 我确认导入会修改目标数据库的数据或结构</label>{importResult && <div className="mysql-import-results"><b>{importResult.completed ? `导入完成，受影响 ${importResult.affected} 行` : '导入未完成，已执行的语句不会自动回滚'}</b>{importResult.results.map(item => <article key={item.index} className={item.status}><span>#{item.index}</span><code>{item.statement}</code><em>{item.status === 'success' ? `成功${item.affected ? `，${item.affected} 行` : ''}` : item.status === 'skipped' ? '未执行' : item.error || '失败'}</em></article>)}</div>}</div>}{message && <div className="form-error">{message}</div>}<footer className="modal-actions"><button className="button secondary" type="button" disabled={running} onClick={onClose}>{importResult ? '关闭' : '取消'}</button>{!importResult && <button className="button" type="button" disabled={running || (mode === 'export' && !database)} onClick={() => void (mode === 'export' ? exportFile() : importFile())}>{running ? (mode === 'export' ? '导出中...' : '导入中...') : mode === 'export' ? '开始导出' : '确认导入'}</button>}</footer></section></div>
+  return <div className="modal-backdrop" role="presentation"><section className="surface mysql-transfer-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{title}</h2><p>{database && table ? `${database}.${table}` : database ? `${database}（整个数据库）` : '请先选择目标库'}</p></div><button className="close-button" type="button" disabled={running} onClick={onClose}>×</button></header>{mode === 'export' ? <div className="mysql-transfer-form"><label>导出格式<AppSelect value={format} onChange={setFormat} options={[{ value: 'sql', label: 'SQL' }, { value: 'csv', label: 'CSV' }, { value: 'json', label: 'JSON' }]} /></label><label>导出内容<AppSelect value={scope} onChange={setScope} options={[{ value: 'structure', label: '仅表结构' }, { value: 'schema', label: '库和表结构' }, { value: 'data', label: '库表数据' }]} /></label><p>{format === 'csv' ? 'CSV 导出包含所选表的全部数据和字段表头。' : scope === 'data' ? '导出建库、建表语句及表数据。' : scope === 'schema' ? '导出建库和建表语句。' : '仅导出所选表的建表语句。'}</p></div> : <div className="mysql-transfer-form"><label>选择文件<span className="mysql-transfer-file-picker"><input type="file" accept=".sql,.csv,.json,application/sql,text/csv,application/json" onChange={event => setFile(event.target.files?.[0] || null)} /><b>选择文件</b><em>{file?.name || '未选择任何文件'}</em></span></label><p>SQL 按文件中的语句执行；CSV 和 JSON 写入当前选择的 <strong className="mysql-transfer-target-name">{database && table ? `${database}.${table}` : '目标表'}</strong>。</p><label className="mysql-transfer-confirm"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /> 我确认导入会修改目标数据库的数据或结构</label>{importResult && <div className="mysql-import-results"><b>{importResult.completed ? `导入完成，受影响 ${importResult.affected} 行` : '导入未完成，已执行的语句不会自动回滚'}</b>{importResult.results.map(item => <article key={item.index} className={item.status}><span>#{item.index}</span><code>{item.statement}</code><em>{item.status === 'success' ? `成功${item.affected ? `，${item.affected} 行` : ''}` : item.status === 'skipped' ? '未执行' : item.error || '失败'}</em></article>)}</div>}</div>}{message && <div className="form-error">{message}</div>}<footer className="modal-actions"><button className="button secondary" type="button" disabled={running} onClick={onClose}>{importResult ? '关闭' : '取消'}</button>{!importResult && <button className="button" type="button" disabled={running || (mode === 'export' && !database)} onClick={() => void (mode === 'export' ? exportFile() : importFile())}>{running ? (mode === 'export' ? '导出中...' : '导入中...') : mode === 'export' ? '开始导出' : '确认导入'}</button>}</footer></section></div>
 }
 
 function MySQLBackgroundQuery({ sourceID, database, sql, confirmed }: { sourceID: string; database: string; sql: string; confirmed: boolean }) {
@@ -1724,7 +2311,7 @@ function MySQLBackgroundQuery({ sourceID, database, sql, confirmed }: { sourceID
 function SQLHistoryControl({ items, loading, total, page, onOpen, onPageChange, onCopy, onSelect }: { items: SQLHistoryItem[]; loading: boolean; total: number; page: number; onOpen: () => void; onPageChange: (page: number) => void; onCopy: (sql: string) => void; onSelect: (item: SQLHistoryItem) => void }) {
   const [open, setOpen] = useState(false)
   const pages = Math.max(1, Math.ceil(total / 10))
-  return <><button className="button secondary sql-history-trigger" type="button" onClick={() => { setOpen(true); onOpen() }}>历史记录</button>{open && <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget) setOpen(false) }}><section className="surface sql-history-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>SQL 历史记录</h2><p>共 {total} 条记录</p></div><button className="close-button" type="button" onClick={() => setOpen(false)}>×</button></header><div className="sql-history-modal-list">{loading ? <div className="empty-state"><b>正在加载历史记录</b></div> : items.length === 0 ? <div className="empty-state"><b>暂无执行记录</b></div> : items.map(item => <article key={item.id}><header><span className={item.status === 'success' ? 'success' : 'failed'} /> <b>{item.database || '默认数据库'}</b><time>{item.createdAt}</time></header><code>{item.statement}</code><footer><small>{item.status === 'success' ? `${item.resultRows > 0 ? `${item.resultRows} 行结果` : `影响 ${item.affected} 行`}` : item.error || '执行失败'} · {item.durationMs}ms</small><div><button className="text-button" type="button" onClick={() => onSelect(item)}>载入 SQL</button><button className="text-button" type="button" onClick={() => onCopy(item.statement)}>复制 SQL</button></div></footer></article>)}</div>{total > 0 && <UnifiedPagination total={total} page={page} totalPages={pages} onPageChange={onPageChange} ariaLabel="SQL 历史分页" />}</section></div>}</>
+  return <><button className="button secondary sql-history-trigger" type="button" onClick={() => { setOpen(true); onOpen() }}>历史记录</button>{open && <div className="modal-backdrop" role="presentation"><section className="surface sql-history-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>SQL 历史记录</h2><p>共 {total} 条记录</p></div><button className="close-button" type="button" onClick={() => setOpen(false)}>×</button></header><div className="sql-history-modal-list">{loading ? <div className="empty-state"><b>正在加载历史记录</b></div> : items.length === 0 ? <div className="empty-state"><b>暂无执行记录</b></div> : items.map(item => <article key={item.id}><header><span className={item.status === 'success' ? 'success' : 'failed'} /> <b>{item.database || '默认数据库'}</b><time>{item.createdAt}</time></header><code>{item.statement}</code><footer><small>{item.status === 'success' ? `${item.resultRows > 0 ? `${item.resultRows} 行结果` : `影响 ${item.affected} 行`}` : item.error || '执行失败'} · {item.durationMs}ms</small><div><button className="text-button" type="button" onClick={() => onSelect(item)}>载入 SQL</button><button className="text-button" type="button" onClick={() => onCopy(item.statement)}>复制 SQL</button></div></footer></article>)}</div>{total > 0 && <UnifiedPagination total={total} page={page} totalPages={pages} onPageChange={onPageChange} ariaLabel="SQL 历史分页" />}</section></div>}</>
 }
 
 function MySQLTaskCenter({ sourceID }: { sourceID: string }) {
@@ -1739,7 +2326,7 @@ function MySQLTaskCenter({ sourceID }: { sourceID: string }) {
   const viewResult = async (id: string) => { const response = await fetch(`${api}/mysql-jobs/${id}`); if (response.ok) setResultJob(await response.json()) }
   if (jobs.length === 0) return null
   const results = Array.isArray(resultJob?.result?.results) ? resultJob.result.results : []
-  return <><section ref={root} className={`surface mysql-task-center ${expanded ? 'expanded' : ''}`}><header><button className="mysql-task-toggle" type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded}><div><h3>后台任务</h3><span>最近 {jobs.length} 项</span></div></button></header><div className="mysql-task-list"><div className="mysql-task-list-inner">{jobs.map(job => { const failed = job.status === 'failed'; const progress = failed ? 0 : Math.min(100, Math.max(0, job.progress)); const name = job.kind === 'query' ? 'SQL 查询' : job.kind === 'import' ? `导入任务 · ${job.fileName || '未记录上传文件名'}` : `导出任务 · ${job.fileName || '未命名文件'}`; return <article className={failed ? 'failed' : ''} key={job.id}><div><b title={name}>{name}</b><small title={job.id}>任务编号：{job.id} · {job.message} · {new Date(job.createdAt).toLocaleString('zh-CN')}</small><i className="mysql-task-progress"><em style={{ width: `${progress}%` }} /></i></div><strong>{progress}%</strong>{['queued', 'running'].includes(job.status) ? <button className="text-button danger" type="button" onClick={() => void cancel(job.id)}>取消</button> : job.kind === 'import' ? <button className="text-button" type="button" onClick={() => void viewResult(job.id)}>查看结果</button> : job.status === 'succeeded' ? <a className="text-button" href={`${api}/mysql-jobs/${job.id}/download`} download={job.fileName || 'mysql-result.csv'}>下载结果</a> : <span>失败</span>}</article>})}</div></div></section>{resultJob && <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget) setResultJob(null) }}><section className="surface mysql-import-results-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>导入结果</h2><p>{resultJob.message}</p></div><button className="close-button" type="button" onClick={() => setResultJob(null)}>×</button></header><div className="mysql-import-results">{results.length ? results.map((item: any) => <article key={item.index} className={item.status}><span>#{item.index}</span><code>{item.statement}</code><em>{item.status === 'success' ? `成功${item.affected ? `，${item.affected} 行` : ''}` : item.status === 'skipped' ? '未执行' : item.error || '失败'}</em></article>) : <p>暂无可展示的逐条执行结果。</p>}</div><footer className="modal-actions"><button className="button" type="button" onClick={() => setResultJob(null)}>关闭</button></footer></section></div>}</>
+  return <><section ref={root} className={`surface mysql-task-center ${expanded ? 'expanded' : ''}`}><header><button className="mysql-task-toggle" type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded}><div><h3>后台任务</h3><span>最近 {jobs.length} 项</span></div></button></header><div className="mysql-task-list"><div className="mysql-task-list-inner">{jobs.map(job => { const failed = job.status === 'failed'; const progress = failed ? 0 : Math.min(100, Math.max(0, job.progress)); const name = job.kind === 'query' ? 'SQL 查询' : job.kind === 'import' ? `导入任务 · ${job.fileName || '未记录上传文件名'}` : `导出任务 · ${job.fileName || '未命名文件'}`; return <article className={failed ? 'failed' : ''} key={job.id}><div><b title={name}>{name}</b><small title={job.id}>任务编号：{job.id} · {job.message} · {new Date(job.createdAt).toLocaleString('zh-CN')}</small><i className="mysql-task-progress"><em style={{ width: `${progress}%` }} /></i></div><strong>{progress}%</strong>{['queued', 'running'].includes(job.status) ? <button className="text-button danger" type="button" onClick={() => void cancel(job.id)}>取消</button> : job.kind === 'import' ? <button className="text-button" type="button" onClick={() => void viewResult(job.id)}>查看结果</button> : job.status === 'succeeded' ? <a className="text-button" href={`${api}/mysql-jobs/${job.id}/download`} download={job.fileName || 'mysql-result.csv'}>下载结果</a> : <span>失败</span>}</article>})}</div></div></section>{resultJob && <div className="modal-backdrop" role="presentation"><section className="surface mysql-import-results-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>导入结果</h2><p>{resultJob.message}</p></div><button className="close-button" type="button" onClick={() => setResultJob(null)}>×</button></header><div className="mysql-import-results">{results.length ? results.map((item: any) => <article key={item.index} className={item.status}><span>#{item.index}</span><code>{item.statement}</code><em>{item.status === 'success' ? `成功${item.affected ? `，${item.affected} 行` : ''}` : item.status === 'skipped' ? '未执行' : item.error || '失败'}</em></article>) : <p>暂无可展示的逐条执行结果。</p>}</div><footer className="modal-actions"><button className="button" type="button" onClick={() => setResultJob(null)}>关闭</button></footer></section></div>}</>
 }
 
 function Ambari() {
@@ -1763,7 +2350,7 @@ function DataSources() {
   const [sourcePage, setSourcePage] = useState(1)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Source | null>(null)
-  const [selectedType, setSelectedType] = useState<'Prometheus' | 'MySQL' | 'Hive' | 'PostgreSQL' | 'SSH' | 'Hadoop' | 'Ambari' | 'Consul'>('Prometheus')
+  const [selectedType, setSelectedType] = useState<'Prometheus' | 'MySQL' | 'Hive' | 'PostgreSQL' | 'ClickHouse' | 'SSH' | 'Hadoop' | 'Ambari' | 'Consul'>('Prometheus')
   const [sshAuthMode, setSSHAuthMode] = useState<'password' | 'agent'>('password')
   const [hiveAuth, setHiveAuth] = useState('NOSASL')
   const [hiveTransport, setHiveTransport] = useState('binary')
@@ -1811,8 +2398,35 @@ function DataSources() {
       const response = await fetch(`${api}/data-sources/${source.id}/agent-status`)
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || '读取状态失败')
-      showMessage(`Agent 在线 · 版本 ${data.version || '未上报'} · 白名单 ${data.ipWhitelistConfigured === true ? '已配置' : data.ipWhitelistConfigured === false ? '未配置' : '未知'}`)
+      showMessage(`Agent 在线 · 版本 ${data.version || '未上报'} · 白名单 ${data.ipWhitelistConfigured === true ? '已配置' : data.ipWhitelistConfigured === false ? '未配置' : '未知'}${data.tlsEnabled === true ? ' · TLS 已启用' : ' · TLS 未启用'}`)
     } catch (err) { showMessage(err instanceof Error ? err.message : '读取 Agent 状态失败') }
+  }
+  const rotateAgentToken = async (source: Source) => {
+    if (!window.confirm('将生成新的 Agent 令牌并立即在平台侧生效。\n\n请先把新令牌追加到目标主机 Agent 的 TOKEN 配置（支持逗号分隔多个令牌，如 TOKEN=旧令牌,新令牌）并重启 Agent，再移除旧令牌，避免监控中断。\n\n确定继续轮换？')) return
+    try {
+      const response = await fetch(`${api}/data-sources/${source.id}/agent-token/rotate`, { method: 'POST' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '轮换失败')
+      setAgentToken({ token: String(data.token), host: source.host, port: source.port })
+      showMessage('Agent 令牌已轮换，请及时更新 Agent 配置')
+      void loadSources()
+    } catch (err) { showMessage(err instanceof Error ? err.message : '轮换失败') }
+  }
+  const resetAgentFingerprint = async (source: Source) => {
+    if (!window.confirm('将清除平台记录的 Agent TLS 证书指纹，下次连接将重新信任（TOFU）。\n\n仅当确认 Agent 证书确实更换、且不是中间人攻击时使用。\n\n确定继续？')) return
+    try {
+      const response = await fetch(`${api}/data-sources/${source.id}/agent-fingerprint/reset`, { method: 'POST' })
+      if (!response.ok) { const data = await response.json(); throw new Error(data.error || '重置失败') }
+      showMessage('Agent 证书指纹已重置，下次连接重新记录')
+    } catch (err) { showMessage(err instanceof Error ? err.message : '重置失败') }
+  }
+  const resetSSHHostKey = async (source: Source) => {
+    if (!window.confirm('将清除平台记录的 SSH 主机密钥指纹，下次连接将重新信任（TOFU）。\n\n仅当确认主机密钥确实更换（重装系统、更换密钥）时使用。\n\n确定继续？')) return
+    try {
+      const response = await fetch(`${api}/data-sources/${source.id}/ssh-hostkey/reset`, { method: 'POST' })
+      if (!response.ok) { const data = await response.json(); throw new Error(data.error || '重置失败') }
+      showMessage('SSH 主机密钥指纹已重置，下次连接重新记录')
+    } catch (err) { showMessage(err instanceof Error ? err.message : '重置失败') }
   }
   const confirmImport = async () => {
     if (!importTarget) return
@@ -1848,7 +2462,7 @@ function DataSources() {
   }
   const buildPayload = (formElement: HTMLFormElement): Source => {
     const form = new FormData(formElement)
-  const type = String(form.get('type') || selectedType) as 'Prometheus' | 'MySQL' | 'Hive' | 'PostgreSQL' | 'SSH' | 'Hadoop' | 'Ambari' | 'Consul'
+  const type = String(form.get('type') || selectedType) as 'Prometheus' | 'MySQL' | 'Hive' | 'PostgreSQL' | 'ClickHouse' | 'SSH' | 'Hadoop' | 'Ambari' | 'Consul'
     const needsCredentials = type === 'MySQL' || type === 'Hive' || type === 'PostgreSQL' || (type === 'SSH' && sshAuthMode === 'password') || type === 'Ambari' || type === 'Consul'
     const nodeManagerUrl = String(form.get('nodeManagerUrl') || '').trim()
     const jobHistoryUrl = String(form.get('jobHistoryUrl') || '').trim()
@@ -1862,7 +2476,7 @@ function DataSources() {
     if (options && !sshSourceId) delete options.sshSourceId
     if (options && type === 'SSH' && sshAuthMode !== 'agent') delete options.authMode
     if (options && type === 'Hive' && hiveTransport !== 'http') delete options.httpPath
-    return { id: editing?.id || '', name: String(form.get('name') || ''), type, host: String(form.get('host') || ''), port: String(form.get('port') || ''), username: type === 'MySQL' || type === 'Hive' || type === 'PostgreSQL' || (type === 'SSH' && sshAuthMode === 'password') || type === 'Ambari' || type === 'Consul' ? String(form.get('username') || '') : '', password: String(form.get(needsCredentials ? 'password' : 'token') || ''), database: type === 'MySQL' || type === 'Hive' || type === 'PostgreSQL' ? String(form.get('database') || '') : '', options, remark: String(form.get('remark') || ''), enabled: true, status: '待测试', lastTest: '' }
+    return { id: editing?.id || '', name: String(form.get('name') || ''), type, host: String(form.get('host') || ''), port: String(form.get('port') || ''), username: type === 'MySQL' || type === 'Hive' || type === 'PostgreSQL' || type === 'ClickHouse' || (type === 'SSH' && sshAuthMode === 'password') || type === 'Ambari' || type === 'Consul' ? String(form.get('username') || '') : '', password: String(form.get(needsCredentials ? 'password' : 'token') || ''), database: type === 'MySQL' || type === 'Hive' || type === 'PostgreSQL' || type === 'ClickHouse' ? String(form.get('database') || '') : '', options, remark: String(form.get('remark') || ''), enabled: true, status: '待测试', lastTest: '' }
   }
   const saveSource = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -1945,12 +2559,12 @@ function DataSources() {
 <span>最近检测：{formatCollectedAt(source.lastTest)}</span>
 <span>{source.status}</span>
 </div>
-<div className="source-actions">{['MySQL', 'SSH', 'Agent', 'Redis', 'ClickHouse', 'Kafka'].includes(source.type) && <button type="button" onClick={() => importDashboard(source)}>导入大屏</button>}{source.type === 'MySQL' && <button type="button" onClick={() => importMySQLMenu(source)}>导入工作台</button>}{source.type === 'Hive' && <button type="button" onClick={() => importHiveMenu(source)}>导入工作台</button>}{(source.type === 'PostgreSQL' || source.type === 'Postgres') && <button type="button" onClick={() => importPostgreSQLMenu(source)}>导入工作台</button>}{source.type === 'Consul' && <button type="button" onClick={() => importConsulMenu(source)}>导入工作台</button>}{source.type === 'Hadoop' && <button type="button" onClick={() => importHadoopMenu(source)}>导入菜单</button>}{source.type === 'Ambari' && <button type="button" onClick={() => { setImportName(source.name); setImportTarget({ source, kind: 'ambari' }) }}>导入菜单</button>}{(source.type === 'Agent' || (source.type === 'SSH' && source.options?.authMode === 'agent')) && <button type="button" onClick={() => void checkAgentStatus(source)}>Agent 状态</button>}<button type="button" onClick={() => openModal(source)}>编辑</button>
+<div className="source-actions">{['MySQL', 'SSH', 'Agent', 'Redis', 'ClickHouse', 'Kafka'].includes(source.type) && <button type="button" onClick={() => importDashboard(source)}>导入大屏</button>}{source.type === 'MySQL' && <button type="button" onClick={() => importMySQLMenu(source)}>导入工作台</button>}{source.type === 'Hive' && <button type="button" onClick={() => importHiveMenu(source)}>导入工作台</button>}{(source.type === 'PostgreSQL' || source.type === 'Postgres') && <button type="button" onClick={() => importPostgreSQLMenu(source)}>导入工作台</button>}{source.type === 'Consul' && <button type="button" onClick={() => importConsulMenu(source)}>导入工作台</button>}{source.type === 'Hadoop' && <button type="button" onClick={() => importHadoopMenu(source)}>导入菜单</button>}{source.type === 'Ambari' && <button type="button" onClick={() => { setImportName(source.name); setImportTarget({ source, kind: 'ambari' }) }}>导入菜单</button>}{(source.type === 'Agent' || (source.type === 'SSH' && source.options?.authMode === 'agent')) && <button type="button" onClick={() => void checkAgentStatus(source)}>Agent 状态</button>}{(source.type === 'Agent' || (source.type === 'SSH' && source.options?.authMode === 'agent')) && <button type="button" onClick={() => void rotateAgentToken(source)}>轮换令牌</button>}{(source.type === 'Agent' || (source.type === 'SSH' && source.options?.authMode === 'agent')) && <button type="button" onClick={() => void resetAgentFingerprint(source)}>重置证书指纹</button>}{(source.type === 'SSH' && source.options?.authMode !== 'agent' && source.options?.authMode !== 'local') && <button type="button" onClick={() => void resetSSHHostKey(source)}>重置主机密钥</button>}<button type="button" onClick={() => openModal(source)}>编辑</button>
 <button className="danger" type="button" onClick={() => deleteSource(source)}>删除</button>
 </div>
 </article>)}</section>
 <ListPagination total={allSources.length} page={currentSourcePage} onPageChange={setSourcePage} pageSize={20} />
-</>}{agentToken && <AgentTokenDialog {...agentToken} onClose={() => setAgentToken(null)} />}{deletingSource && <DataSourceDeleteDialog sourceName={deletingSource.name} onClose={() => setDeletingSource(null)} onConfirm={() => { const source = deletingSource; setDeletingSource(null); void performDeleteSource(source) }} />}{importTarget && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget && !importing) setImportTarget(null) }}>
+</>}{agentToken && <AgentTokenDialog {...agentToken} onClose={() => setAgentToken(null)} />}{deletingSource && <DataSourceDeleteDialog sourceName={deletingSource.name} onClose={() => setDeletingSource(null)} onConfirm={() => { const source = deletingSource; setDeletingSource(null); void performDeleteSource(source) }} />}{importTarget && <div className="modal-backdrop" role="presentation">
 <section className="surface import-name-modal" role="dialog" aria-modal="true">
 <header className="modal-head">
 <div>
@@ -1967,7 +2581,7 @@ function DataSources() {
 <button className="button" type="button" disabled={importing} onClick={() => void confirmImport()}>{importing ? '导入中...' : '确认导入'}</button>
 </footer>
 </section>
-</div>}{modalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setModalOpen(false) }}>
+</div>}{modalOpen && <div className="modal-backdrop" role="presentation">
 <section className="surface source-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
 <header className="modal-head">
 <div>
@@ -1979,7 +2593,7 @@ function DataSources() {
 <form onSubmit={saveSource}>
 <div className="modal-form">
 <label>类型 <span className="required-mark">*</span>
-<AppSelect name="type" value={selectedType} onChange={(next) => { setSelectedType(next as 'Prometheus' | 'MySQL' | 'Hive' | 'PostgreSQL' | 'SSH' | 'Hadoop' | 'Consul'); if (next !== 'SSH') setSSHAuthMode('password') }} disabled={!!editing} options={[{ value: 'Prometheus', label: 'Prometheus' }, { value: 'MySQL', label: 'MySQL' }, { value: 'PostgreSQL', label: 'PostgreSQL' }, { value: 'Hive', label: 'Hive' }, { value: 'SSH', label: 'SSH' }, { value: 'Hadoop', label: 'Hadoop' }, { value: 'Consul', label: 'Consul' }]} />
+<AppSelect name="type" value={selectedType} onChange={(next) => { setSelectedType(next as 'Prometheus' | 'MySQL' | 'Hive' | 'PostgreSQL' | 'ClickHouse' | 'SSH' | 'Hadoop' | 'Consul'); if (next !== 'SSH') setSSHAuthMode('password') }} disabled={!!editing} options={[{ value: 'Prometheus', label: 'Prometheus' }, { value: 'MySQL', label: 'MySQL' }, { value: 'PostgreSQL', label: 'PostgreSQL' }, { value: 'ClickHouse', label: 'ClickHouse' }, { value: 'Hive', label: 'Hive' }, { value: 'SSH', label: 'SSH' }, { value: 'Hadoop', label: 'Hadoop' }, { value: 'Consul', label: 'Consul' }]} />
 </label>
 <label>名称 <span className="required-mark">*</span>
 <input key={`name-${selectedType}-${editing?.id || 'new'}`} name="name" defaultValue={editing?.name || ''} required />
@@ -2009,7 +2623,8 @@ function DataSources() {
 </> : <label>Token<input name="token" type="password" placeholder={editing ? '留空则不修改' : '可选'} />
 </label>}<label className="wide">备注<textarea name="remark" defaultValue={editing?.remark || ''} placeholder="记录数据源用途或环境" />
 </label>
-{selectedType === 'SSH' && sshAuthMode === 'agent' && <span className="form-hint wide">保存后平台将生成一次 Agent 令牌并弹出配置。请将配置部署到目标节点的 Agent 服务；无需填写 SSH 用户名或密码。</span>}
+{selectedType === 'SSH' && sshAuthMode === 'agent' && <span className="form-hint wide">保存后平台将生成一次 Agent 令牌并弹出配置。Agent 传输强制使用 HTTPS：请确保 Agent 已启用 TLS（TLS_ENABLED=true，证书缺失会自动生成自签证书），平台首次连接会自动记录证书指纹（TOFU），此后证书变化将拒绝连接。无需填写 SSH 用户名或密码。</span>}
+{selectedType === 'SSH' && sshAuthMode === 'password' && <span className="form-hint wide">平台默认以 TOFU 模式校验 SSH 主机密钥：首次连接自动记录指纹，之后指纹变化将拒绝连接（防止中间人攻击）。重装系统或更换主机密钥后，请在数据源列表执行「重置主机密钥」。</span>}
 </div>
 <footer className="modal-actions">
 <button className="button secondary" type="button" onClick={(event) => { const form = event.currentTarget.closest('form'); if (form) void testSource(form) }}>测试连接</button>
@@ -2303,7 +2918,7 @@ function Alerts() {
       )}
       <ListPagination total={ruleTotal} page={currentRulePage} onPageChange={setRulePage} pageSize={rulePageSize} />
       {modalOpen && (
-        <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setModalOpen(false) }}>
+        <div className="modal-backdrop" role="presentation">
           <section className="surface source-modal alert-rule-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
             <header className="modal-head">
               <div><h2>{editingRule ? '编辑规则' : '新增规则'}</h2><p>Alert rule</p></div>
@@ -2374,7 +2989,7 @@ function Alerts() {
           </section>
         </div>
       )}
-      {resultRule && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setResultRule(null) }}><section className="surface result-details-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{resultRule.database === 'script-monitor' ? '脚本执行日志' : '结果详情'}</h2><p>{resultRule.name}</p></div><button className="close-button" type="button" onClick={() => setResultRule(null)}>×</button></header><pre className={resultRule.database === 'script-monitor' ? 'rule-execution-log' : ''}>{resultRule.database === 'file-monitor' ? normalizeFileMonitorResultDetails(resultRule.resultDetails || '') : resultRule.resultDetails}</pre></section></div>}
+      {resultRule && <div className="modal-backdrop" role="presentation"><section className="surface result-details-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>{resultRule.database === 'script-monitor' ? '脚本执行日志' : '结果详情'}</h2><p>{resultRule.name}</p></div><button className="close-button" type="button" onClick={() => setResultRule(null)}>×</button></header><pre className={resultRule.database === 'script-monitor' ? 'rule-execution-log' : ''}>{resultRule.database === 'file-monitor' ? normalizeFileMonitorResultDetails(resultRule.resultDetails || '') : resultRule.resultDetails}</pre></section></div>}
     </div>
   )
 
@@ -2388,14 +3003,15 @@ function AuditLogs() {
   const [typeFilter, setTypeFilter] = useState('')
   const [accountFilter, setAccountFilter] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
 	const [total, setTotal] = useState(0)
 	const [actions, setActions] = useState<string[]>([])
 	const [usernames, setUsernames] = useState<string[]>([])
-	const load = async () => { setLoading(true); try { const query = new URLSearchParams({ page: String(page), pageSize: '20', action: typeFilter, username: accountFilter, keyword: search }); const response = await fetch(`${api}/audit-logs?${query}`); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取日志失败'); setItems(data.items || []); setTotal(data.total || 0); setActions(data.actions || []); setUsernames(data.usernames || []) } finally { setLoading(false) } }
+	const load = async () => { setLoading(true); try { const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize), action: typeFilter, username: accountFilter, keyword: search }); const response = await fetch(`${api}/audit-logs?${query}`); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取日志失败'); setItems(data.items || []); setTotal(data.total || 0); setActions(data.actions || []); setUsernames(data.usernames || []) } finally { setLoading(false) } }
 	useEffect(() => { const timer = window.setTimeout(() => setSearch(keyword), 280); return () => window.clearTimeout(timer) }, [keyword])
-	useEffect(() => { void load() }, [page, typeFilter, accountFilter, search])
-	const pages = Math.max(1, Math.ceil(total / 20))
-	return <div className="page audit-log-page"><PageHead title="日志中心" description="操作审计、登录与安全事件" /><div className="audit-log-toolbar"><AppSelect value={typeFilter} placeholder="全部操作类型" onChange={value => { setTypeFilter(value); setPage(1) }} options={[{ value: '', label: '全部操作类型' }, ...actions.map(value => ({ value, label: value }))]} /><AppSelect value={accountFilter} placeholder="全部账号" onChange={value => { setAccountFilter(value); setPage(1) }} options={[{ value: '', label: '全部账号' }, ...usernames.map(value => ({ value, label: value }))]} /><input value={keyword} placeholder="搜索详情" onChange={event => { setKeyword(event.target.value); setPage(1) }} /><span>共 {total} 条</span></div><section className="surface audit-log-list"><header className="audit-log-head"><span>时间</span><span>账号</span><span>来源地址</span><span>详情</span></header>{items.length === 0 ? <div className="empty-state"><b>{loading ? '正在读取日志' : '暂无日志'}</b></div> : items.map(item => <article key={`${item.action}-${item.id}`}><time>{item.createdAt}</time><span>{item.username || '-'}</span><small>{item.remoteAddr || '-'}</small><code>{item.details || '平台操作'}</code></article>)}{total > 0 && <UnifiedPagination total={total} page={page} totalPages={pages} onPageChange={setPage} ariaLabel="日志分页" />}</section></div>
+	useEffect(() => { void load() }, [page, pageSize, typeFilter, accountFilter, search])
+	const pages = Math.max(1, Math.ceil(total / pageSize))
+	return <div className="page audit-log-page"><PageHead title="日志中心" description="操作审计、登录与安全事件" /><div className="audit-log-toolbar"><AppSelect value={typeFilter} placeholder="全部操作类型" onChange={value => { setTypeFilter(value); setPage(1) }} options={[{ value: '', label: '全部操作类型' }, ...actions.map(value => ({ value, label: value }))]} /><AppSelect value={accountFilter} placeholder="全部账号" onChange={value => { setAccountFilter(value); setPage(1) }} options={[{ value: '', label: '全部账号' }, ...usernames.map(value => ({ value, label: value }))]} /><input value={keyword} placeholder="搜索详情" onChange={event => { setKeyword(event.target.value); setPage(1) }} /><span>共 {total} 条</span></div><section className="surface audit-log-list"><header className="audit-log-head"><span>时间</span><span>账号</span><span>来源地址</span><span>详情</span></header>{items.length === 0 ? <div className="empty-state"><b>{loading ? '正在读取日志' : '暂无日志'}</b></div> : items.map(item => <article key={`${item.action}-${item.id}`}><time>{item.createdAt}</time><span>{item.username || '-'}</span><small>{item.remoteAddr || '-'}</small><code>{item.details || '平台操作'}</code></article>)}{total > 0 && <UnifiedPagination total={total} page={page} totalPages={pages} onPageChange={setPage} ariaLabel="日志分页" pageSize={pageSize} onPageSizeChange={size => { setPageSize(size); setPage(1) }} />}</section></div>
 }
 
 function Notifications() {
@@ -2484,7 +3100,7 @@ function Notifications() {
       })}
       {notificationPagination}
     </section>
-    {detailGroup && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setDetailGroup(null) }}><section className="surface notification-detail-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>通知详情</h2><p>{detailGroup.ruleName}</p></div><button className="close-button" type="button" onClick={() => setDetailGroup(null)}>×</button></header><div className="notification-detail-grid"><span>首次触发时间<b>{formatCollectedAt(detailGroup.firstSeenAt)}</b></span><span>最近告警时间<b>{detailGroup.latestAlertAt ? formatCollectedAt(detailGroup.latestAlertAt) : '-'}</b></span><span>持续时间<b>{notificationDuration(detailGroup.firstSeenAt, detailGroup.status === 'resolved' ? detailGroup.resolvedAt : undefined)}</b></span><span>恢复时间<b>{detailGroup.resolvedAt ? formatCollectedAt(detailGroup.resolvedAt) : '-'}</b></span></div><section className="notification-detail-message"><b>告警信息</b><p>{detailGroup.alertMessage}</p></section></section></div>}
+    {detailGroup && <div className="modal-backdrop" role="presentation"><section className="surface notification-detail-modal" role="dialog" aria-modal="true"><header className="modal-head"><div><h2>通知详情</h2><p>{detailGroup.ruleName}</p></div><button className="close-button" type="button" onClick={() => setDetailGroup(null)}>×</button></header><div className="notification-detail-grid"><span>首次触发时间<b>{formatCollectedAt(detailGroup.firstSeenAt)}</b></span><span>最近告警时间<b>{detailGroup.latestAlertAt ? formatCollectedAt(detailGroup.latestAlertAt) : '-'}</b></span><span>持续时间<b>{notificationDuration(detailGroup.firstSeenAt, detailGroup.status === 'resolved' ? detailGroup.resolvedAt : undefined)}</b></span><span>恢复时间<b>{detailGroup.resolvedAt ? formatCollectedAt(detailGroup.resolvedAt) : '-'}</b></span></div><section className="notification-detail-message"><b>告警信息</b><p>{detailGroup.alertMessage}</p></section></section></div>}
   </div>
 }
 

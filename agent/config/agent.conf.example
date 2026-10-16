@@ -1,13 +1,23 @@
 # 拉取式 Agent：平台在运行期间请求指标、文件检测和脚本检测。
 # 监听地址。仅本机访问可填写 127.0.0.1:4001；由平台访问时使用实际网卡地址或 0.0.0.0:4001。
 LISTEN=0.0.0.0:4001
-# Agent 服务日志文件，建议生产环境使用 /var/log/opsguard-agent/agent.log。
-LOG_FILE=/var/log/opsguard-agent/agent.log
+# Agent 服务日志文件。安装脚本会将其设为安装根目录下的 logs/agent/agent.log。
+LOG_FILE=agent.log
 # 平台访问 Agent 时使用的固定令牌。请为每台 Agent 生成不同的随机值。
-TOKEN=replace-with-a-per-agent-random-token
+# 支持逗号分隔多个令牌（如 TOKEN=旧令牌,新令牌），用于滚动轮换：追加新令牌
+# 并重启 Agent 后，可再移除旧令牌，全程不中断监控。
+TOKEN=
 # 允许请求 Agent 的平台 IP 或网段，多个值以英文逗号分隔。生产环境必须填写。
 # 留空仅用于兼容已有部署，会允许所有来源访问。
-ALLOWED_PLATFORM_IPS=10.0.0.10/32
+ALLOWED_PLATFORM_IPS=
+# TLS 传输。平台强制使用 HTTPS 访问 Agent，请设为 true（推荐默认值）。
+# 证书文件缺失时 Agent 会自动生成自签证书，无需手工签发；平台首次连接会
+# 自动记录证书指纹（TOFU），此后证书变化将拒绝连接。
+# 查看当前证书指纹：opsguard-agent --print-fingerprint
+TLS_ENABLED=true
+# TLS 证书与私钥路径（可选，默认位于配置文件同目录的 agent.crt / agent.key）。
+# TLS_CERT_FILE=/path/to/agent.crt
+# TLS_KEY_FILE=/path/to/agent.key
 # 单条脚本检测的最长执行时间，单位为秒，取值范围为 1 至 300。
 COMMAND_TIMEOUT_SECONDS=30
 # 单次文件或脚本检测可返回的最大输出字节数，取值范围为 1024 至 1048576。

@@ -26,6 +26,16 @@ backend/certs/
 backend/logs/
 frontend/.env
 .tools/
+agent/config/agent.conf
+backend/uploads/
+backend/server-arm64
+backend/opsguard-server-linux-arm64
+cookies.txt
+login.json
+.tmp-go-cache/
+frontend/build_err.txt
+frontend/build_out.txt
+nginx/default.conf
 
 # Build artifacts and local caches
 .gopath/

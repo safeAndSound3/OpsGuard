@@ -19,6 +19,8 @@ type AppConfig struct {
 	OutboundAllowedHosts []string
 	OutboundAllowedCIDRs []string
 	AllowLoopbackTargets bool
+	SSHHostKeyMode       string
+	SSHKnownHosts        string
 	LogFile              string
 }
 
@@ -50,6 +52,8 @@ func Load() AppConfig {
 		OutboundAllowedHosts: splitCSV(os.Getenv("OUTBOUND_ALLOWED_HOSTS")),
 		OutboundAllowedCIDRs: splitCSV(os.Getenv("OUTBOUND_ALLOWED_CIDRS")),
 		AllowLoopbackTargets: strings.EqualFold(getEnv("OUTBOUND_ALLOW_LOOPBACK", "false"), "true"),
+		SSHHostKeyMode:       getEnv("SSH_HOST_KEY_MODE", "tofu"),
+		SSHKnownHosts:        strings.TrimSpace(os.Getenv("SSH_KNOWN_HOSTS")),
 		LogFile:              getEnv("LOG_FILE", "logs/opsguard-server.log"),
 	}
 }

@@ -3,13 +3,20 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"monitor-platform/internal/model"
@@ -32,7 +39,11 @@ type AgentStatus struct {
 	Version               string `json:"version"`
 	StartedAt             string `json:"startedAt"`
 	IPWhitelistConfigured bool   `json:"ipWhitelistConfigured"`
+	TLSEnabled            bool   `json:"tlsEnabled"`
 }
+
+// agentFingerprintMu guards the TOFU write of an agent certificate fingerprint.
+var agentFingerprintMu sync.Mutex
 
 // isAgentSSH keeps legacy Agent rows working while new nodes are stored as SSH
 // with an explicit authentication mode.
@@ -56,7 +67,74 @@ func agentBaseURL(ds model.DataSource) (string, error) {
 	if err := validateOutboundAddress(host); err != nil {
 		return "", err
 	}
-	return "http://" + host + ":" + port, nil
+	// Agent 传输强制使用 HTTPS：令牌不再明文出现在网络上。证书以指纹方式
+	// 固定（TOFU），首次连接自动记录，之后指纹变化即拒绝。
+	return "https://" + host + ":" + port, nil
+}
+
+// agentCertFingerprint returns the SHA-256 fingerprint of a certificate DER
+// (lowercase hex, no colons), matching the agent's --print-fingerprint output.
+func agentCertFingerprint(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// verifyAgentCertificate enforces fingerprint pinning: an empty expected value
+// is the trust-on-first-use state (the observed fingerprint is recorded by the
+// caller after a successful exchange); any mismatch is rejected.
+func verifyAgentCertificate(expected string, peer *x509.Certificate) error {
+	if peer == nil {
+		return errors.New("Agent 未提供 TLS 证书")
+	}
+	if strings.TrimSpace(expected) == "" {
+		return nil
+	}
+	observed := agentCertFingerprint(peer)
+	if !strings.EqualFold(observed, strings.TrimSpace(expected)) {
+		return fmt.Errorf("Agent 证书指纹不匹配（已记录 %s，实际 %s），可能遭受中间人攻击；确认 Agent 证书确实更换后，请在数据源执行“重置证书指纹”", expected, observed)
+	}
+	return nil
+}
+
+// agentTLSClient builds the HTTP client used for Agent calls: egress-safe
+// dialing plus TLS 1.2+ with certificate fingerprint pinning.
+func agentTLSClient(ds model.DataSource) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	dialer := &net.Dialer{}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialValidated(ctx, dialer, network, address)
+	}
+	expected := strings.ToLower(strings.TrimSpace(ds.Options["agentCertFingerprint"]))
+	transport.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		// Hostname verification is replaced by fingerprint pinning below.
+		InsecureSkipVerify: true,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("Agent 未提供 TLS 证书")
+			}
+			return verifyAgentCertificate(expected, state.PeerCertificates[0])
+		},
+	}
+	return &http.Client{Timeout: 12 * time.Second, Transport: transport, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		return validateOutboundAddress(req.URL.Hostname())
+	}}, nil
+}
+
+// storeAgentCertFingerprint persists the observed agent certificate fingerprint
+// (TOFU). A concurrent first connection that already recorded it wins.
+func storeAgentCertFingerprint(id, fingerprint string) error {
+	agentFingerprintMu.Lock()
+	defer agentFingerprintMu.Unlock()
+	existing, err := GetDataSourceByID(id)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(existing.Options["agentCertFingerprint"]) != "" {
+		return nil
+	}
+	return setDataSourceOption(id, "agentCertFingerprint", fingerprint)
 }
 
 func callAgent(ctx context.Context, ds model.DataSource, method, path string, requestBody any, responseBody any) error {
@@ -86,14 +164,26 @@ func callAgent(ctx context.Context, ds model.DataSource, method, path string, re
 	if strings.TrimSpace(ds.Password) != "" {
 		req.Header.Set("Authorization", "Bearer "+ds.Password)
 	}
-	resp, err := safeHTTPClient(12 * time.Second).Do(req)
+	client, err := agentTLSClient(ds)
 	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if strings.Contains(err.Error(), "first record does not look like a TLS handshake") {
+			return fmt.Errorf("连接 Agent 失败：对方未启用 TLS。Agent 传输已强制使用 HTTPS，请确认 Agent 已设置 TLS_ENABLED=true 并升级到支持 TLS 的版本")
+		}
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("Agent 返回 %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	// Trust-on-first-use: record the certificate fingerprint after a
+	// successful exchange when none was pinned yet.
+	if strings.TrimSpace(ds.Options["agentCertFingerprint"]) == "" && resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+		_ = storeAgentCertFingerprint(ds.ID, agentCertFingerprint(resp.TLS.PeerCertificates[0]))
 	}
 	if responseBody != nil {
 		return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(responseBody)

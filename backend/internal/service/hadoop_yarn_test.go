@@ -1,12 +1,37 @@
 package service
 
 import (
+	"bytes"
 	"monitor-platform/internal/model"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+func TestReadHadoopLogBodyRejectsOversizedResponse(t *testing.T) {
+	_, err := readHadoopLogBody(bytes.NewReader(bytes.Repeat([]byte("x"), maxHadoopLogResponseBytes+1)))
+	if err == nil || !strings.Contains(err.Error(), "读取上限") {
+		t.Fatalf("expected size limit error, got %v", err)
+	}
+}
+
+func TestReadableHadoopLogDirectoryReportsFileFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	page := server.URL + "/node/containerlogs/container_1/user"
+	body := []byte(`<html><a href="/node/containerlogs/container_1/user/stdout">stdout</a></html>`)
+	source := model.DataSource{Options: map[string]string{"nodeManagerUrl": server.URL}}
+	_, err := readableHadoopLogFromDirectory(server.Client(), source, server.URL, page, body)
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("expected HTTP failure, got %v", err)
+	}
+}
 
 func TestHadoopLogURLBelongsToSource(t *testing.T) {
 	source := model.DataSource{Options: map[string]string{
@@ -74,6 +99,70 @@ func TestHadoopAggregatedLogURLs(t *testing.T) {
 	urls := hadoopAggregatedLogURLs(source, "http://ga-k8s2:8042/node/containerlogs/container_e383_01_000001/root")
 	if got, want := strings.Join(urls, ","), "http://history:19888/jobhistory/logs/ga-k8s2:8042/container_e383_01_000001/container_e383_01_000001/root"; got != want {
 		t.Fatalf("hadoopAggregatedLogURLs() = %q, want %q", got, want)
+	}
+}
+
+func TestHadoopAggregatedLogURLsTriesConfiguredNodeHosts(t *testing.T) {
+	source := model.DataSource{Options: map[string]string{
+		"jobHistoryUrl":  "http://history:19888",
+		"nodeManagerUrl": "http://ga-k8s1:8042,http://ga-k8s2:8042,http://ga-k8s3:8042",
+	}}
+	urls := hadoopAggregatedLogURLs(source, "http://ga-k8s1:8042/node/containerlogs/container_e383_01_000002/root")
+	if len(urls) != 3 {
+		t.Fatalf("got %d aggregate URLs, want 3: %q", len(urls), urls)
+	}
+	for index, host := range []string{"ga-k8s1:8042", "ga-k8s2:8042", "ga-k8s3:8042"} {
+		if !strings.Contains(urls[index], "/jobhistory/logs/"+host+"/") {
+			t.Fatalf("URL %d does not target %s: %s", index, host, urls[index])
+		}
+	}
+}
+
+func TestHadoopLogFromCandidatesContinuesAfterUnusableRedirect(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/missing-history", http.StatusFound)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("LogType:stdout\nworker on second node"))
+	}))
+	defer second.Close()
+	var historyRequests atomic.Int32
+	history := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		historyRequests.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer history.Close()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, _, err := hadoopLogFromCandidatesWithRedirect(client, model.DataSource{Options: map[string]string{"jobHistoryUrl": history.URL}}, []string{first.URL, second.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Request.URL.Host != strings.TrimPrefix(second.URL, "http://") {
+		t.Fatalf("selected %s, want second NodeManager", resp.Request.URL)
+	}
+	if got := historyRequests.Load(); got != 0 {
+		t.Fatalf("queried JobHistory %d times before checking second NodeManager", got)
+	}
+}
+
+func TestHadoopLogFromCandidatesContinuesAfterMissingContainerPage(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html>No logs available for container container_1</html>"))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("LogType:stdout\nworker on second node"))
+	}))
+	defer second.Close()
+	resp, _, err := hadoopLogFromCandidatesWithRedirect(&http.Client{}, model.DataSource{}, []string{first.URL, second.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Request.URL.Host != strings.TrimPrefix(second.URL, "http://") {
+		t.Fatalf("selected %s, want second NodeManager", resp.Request.URL)
 	}
 }
 

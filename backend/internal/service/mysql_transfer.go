@@ -116,13 +116,13 @@ func exportMySQLDataContext(ctx context.Context, sourceID string, options MySQLT
 		var buffer bytes.Buffer
 		buffer.WriteString("\xEF\xBB\xBF")
 		writer := csv.NewWriter(&buffer)
-		if err := writer.Write(doc.Columns); err != nil {
+		if err := writer.Write(safeCSVRecord(doc.Columns)); err != nil {
 			return nil, "", err
 		}
 		for _, row := range doc.Rows {
 			record := make([]string, len(row))
 			for index, value := range row {
-				record[index] = mysqlTransferString(value)
+				record[index] = safeCSVCell(mysqlTransferString(value))
 			}
 			if err := writer.Write(record); err != nil {
 				return nil, "", err
